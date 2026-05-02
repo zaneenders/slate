@@ -11,7 +11,7 @@ enum SlateDemoEntry {
       throw DemoError.failedSetup
     }
 
-    final class DemoTranscript: @unchecked Sendable {
+    final class DemoTranscript {
       var text = ""
     }
 

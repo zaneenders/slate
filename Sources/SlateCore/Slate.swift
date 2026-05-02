@@ -64,10 +64,18 @@ public struct Slate: ~Copyable {
   /// `onEvent` receives the active ``Slate`` as an `inout` parameter rather than capturing it from the enclosing scope — escaping closures cannot capture noncopyable values, so the inout passes a fresh borrow per call. Inside the handler, call ``refreshWindowSize()`` on ``TerminalWakeEvent/resize`` before re-encoding, and call ``enscribe(grid:)`` whenever stdin, resize, or ``TerminalWakeEvent/external`` should refresh the screen.
   ///
   /// Creates a ``TerminalWakePump`` for the loop; producers are stopped before this returns.
+  ///
+  /// `@MainActor` here is the **only** isolation annotation in the public API — see the type-level
+  /// docs for why. ``TerminalWakePump`` keeps unsynchronized lifecycle vars on its single owner,
+  /// and the ``onEvent`` closure typically captures app state (``DemoTranscript`` etc.) that the
+  /// caller's `@main`-isolated code mutates from spawned tasks; pinning ``start`` to the main
+  /// actor matches the realistic usage pattern without forcing every other ``Slate`` method to
+  /// be `@MainActor`.
+  @MainActor
   public mutating func start(
     prepare: (ExternalWake) -> Void = { _ in },
     externalCoalesceMaxFramesPerSecond: Int = 60,
-    onEvent: (inout Self, TerminalWakeEvent) async -> TerminalWakeRunOutcome
+    onEvent: @MainActor (inout Self, TerminalWakeEvent) async -> TerminalWakeRunOutcome
   ) async {
     let pump = TerminalWakePump(externalCoalesceMaxFramesPerSecond: externalCoalesceMaxFramesPerSecond)
     defer { pump.stop() }

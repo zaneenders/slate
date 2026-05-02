@@ -134,7 +134,9 @@ private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void,
 /// ``ExternalWake`` forwards through [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) throttle (``_throttle(for:latest:)``) when ``externalCoalesceMaxFramesPerSecond`` is positive (default ``60``).
 ///
 /// Resize is detected by polling ``TTYPoll/windowSize()`` (``TIOCGWINSZ``), not ``Dispatch`` or signal handlers.
-internal final class TerminalWakePump: Sendable {
+///
+/// Not ``Sendable``: the lifecycle vars (`externalSignalContinuation`, `externalThrottleConsumer`, `resizePollTask`) are written by ``init`` and ``stop()`` without a lock, so the pump must stay inside one isolation domain (``Slate/start(prepare:externalCoalesceMaxFramesPerSecond:onEvent:)`` is the only intended owner). Cross-isolation wakes go through ``ExternalWake`` (a ``Sendable`` handle around a ``Mutex``-guarded ``WakeBus``).
+internal final class TerminalWakePump {
   /// Low-level stream. Prefer ``run(onEvent:)`` for a structured loop that ends with ``stop()``.
   public let events: AsyncStream<TerminalWakeEvent>
   /// Pass to code that runs outside the pump (streaming APIs, ``Task.detached``, callbacks). See ``ExternalWake``.
