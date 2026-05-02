@@ -13,6 +13,28 @@ public enum CSI {
   public static let sgrBold = "\u{001b}[1m"
   /// Normal intensity (clears bold in common terminals).
   public static let sgrNormalIntensity = "\u{001b}[22m"
+  /// Faint / decreased intensity (SGR 2).
+  public static let sgrFaint = "\u{001b}[2m"
+
+  /// Foreground truecolor `38;2` only (no trailing reset).
+  public static func sgrForeground(_ rgb: TerminalRGB) -> String {
+    "\u{001b}[38;2;\(rgb.r);\(rgb.g);\(rgb.b)m"
+  }
+
+  /// Bold then foreground truecolor (common for emphasized colored text).
+  public static func sgrBoldForeground(_ rgb: TerminalRGB) -> String {
+    sgrBold + sgrForeground(rgb)
+  }
+
+  /// Truecolor background `48;2` and foreground `38;2` for one cell (no trailing reset).
+  public static func sgrTruecolor(
+    background: TerminalRGB,
+    foreground: TerminalRGB
+  ) -> String {
+    sgrTruecolor(
+      backgroundR: background.r, backgroundG: background.g, backgroundB: background.b,
+      foregroundR: foreground.r, foregroundG: foreground.g, foregroundB: foreground.b)
+  }
 
   /// Truecolor background `48;2` and foreground `38;2` for one cell (no trailing reset).
   public static func sgrTruecolor(

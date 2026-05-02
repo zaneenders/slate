@@ -23,10 +23,36 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
     #expect(s.contains("38;2;4;5;6"))
   }
 
+  @Test func sgrTruecolor_terminalRgbMatchesByteForm() {
+    let bg = TerminalRGB(r: 1, g: 2, b: 3)
+    let fg = TerminalRGB(r: 4, g: 5, b: 6)
+    let a = CSI.sgrTruecolor(background: bg, foreground: fg)
+    let b = CSI.sgrTruecolor(
+      backgroundR: 1, backgroundG: 2, backgroundB: 3,
+      foregroundR: 4, foregroundG: 5, foregroundB: 6)
+    #expect(a == b)
+  }
+
+  @Test func sgrForeground_embeds38_2() {
+    let s = CSI.sgrForeground(TerminalRGB(r: 10, g: 20, b: 30))
+    #expect(s == "\u{001b}[38;2;10;20;30m")
+  }
+
+  @Test func sgrBoldForeground_ordersBoldBeforeFg() {
+    let s = CSI.sgrBoldForeground(TerminalRGB(r: 7, g: 8, b: 9))
+    #expect(s.hasPrefix(CSI.sgrBold))
+    #expect(s.contains("38;2;7;8;9"))
+  }
+
+  @Test func sgrFaint_isSGR2() {
+    #expect(CSI.sgrFaint == "\u{001b}[2m")
+  }
+
   @Test func staticFragments_nonEmpty() {
     #expect(!CSI.sgr0.isEmpty)
     #expect(!CSI.sgrBold.isEmpty)
     #expect(!CSI.sgrNormalIntensity.isEmpty)
+    #expect(!CSI.sgrFaint.isEmpty)
     #expect(!CSI.clrHome.isEmpty)
   }
 }

@@ -61,8 +61,11 @@ enum SlateDemoEntry {
       case .resize:
         slate.refreshWindowSize()
       case .external: ()
-      case .key(let byte):
-        if shutdownRequested(forKey: byte) { return .stop }
+      case .stdinBytes(let bytes):
+        if bytes.isEmpty { return .stop }
+        for byte in bytes {
+          if shutdownRequested(forKey: byte) { return .stop }
+        }
       }
       draw()
       return .continue
@@ -76,7 +79,7 @@ enum DemoError: Error {
 
 private func shutdownRequested(forKey byte: UInt8) -> Bool {
   switch byte {
-  // ETX (Ctrl+C), EOT (Ctrl+D), or EOF sentinel from ``TerminalWakePump`` when stdin closes.
+  // ETX (Ctrl+C), EOT (Ctrl+D), or NUL from stdin in raw mode (EOF is an empty ``stdinBytes`` chunk).
   case 3, 4, 0:
     true
   default:

@@ -14,8 +14,8 @@ import Musl
 public enum TerminalWakeEvent: Sendable {
   /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or ``Slate/present``.
   case resize
-  /// One raw stdin byte. ``0`` is emitted when stdin closes (EOF).
-  case key(UInt8)
+  /// stdin read **in one wakeup** — chunks are often larger when pasting or when the tty has buffered keystrokes together. Empty means EOF (stdin closed).
+  case stdinBytes(ContiguousArray<UInt8>)
   /// Another source asked for a frame (``ExternalWake/requestRender()``). Read shared model / buffer and ``present``.
   case external
 }
@@ -75,28 +75,42 @@ private final class WakeBus: Sendable {
 }
 
 private func startStdinWakeTask(bus: WakeBus) -> Task<Void, Never> {
-  Task.detached { [bus] in
+  let chunkCapacity = 16_384
+  return Task.detached { [bus] in
+    var scratch = [UInt8](repeating: 0, count: chunkCapacity)
     while !Task.isCancelled {
-      var bite: UInt8 = 0
-      let grabbed = unsafe read(STDIN_FILENO, &bite, 1)
-      if grabbed <= 0 {
-        if errno == EINTR {
-          continue
+      var aggregate = ContiguousArray<UInt8>()
+      aggregate.reserveCapacity(chunkCapacity)
+
+      gather: while true {
+        let grabbed: Int =
+          unsafe scratch.withUnsafeMutableBytes { raw in
+            unsafe read(STDIN_FILENO, raw.baseAddress!, raw.count)
+          }
+        if grabbed < 0 {
+          if errno == EINTR {
+            continue gather
+          }
+          bus.emit(.stdinBytes(.init()))
+          bus.finish()
+          return
         }
-        bus.emit(.key(0))
+        if grabbed == 0 {
+          break gather
+        }
+        aggregate.append(contentsOf: scratch[..<grabbed])
+        if grabbed < scratch.count {
+          break gather
+        }
+      }
+
+      if aggregate.isEmpty {
+        bus.emit(.stdinBytes(.init()))
         bus.finish()
         return
       }
 
-      bus.emit(.key(bite))
-
-      switch bite {
-      case 3, 4:
-        bus.finish()
-        return
-      default:
-        break
-      }
+      bus.emit(.stdinBytes(aggregate))
     }
   }
 }
