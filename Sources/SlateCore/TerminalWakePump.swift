@@ -47,7 +47,6 @@ private enum ExternalWakeSignal: Sendable {
   case tick
 }
 
-/// Never calls `yield`/`finish` while holding the mutex (see deadlocks with `@MainActor` consumers).
 private final class WakeBus: Sendable {
   private struct Box: Sendable {
     var continuation: AsyncStream<TerminalWakeEvent>.Continuation?
@@ -135,8 +134,7 @@ private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void,
 /// ``ExternalWake`` forwards through [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) throttle (``_throttle(for:latest:)``) when ``externalCoalesceMaxFramesPerSecond`` is positive (default ``60``).
 ///
 /// Resize is detected by polling ``TTYPoll/windowSize()`` (``TIOCGWINSZ``), not ``Dispatch`` or signal handlers.
-@MainActor
-public final class TerminalWakePump {
+internal final class TerminalWakePump: Sendable {
   /// Low-level stream. Prefer ``run(onEvent:)`` for a structured loop that ends with ``stop()``.
   public let events: AsyncStream<TerminalWakeEvent>
   /// Pass to code that runs outside the pump (streaming APIs, ``Task.detached``, callbacks). See ``ExternalWake``.
@@ -202,7 +200,7 @@ public final class TerminalWakePump {
   /// Runs until the stream ends or `onEvent` returns ``TerminalWakeRunOutcome/stop``.
   /// Always invokes ``stop()`` before returning (safe if the stream already finished).
   public func run(
-    onEvent: @escaping @MainActor (TerminalWakeEvent) async -> TerminalWakeRunOutcome
+    onEvent: @escaping (TerminalWakeEvent) async -> TerminalWakeRunOutcome
   ) async {
     defer { stop() }
     for await event in events {

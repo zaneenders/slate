@@ -1,11 +1,9 @@
 import SlateCore
 
 @main
-@MainActor
 enum SlateDemoEntry {
-
   static func main() async throws {
-    let slate: Slate
+    var slate: Slate
     do {
       slate = try Slate()
     } catch {
@@ -13,36 +11,32 @@ enum SlateDemoEntry {
       throw DemoError.failedSetup
     }
 
-    final class DemoTranscript {
+    final class DemoTranscript: @unchecked Sendable {
       var text = ""
     }
 
     let model = DemoTranscript()
 
-    func draw() {
-      slate.enscribe(
-        grid: DemoFrameBuilder.makeGrid(
-          cols: slate.cols,
-          rows: slate.rows,
-          transcript: model.text))
-    }
-
-    draw()
+    slate.enscribe(
+      grid: DemoFrameBuilder.makeGrid(
+        cols: slate.cols,
+        rows: slate.rows,
+        transcript: model.text))
 
     await slate.start(prepare: { wake in
       // Background Timer tick
-      Task { @MainActor in
+      Task {
         while !Task.isCancelled {
-          try? await Task.sleep(for: .milliseconds(600))
+          try? await Task.sleep(for: .milliseconds(33))
           wake.requestRender()
         }
       }
 
       // Fake LLM Feed
-      Task { @MainActor in
+      Task {
         let phrase =
           "Neville is a dog who streams tokens the way an LLM would feed your TUI. "
-          + "Each chunk calls ExternalWake.requestRender() on the main actor. "
+          + "Each chunk calls ExternalWake.requestRender() from a background task. "
         let chunks = phrase.split(separator: " ").map { String($0) + " " }
         while !Task.isCancelled {
           for chunk in chunks {
@@ -56,7 +50,7 @@ enum SlateDemoEntry {
         }
       }
 
-    }) { event in
+    }) { slate, event in
       switch event {
       case .resize:
         slate.refreshWindowSize()
@@ -67,7 +61,11 @@ enum SlateDemoEntry {
           if shutdownRequested(forKey: byte) { return .stop }
         }
       }
-      draw()
+      slate.enscribe(
+        grid: DemoFrameBuilder.makeGrid(
+          cols: slate.cols,
+          rows: slate.rows,
+          transcript: model.text))
       return .continue
     }
   }

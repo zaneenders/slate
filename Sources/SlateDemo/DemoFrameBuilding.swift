@@ -1,7 +1,7 @@
 import SlateCore
 
 enum DemoFrameBuilder {
-  /// Builds the logical screen for one present. Encoding and raw IO stay on ``MainActor``.
+  /// Builds the logical screen for one present (encoding vs raw tty writes are split elsewhere).
   static func makeGrid(cols: Int, rows: Int, transcript: String) -> TerminalCellGrid {
     var grid = TerminalCellGrid(
       cols: cols,
