@@ -30,14 +30,10 @@ public struct Slate: ~Copyable {
   }
 
   deinit {
-    // `presenter.flushAndStopWriter()` blocks on a `DispatchSemaphore` until the
-    // ``AsyncFrameWriter`` task drains its last pending frame; we must wait for that
-    // **before** writing the tty-restore CSI sequences, otherwise the restore bytes may
-    // reach the terminal before the final rendered frame and the user sees a flicker /
-    // garbled tail of the alternate screen. Both teardown helpers are now nonisolated
-    // (raw-mode state is `Mutex`-protected, writer drain is `Sendable`-safe), so the
-    // `deinit` itself does not need any actor isolation.
-    presenter.flushAndStopWriter()
+    // Best-effort terminal restore for paths where ``start()`` was never called.
+    // When ``start()`` is used it performs ordered async teardown (flush then
+    // restore) before returning, so this call is a no-op because the restore
+    // state has already been consumed.
     ttyRestoreSaved()
   }
 
@@ -81,8 +77,13 @@ public struct Slate: ~Copyable {
     defer { pump.stop() }
     prepare(pump.externalWake)
     for await event in pump.events {
-      if await onEvent(&self, event) == .stop { return }
+      if await onEvent(&self, event) == .stop { break }
     }
+    // Ordered async teardown: flush the final frame, wait for the writer task
+    // to drain, then restore the terminal. `ttyRestoreSaved()` is idempotent,
+    // so the matching `deinit` call becomes a no-op.
+    await presenter.flushAndStopWriter()
+    ttyRestoreSaved()
   }
 }
 

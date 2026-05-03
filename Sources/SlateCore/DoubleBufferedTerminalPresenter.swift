@@ -41,12 +41,13 @@ internal final class DoubleBufferedTerminalPresenter {
   }
 
   /// Closes the writer's input stream so the background task drains its last pending frame
-  /// and exits, then blocks until that drain completes. Callers that need to write further
+  /// and exits, then suspends until that drain completes. Callers that need to write further
   /// bytes synchronously to stdout afterwards (e.g. ``ttyRestoreSaved()``) **must** call
   /// this first to preserve ordering between final rendered frame and restore sequences.
-  func flushAndStopWriter() {
+  @MainActor
+  func flushAndStopWriter() async {
     writer.stop()
-    writer.waitForCompletion()
+    await writer.waitForCompletion()
   }
 
   /// Materializes the encoded byte slice into an owned `[UInt8]` so the writer task can read
