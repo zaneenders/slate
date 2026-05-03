@@ -8,6 +8,8 @@ import Glibc
 import Musl
 #endif
 
+// MARK: - TTY restore state (global, because ~Copyable deinit cannot handle partial failure)
+
 private struct RawModeRestoreState {
   var snapshot = termios()
   var snapshotValid = false
@@ -15,7 +17,9 @@ private struct RawModeRestoreState {
 
 private let rawModeRestoreState = Mutex(RawModeRestoreState())
 
-/// `write(STDOUT_FILENO)` with **EINTR** retry; shared by ``ttyWriteRaw(_:)`` and ``AsyncFrameWriter``.
+// MARK: - Low-level write
+
+/// `write(STDOUT_FILENO)` with **EINTR** retry.
 internal func ttyWriteStdoutAll(_ buffer: UnsafeRawBufferPointer) {
   guard buffer.count > 0, let baseAddress = buffer.baseAddress else { return }
   var sent = 0
@@ -30,16 +34,10 @@ internal func ttyWriteStdoutAll(_ buffer: UnsafeRawBufferPointer) {
   }
 }
 
-internal func ttyWriteRaw(_ bytes: borrowing RawSpan) {
-  #if compiler(>=6.4)
-  bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
-  #else
-  unsafe bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
-  #endif
-}
+// MARK: - Window size
 
 /// Clamped `ioctl(STDOUT_FILENO, TIOCGWINSZ)` (both dimensions ≥ 1).
-internal func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, rows: Int) {
+internal func ioctlStdoutWindowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
   var ws = winsize()
   let c: Int
   let r: Int
@@ -57,14 +55,7 @@ internal func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, r
   return (min(maxCols, max(1, c)), min(maxRows, max(1, r)))
 }
 
-internal enum TTY {
-  /// Clamped `ioctl(TIOCGWINSZ)` layout (both dimensions ≥ 1).
-  ///
-  /// Safe from any isolation; callers that poll for resize typically invoke this off the main actor.
-  internal static func windowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
-    ioctlStdoutWindowSize(maxCols: maxCols, maxRows: maxRows)
-  }
-}
+// MARK: - Raw mode
 
 internal func ttyEnterRawOrExit() -> Bool {
   guard isatty(STDIN_FILENO) != 0 else {
@@ -109,10 +100,6 @@ internal func ttyEnterRawOrExit() -> Bool {
 internal func ttyRestoreSaved() {
   _ = signal(SIGQUIT, SIG_DFL)
   _ = signal(SIGTSTP, SIG_DFL)
-  do {
-    var tail = CSI.batchOff + CSI.sgr0 + CSI.curShow + CSI.altOff
-    tail.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
-  }
   rawModeRestoreState.withLock { state in
     guard state.snapshotValid else { return }
     state.snapshotValid = false
