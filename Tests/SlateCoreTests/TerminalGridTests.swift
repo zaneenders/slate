@@ -268,3 +268,86 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
     #expect(grid[column: 1, row: 0].glyph == ".")
   }
 }
+
+@Suite struct IOCTLWindowSizeTests {
+
+  @Test func ioctl_clampsToMaxDimensions() {
+    let s = ioctlStdoutWindowSize(maxCols: 2, maxRows: 3)
+    #expect(s.cols >= 1 && s.cols <= 2)
+    #expect(s.rows >= 1 && s.rows <= 3)
+  }
+
+  @Test func tty_matchesIoctl_whenDefaults() {
+    let a = ioctlStdoutWindowSize(maxCols: 999, maxRows: 999)
+    let b = TTY.windowSize()
+    #expect(a == b)
+  }
+}
+
+@Suite struct TerminalEncodingExtrasTests {
+
+  @Test func cellGrid_encode_nonAsciiGlyph_UTF8Embedded() {
+    var grid = TerminalCellGrid(
+      cols: 1,
+      rows: 1,
+      filling: TerminalCell(
+        glyph: ".", foreground: .black, background: .white, flags: []))
+    grid[column: 0, row: 0] = TerminalCell(
+      glyph: "Ω",
+      foreground: .white,
+      background: .black,
+      flags: [])
+    var buffer = TerminalByteBuffer(capacity: 128)
+    grid.encode(into: &buffer)
+    let s = decoded(buffer)
+    #expect(s.hasSuffix(CSI.sgr0))
+    #expect(s.contains("Ω"))
+    #expect(s.contains("\u{001b}[48;2;0;0;0m"))
+    #expect(s.contains("\u{001b}[38;2;255;255;255m"))
+  }
+
+  @Test func cellGrid_encode_cupDoubleDigitRow() {
+    let grid = TerminalCellGrid(
+      cols: 1,
+      rows: 12,
+      filling: TerminalCell(
+        glyph: "*", foreground: .white, background: .black, flags: []))
+    var buffer = TerminalByteBuffer(capacity: 4096)
+    grid.encode(into: &buffer)
+    let s = decoded(buffer)
+    #expect(s.contains("\u{001b}[10;1H"))
+    #expect(s.contains("\u{001b}[12;1H"))
+  }
+}
+
+@Suite struct DoubleBufferedPresenterTests {
+
+  @Test func presenter_callsEncodeClosurePerFrameThenStopsCleanly() {
+    let presenter = DoubleBufferedTerminalPresenter()
+    presenter.ensureEncodedByteCapacity(for: 1, rows: 1)
+    var invokes = 0
+    presenter.presentFrame { buf in
+      invokes += 1
+      buf.removeAll()
+      buf.append(0x43)  // "C"
+    }
+    presenter.presentFrame { buf in
+      invokes += 1
+      buf.removeAll()
+      buf.append(0x44)  // "D"
+    }
+    presenter.flushAndStopWriter()
+    #expect(invokes == 2)
+  }
+
+  @Test func presenter_capacityCanBeResized_beforeFirstSubmit() {
+    let presenter = DoubleBufferedTerminalPresenter()
+    presenter.ensureEncodedByteCapacity(for: 80, rows: 24)
+    presenter.ensureEncodedByteCapacity(for: 1, rows: 1)
+    presenter.presentFrame { buf in
+      buf.removeAll()
+      buf.append(0x5A)
+    }
+    presenter.flushAndStopWriter()
+  }
+}

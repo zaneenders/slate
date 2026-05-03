@@ -15,27 +15,30 @@ private struct RawModeRestoreState {
 
 private let rawModeRestoreState = Mutex(RawModeRestoreState())
 
-internal func ttyWriteRaw(_ bytes: borrowing RawSpan) {
-  func flush(_ buffer: UnsafeRawBufferPointer) {
-    var sent = 0
-    while sent < buffer.count {
-      let n = unsafe write(
-        STDOUT_FILENO, buffer.baseAddress!.advanced(by: sent), buffer.count &- sent)
-      if n <= 0 {
-        guard errno == EINTR else { return }
-        continue
-      }
-      sent += n
+/// `write(STDOUT_FILENO)` with **EINTR** retry; shared by ``ttyWriteRaw(_:)`` and ``AsyncFrameWriter``.
+internal func ttyWriteStdoutAll(_ buffer: UnsafeRawBufferPointer) {
+  guard buffer.count > 0, let baseAddress = buffer.baseAddress else { return }
+  var sent = 0
+  while sent < buffer.count {
+    let n = unsafe write(
+      STDOUT_FILENO, baseAddress.advanced(by: sent), buffer.count &- sent)
+    if n <= 0 {
+      guard errno == EINTR else { return }
+      continue
     }
+    sent += n
   }
+}
+
+internal func ttyWriteRaw(_ bytes: borrowing RawSpan) {
   #if compiler(>=6.4)
-  bytes.withUnsafeBytes(flush)
+  bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
   #else
-  unsafe bytes.withUnsafeBytes(flush)
+  unsafe bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
   #endif
 }
 
-/// Clamped `ioctl(STDOUT_FILENO, TIOCGWINSZ)` (both dimensions ≥ 1). Shared by ``TTY/windowSize()`` and ``TTYPoll/windowSize()``.
+/// Clamped `ioctl(STDOUT_FILENO, TIOCGWINSZ)` (both dimensions ≥ 1).
 internal func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, rows: Int) {
   var ws = winsize()
   let c: Int
@@ -56,14 +59,9 @@ internal func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, r
 
 internal enum TTY {
   /// Clamped `ioctl(TIOCGWINSZ)` layout (both dimensions ≥ 1).
+  ///
+  /// Safe from any isolation; callers that poll for resize typically invoke this off the main actor.
   internal static func windowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
-    ioctlStdoutWindowSize(maxCols: maxCols, maxRows: maxRows)
-  }
-}
-
-/// Off-main ``ioctl(TIOCGWINSZ)`` for background tasks (e.g. terminal resize polling without GCD).
-internal enum TTYPoll {
-  static func windowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
     ioctlStdoutWindowSize(maxCols: maxCols, maxRows: maxRows)
   }
 }

@@ -1,13 +1,5 @@
 import Foundation
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#elseif canImport(Musl)
-import Musl
-#endif
-
 /// Decouples blocking `write(2)` syscalls on the controlling tty from the actor that built
 /// the frame.
 ///
@@ -18,7 +10,7 @@ import Musl
 ///
 /// `AsyncFrameWriter` owns a single off-actor `Task` that performs the actual `write(2)` loop.
 /// The caller copies the encoded bytes once (a fast memcpy) and submits them via
-/// ``submit(_:)``. Submission is non-blocking: at most **one** frame is held pending; if the
+/// ``submit(_:)``. Blocking `write` uses ``ttyWriteStdoutAll(_:)``. Submission is non-blocking: at most **one** frame is held pending; if the
 /// writer is busy with a previous frame when a new one arrives, the new frame replaces the
 /// pending one and the older frame is dropped (intermediate frames during a typing burst /
 /// streaming SSE run are visually irrelevant — only the latest state matters).
@@ -69,21 +61,9 @@ internal final class AsyncFrameWriter: Sendable {
     doneSemaphore.wait()
   }
 
-  /// `write(2)` loop with `EINTR` retry, mirroring ``ttyWriteRaw(_:)`` — duplicated here so
-  /// the writer task does **not** depend on slate's synchronous tty helpers.
   private static func writeAllToStdout(bytes: [UInt8]) {
     unsafe bytes.withUnsafeBufferPointer { buf in
-      guard let base = buf.baseAddress else { return }
-      var sent = 0
-      while sent < buf.count {
-        let n = unsafe write(
-          STDOUT_FILENO, base.advanced(by: sent), buf.count &- sent)
-        if n <= 0 {
-          guard errno == EINTR else { return }
-          continue
-        }
-        sent += n
-      }
+      unsafe ttyWriteStdoutAll(UnsafeRawBufferPointer(start: buf.baseAddress, count: buf.count))
     }
   }
 }

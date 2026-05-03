@@ -11,17 +11,37 @@ enum SlateDemoEntry {
       throw DemoError.failedSetup
     }
 
-    final class DemoTranscript {
-      var text = ""
+    final class DemoModel {
+      var transcript = ""
+      private(set) var keyPressCount = 0
+      /// Recent stdin chunks (one entry per read), newest last.
+      private(set) var keyEvents: [String] = []
+      private let maxKeyEvents = 10
+
+      func recordKeyChunk(_ bytes: ContiguousArray<UInt8>) {
+        let summary = DemoKeyFormatting.describe(bytes)
+        guard !summary.isEmpty else { return }
+        keyPressCount += 1
+        keyEvents.append(summary)
+        if keyEvents.count > maxKeyEvents {
+          keyEvents.removeFirst(keyEvents.count &- maxKeyEvents)
+        }
+      }
+
+      var keyHistoryLine: String {
+        keyEvents.joined(separator: " · ")
+      }
     }
 
-    let model = DemoTranscript()
+    let model = DemoModel()
 
     slate.enscribe(
       grid: DemoFrameBuilder.makeGrid(
         cols: slate.cols,
         rows: slate.rows,
-        transcript: model.text))
+        transcript: model.transcript,
+        keyHistoryLine: model.keyHistoryLine,
+        keyPressCount: model.keyPressCount))
 
     await slate.start(prepare: { wake in
       // Background Timer tick
@@ -32,19 +52,23 @@ enum SlateDemoEntry {
         }
       }
 
-      // Fake LLM Feed
+      // Neville nonsense, streamed one word at a time for the transcript box.
       Task {
         let phrase =
-          "Neville is a dog who streams tokens the way an LLM would feed your TUI. "
-          + "Each chunk calls ExternalWake.requestRender() from a background task. "
+          "Neville spotted the squirrel and the living room became a blur of righteous fury. "
+          + "Every couch cushion was collateral damage in service of the one true cause. "
+          + "He launched through the drapes like a guided missile with bad legal counsel. "
+          + "There was one loud crunch of glass and silence except for a very pleased tail. "
+          + "The squirrel sat outside on the fence delivering what can only be called mockery. "
+          + "Neville stood amid the shards with pride; the window was open to justice now. "
         let chunks = phrase.split(separator: " ").map { String($0) + " " }
         while !Task.isCancelled {
           for chunk in chunks {
             try? await Task.sleep(for: .milliseconds(240))
-            model.text += chunk
+            model.transcript += chunk
             wake.requestRender()
           }
-          model.text += "\n"
+          model.transcript += "\n"
           wake.requestRender()
           try? await Task.sleep(for: .milliseconds(900))
         }
@@ -57,15 +81,20 @@ enum SlateDemoEntry {
       case .external: ()
       case .stdinBytes(let bytes):
         if bytes.isEmpty { return .stop }
+        var stop = false
         for byte in bytes {
-          if shutdownRequested(forKey: byte) { return .stop }
+          if shutdownRequested(forKey: byte) { stop = true }
         }
+        if !stop { model.recordKeyChunk(bytes) }
+        if stop { return .stop }
       }
       slate.enscribe(
         grid: DemoFrameBuilder.makeGrid(
           cols: slate.cols,
           rows: slate.rows,
-          transcript: model.text))
+          transcript: model.transcript,
+          keyHistoryLine: model.keyHistoryLine,
+          keyPressCount: model.keyPressCount))
       return .continue
     }
   }

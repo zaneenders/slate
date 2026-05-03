@@ -10,13 +10,13 @@ import Musl
 #endif
 
 /// One wake from stdin, terminal resize, or an outside producer (LLM tokens, network, etc.).
-/// Redraw by calling ``Slate/present`` (or your own output) inside the handler.
+/// Redraw by calling ``Slate/enscribe(grid:)`` (or your own output) inside the handler.
 public enum TerminalWakeEvent: Sendable {
-  /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or ``Slate/present``.
+  /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or refresh via ``Slate/refreshWindowSize()`` before ``Slate/enscribe(grid:)``.
   case resize
   /// stdin read **in one wakeup** — chunks are often larger when pasting or when the tty has buffered keystrokes together. Empty means EOF (stdin closed).
   case stdinBytes(ContiguousArray<UInt8>)
-  /// Another source asked for a frame (``ExternalWake/requestRender()``). Read shared model / buffer and ``present``.
+  /// Another source asked for a frame (``ExternalWake/requestRender()``). Read shared model / buffer and redraw with ``Slate/enscribe(grid:)``.
   case external
 }
 
@@ -114,13 +114,13 @@ private func startStdinWakeTask(bus: WakeBus) -> Task<Void, Never> {
   }
 }
 
-/// Polls ``TTYPoll/windowSize()`` and emits ``TerminalWakeEvent/resize`` when the terminal dimensions change (no GCD / ``Dispatch``).
+/// Polls ``TTY/windowSize()`` and emits ``TerminalWakeEvent/resize`` when the terminal dimensions change (no GCD / ``Dispatch``).
 private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void, Never> {
   Task.detached { [bus] in
     var last: (cols: Int, rows: Int)?
     while !Task.isCancelled {
       try? await Task.sleep(for: interval)
-      let s = TTYPoll.windowSize()
+      let s = TTY.windowSize()
       if let l = last, l.cols != s.cols || l.rows != s.rows {
         bus.emit(.resize)
       }
@@ -133,7 +133,7 @@ private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void,
 ///
 /// ``ExternalWake`` forwards through [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) throttle (``_throttle(for:latest:)``) when ``externalCoalesceMaxFramesPerSecond`` is positive (default ``60``).
 ///
-/// Resize is detected by polling ``TTYPoll/windowSize()`` (``TIOCGWINSZ``), not ``Dispatch`` or signal handlers.
+/// Resize is detected by polling ``TTY/windowSize()`` (``TIOCGWINSZ``), not ``Dispatch`` or signal handlers.
 ///
 /// Not ``Sendable``: the lifecycle vars (`externalSignalContinuation`, `externalThrottleConsumer`, `resizePollTask`) are written by ``init`` and ``stop()`` without a lock, so the pump must stay inside one isolation domain (``Slate/start(prepare:externalCoalesceMaxFramesPerSecond:onEvent:)`` is the only intended owner). Cross-isolation wakes go through ``ExternalWake`` (a ``Sendable`` handle around a ``Mutex``-guarded ``WakeBus``).
 internal final class TerminalWakePump {
