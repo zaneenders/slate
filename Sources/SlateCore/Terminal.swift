@@ -51,6 +51,9 @@ public struct Terminal: ~Copyable {
     var setup = OutputBuffer(capacity: 64)
     setup.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x68])  // altOn
     setup.emitBytes([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x6C])  // curHide
+    setup.emitBytes([0x1B, 0x5B, 0x3F, 0x32, 0x30, 0x30, 0x34, 0x68])  // bracketedPasteOn
+    setup.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x30, 0x30, 0x68])  // mouseOn
+    setup.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x30, 0x36, 0x68])  // mouseSGR
     setup.emitBytes([0x1B, 0x5B, 0x32, 0x4A])  // clear screen
     setup.emitCUP(row: 1, column: 1)  // home
     setup.writeToStdout()
@@ -74,6 +77,9 @@ public struct Terminal: ~Copyable {
     var tail = OutputBuffer(capacity: 64)
     tail.emitBytes([0x1B, 0x5B, 0x30, 0x6D])  // sgr0
     tail.emitBytes([0x1B, 0x5B, 0x3F, 0x32, 0x35, 0x68])  // curShow
+    tail.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x30, 0x36, 0x6C])  // mouseSGROff
+    tail.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x30, 0x30, 0x6C])  // mouseOff
+    tail.emitBytes([0x1B, 0x5B, 0x3F, 0x32, 0x30, 0x30, 0x34, 0x6C])  // bracketedPasteOff
     tail.emitBytes([0x1B, 0x5B, 0x3F, 0x31, 0x30, 0x34, 0x39, 0x6C])  // altOff
     tail.writeToStdout()
     ttyRestoreSaved()
@@ -95,11 +101,19 @@ public struct Terminal: ~Copyable {
 
   // MARK: - Drawing
 
-  /// Fill the entire back buffer with `cell`.
+  /// Fill back buffer with `cell` and mark every front cell as the sentinel so
+  /// `present()` treats the whole screen as dirty this frame.
+  ///
+  /// Uses `front.clear()` to reuse existing memory rather than reallocating
+  /// a new `ScreenBuffer` on every call.
   public mutating func clear(to cell: Cell = .default) {
     clearCell = cell
     back.clear(to: cell)
+    front.clear(to: Terminal.sentinel)
   }
+
+  private static let sentinel = Cell(
+    char: "\0", attrs: Attributes(foreground: .default, background: .default))
 
   /// Draw a single cell into the back buffer (clipped to bounds).
   public mutating func draw(_ cell: Cell, at column: Int, row: Int) {

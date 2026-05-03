@@ -137,6 +137,24 @@ public struct EscapeParser: Sendable {
       return
     }
     // Final byte
+
+    // SGR mouse: CSI < Pb ; Px ; Py M/m  (< = 0x3C is a valid param byte)
+    if paramBuffer.first == 0x3C && (byte == 0x4D || byte == 0x6D) {
+      if byte == 0x4D {  // press only; wheel has no meaningful release
+        let mouseParams = parseCsiParams(Array(paramBuffer.dropFirst()))
+        if mouseParams.count >= 1 {
+          switch mouseParams[0] {
+          case 64: result.append(KeyEvent(code: .scrollUp))
+          case 65: result.append(KeyEvent(code: .scrollDown))
+          default: break
+          }
+        }
+      }
+      state = .ground
+      paramBuffer.removeAll()
+      return
+    }
+
     let params = parseCsiParams(paramBuffer)
 
     // Bracketed paste start: CSI 200 ~
@@ -297,12 +315,7 @@ public struct EscapeParser: Sendable {
   }
 
   private mutating func parseCsi(params: [Int], final: UInt8, into result: inout [KeyEvent]) {
-    let mod: Modifiers
-    if params.count >= 2, params[0] == 1 {
-      mod = modifiersFromParam(params[1])
-    } else {
-      mod = []
-    }
+    let mod: Modifiers = params.count >= 2 ? modifiersFromParam(params[1]) : []
 
     switch final {
     case 0x41: result.append(KeyEvent(code: .up, modifiers: mod)); return

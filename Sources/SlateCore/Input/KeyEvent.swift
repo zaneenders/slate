@@ -5,6 +5,7 @@ public enum KeyCode: Equatable, Sendable {
   case home, end, pageUp, pageDown
   case insert, delete
   case enter, tab, backspace, escape
+  case scrollUp, scrollDown
 }
 
 public struct Modifiers: OptionSet, Sendable {
