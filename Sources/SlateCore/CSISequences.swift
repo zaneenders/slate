@@ -7,6 +7,13 @@ public enum CSI {
   public static let sgr0 = "\u{001b}[0m"
   public static let clrHome = "\u{001b}[2J\u{001b}[1;1H"
   public static let batchOff = "\u{001b}[?2026l"
+  /// Bracketed paste **on**: terminal wraps pasted text in ``\e[200~`` / ``\e[201~`` so the
+  /// decoder can distinguish a typed Enter (submit) from a pasted newline (literal).
+  /// ``TerminalKeyDecoder`` already parses these markers as ``TerminalKeyEvent/bracketedPasteStart``
+  /// / ``TerminalKeyEvent/bracketedPasteEnd``.
+  public static let bracketedPasteOn = "\u{001b}[?2004h"
+  /// Bracketed paste **off** — pair with ``bracketedPasteOn`` on teardown.
+  public static let bracketedPasteOff = "\u{001b}[?2004l"
 
   // MARK: - Select graphic rendition (SGR)
 

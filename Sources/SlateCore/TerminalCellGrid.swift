@@ -160,6 +160,36 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     }
   }
 
+  /// Overwrite a horizontal run at (`column0`, `row`) with a sequence of styled spans.
+  /// `maxWidth` caps the total columns written; the run is clipped to grid bounds.
+  public mutating func blitSpans(
+    column column0: Int,
+    row: Int,
+    maxWidth: Int,
+    _ spans: [TerminalStyledSpan]
+  ) {
+    guard row >= 0, row < rows, column0 >= 0, column0 < cols, maxWidth > 0 else { return }
+    let endCol = min(column0 &+ maxWidth, cols)
+    let rowBase = row &* cols
+    var x = column0
+    for span in spans {
+      guard x < endCol else { break }
+      let fg = span.foreground
+      let bg = span.background
+      let flags = span.flags
+      for ch in span.text {
+        guard x < endCol else { break }
+        cells[rowBase &+ x] = TerminalCell(glyph: ch, foreground: fg, background: bg, flags: flags)
+        x &+= 1
+      }
+    }
+  }
+
+  /// Fills every cell in the grid with `fill` without reallocating — use to reset between frames.
+  public mutating func reset(filling fill: TerminalCell) {
+    blit(column: 0, row: 0, width: cols, height: rows, repeating: fill)
+  }
+
   /// Overwrite a horizontal run starting at (**column0**, **row0**), one grid cell per `Character`.
   public mutating func blitText(
     column column0: Int,

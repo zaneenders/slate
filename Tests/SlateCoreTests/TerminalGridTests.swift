@@ -322,7 +322,7 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
 
 @Suite struct DoubleBufferedPresenterTests {
 
-  @Test func presenter_callsEncodeClosurePerFrameThenStopsCleanly() {
+  @Test func presenter_callsEncodeClosurePerFrameThenStopsCleanly() async {
     let presenter = DoubleBufferedTerminalPresenter()
     presenter.ensureEncodedByteCapacity(for: 1, rows: 1)
     var invokes = 0
@@ -336,11 +336,11 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
       buf.removeAll()
       buf.append(0x44)  // "D"
     }
-    presenter.flushAndStopWriter()
+    await presenter.flushAndStopWriter()
     #expect(invokes == 2)
   }
 
-  @Test func presenter_capacityCanBeResized_beforeFirstSubmit() {
+  @Test func presenter_capacityCanBeResized_beforeFirstSubmit() async {
     let presenter = DoubleBufferedTerminalPresenter()
     presenter.ensureEncodedByteCapacity(for: 80, rows: 24)
     presenter.ensureEncodedByteCapacity(for: 1, rows: 1)
@@ -348,6 +348,6 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
       buf.removeAll()
       buf.append(0x5A)
     }
-    presenter.flushAndStopWriter()
+    await presenter.flushAndStopWriter()
   }
 }

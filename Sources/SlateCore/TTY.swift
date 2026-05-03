@@ -110,7 +110,10 @@ internal func ttyRestoreSaved() {
   _ = signal(SIGQUIT, SIG_DFL)
   _ = signal(SIGTSTP, SIG_DFL)
   do {
-    var tail = CSI.batchOff + CSI.sgr0 + CSI.curShow + CSI.altOff
+    // Disable bracketed paste before leaving the alt screen so the user's regular shell
+    // doesn't inherit it (matches the `bracketedPasteOn` emitted by ``writeRedrawBootstrapCSI``).
+    var tail =
+      CSI.batchOff + CSI.bracketedPasteOff + CSI.sgr0 + CSI.curShow + CSI.altOff
     tail.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
   }
   rawModeRestoreState.withLock { state in

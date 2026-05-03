@@ -88,6 +88,9 @@ public struct Slate: ~Copyable {
 }
 
 private func writeRedrawBootstrapCSI() {
-  var setup = CSI.altOn + CSI.curHide + CSI.clrHome
+  // Enabling bracketed paste here (matched by ``ttyRestoreSaved`` on teardown) lets the terminal
+  // wrap pasted text with `\e[200~` / `\e[201~` so ``TerminalKeyDecoder`` can keep pasted
+  // newlines distinct from a typed Enter.
+  var setup = CSI.altOn + CSI.curHide + CSI.bracketedPasteOn + CSI.clrHome
   setup.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
 }

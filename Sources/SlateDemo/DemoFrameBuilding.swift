@@ -1,202 +1,320 @@
 import SlateCore
 
+// MARK: - Palette
+
+private enum P {
+  static let bg = TerminalRGB(r: 14, g: 14, b: 24)
+  static let headerBg = TerminalRGB(r: 22, g: 22, b: 42)
+  static let inputBg = TerminalRGB(r: 20, g: 20, b: 36)
+  static let title = TerminalRGB(r: 100, g: 155, b: 255)
+  static let dim = TerminalRGB(r: 70, g: 70, b: 105)
+  static let light = TerminalRGB(r: 195, g: 205, b: 220)
+  static let orange = TerminalRGB(r: 255, g: 165, b: 60)
+  static let yellow = TerminalRGB(r: 255, g: 218, b: 95)
+  static let green = TerminalRGB(r: 95, g: 210, b: 130)
+  static let blue = TerminalRGB(r: 100, g: 190, b: 255)
+  static let white = TerminalRGB(r: 230, g: 235, b: 245)
+}
+
+// MARK: - Frame builder
+
 enum DemoFrameBuilder {
-  /// Builds the logical screen for one present (encoding vs raw tty writes are split elsewhere).
-  static func makeGrid(
+  /// Hard cap on how many rows the input region may consume — prevents a long paste
+  /// or held Shift+Enter from swallowing the transcript / key strip.
+  static let maxInputRows = 6
+  /// Lines moved per ``TerminalKeyEvent/pageUp`` / ``TerminalKeyEvent/pageDown`` press.
+  static let pageScrollLines = 5
+
+  /// Makes a fresh grid for the given terminal size. Use when the terminal is resized.
+  static func makeGrid(cols: Int, rows: Int) -> TerminalCellGrid {
+    TerminalCellGrid(
+      cols: cols, rows: rows,
+      filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))
+  }
+
+  /// Renders one frame into `grid` (which must already match `cols`×`rows`).
+  /// Uses ``TerminalCellGrid/reset(filling:)`` to clear, ``TerminalCellGrid/blitSpans(column:row:maxWidth:_:)``
+  /// for all styled text, and ``TerminalCellGrid/blitText(column:row:string:foreground:background:flags:)``
+  /// for plain text runs.
+  ///
+  /// Scrollback uses an **absolute first-visible-row** model (matching scribe's
+  /// `Sources/ScribeCLI/SlateChat/SlateChatHost.swift`): when ``followingLiveTranscript`` is
+  /// `true` the viewport always shows the live tail; when `false`, ``firstVisibleRow`` pins
+  /// the top of the viewport so streaming tokens at the bottom don't drag the user's
+  /// scrolled-up position. Both are clamped in-place against the wrapped transcript so the
+  /// caller can mutate them freely from key handlers without knowing the current geometry,
+  /// and the render automatically re-attaches to the live tail when scrolling reaches the
+  /// bottom.
+  static func render(
+    into grid: inout TerminalCellGrid,
     cols: Int,
     rows: Int,
-    transcript: String,
-    keyHistoryLine: String,
-    keyPressCount: Int
-  ) -> TerminalCellGrid {
-    var grid = TerminalCellGrid(
-      cols: cols,
-      rows: rows,
-      filling: TerminalCell(
-        glyph: " ",
-        foreground: .black,
-        background: .black,
-        flags: []))
+    transcript: [(speaker: String, text: String)],
+    streamingText: String,
+    inputBuffer: String,
+    keyHistory: [String],
+    keyCount: Int,
+    firstVisibleRow: inout Int,
+    followingLiveTranscript: inout Bool
+  ) {
+    // ── reset ────────────────────────────────────────────────────────────────
+    grid.reset(
+      filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))
 
-    var y = 0
-    while y < rows {
-      var x = 0
-      while x < cols {
-        let backgroundRed = UInt8.random(in: 0...255)
-        let backgroundGreen = UInt8.random(in: 0...255)
-        let backgroundBlue = UInt8.random(in: 0...255)
-        let foregroundRed = UInt8.random(in: 0...255)
-        let foregroundGreen = UInt8.random(in: 0...255)
-        let foregroundBlue = UInt8.random(in: 0...255)
-        let ch = Character(UnicodeScalar(UInt8.random(in: 32...126)))
-        grid[column: x, row: y] = TerminalCell(
-          glyph: ch,
-          foreground: TerminalRGB(r: foregroundRed, g: foregroundGreen, b: foregroundBlue),
-          background: TerminalRGB(r: backgroundRed, g: backgroundGreen, b: backgroundBlue),
-          flags: [])
-        x &+= 1
-      }
-      y &+= 1
-    }
+    guard rows >= 3, cols >= 10 else { return }
 
-    if rows > 1 {
-      let counter = "key count: \(keyPressCount)"
-      let counterLen = counter.count
-      let counterDisplayLen = min(counterLen, cols)
-      let counterStartCol = cols &- counterDisplayLen
+    // ── header (row 0) ───────────────────────────────────────────────────────
+    paintHeader(into: &grid, cols: cols, keyCount: keyCount)
 
-      let historyPrefix = "key history: "
-      let rawTail =
-        keyHistoryLine.isEmpty ? "(type / arrows —)" : keyHistoryLine
-      let historyMaxWidth = max(0, counterStartCol &- 1)
-      let historyText: String
-      if historyMaxWidth == 0 {
-        historyText = ""
-      } else if historyMaxWidth <= historyPrefix.count {
-        historyText = String(historyPrefix.prefix(historyMaxWidth))
-      } else {
-        let tailBudget = historyMaxWidth &- historyPrefix.count
-        let tail =
-          rawTail.count <= tailBudget
-          ? rawTail
-          : String(rawTail.suffix(tailBudget))
-        historyText = historyPrefix + tail
-      }
-      let historyWidth = historyText.count
+    // Reserve at least 1 row for header + 1 for key history + 1 for input.
+    let inputHeight = computeInputHeight(inputBuffer: inputBuffer, cols: cols, rows: rows)
+    let keyRow = rows &- inputHeight &- 1
+    let inputStartRow = rows &- inputHeight
 
-      if historyWidth > 0 {
-        grid.blit(
-          column: 0,
-          row: 0,
-          width: historyWidth,
-          height: 1,
-          repeating: TerminalCell(
-            glyph: " ",
-            foreground: TerminalRGB(r: 0, g: 200, b: 220),
-            background: .black,
-            flags: []))
-        grid.blitText(
-          column: 0,
-          row: 0,
-          string: String(historyText.prefix(historyWidth)),
-          foreground: TerminalRGB(r: 0, g: 220, b: 240),
-          background: .black,
-          flags: [])
-      }
-
-      grid.blit(
-        column: counterStartCol,
-        row: 0,
-        width: counterDisplayLen,
-        height: 1,
-        repeating: TerminalCell(
-          glyph: " ",
-          foreground: TerminalRGB(r: 255, g: 220, b: 120),
-          background: .black,
-          flags: []))
-      grid.blitText(
-        column: counterStartCol,
-        row: 0,
-        string: String(counter.suffix(counterDisplayLen)),
-        foreground: TerminalRGB(r: 255, g: 230, b: 140),
-        background: .black,
-        flags: .bold)
-    }
-
-    let topMargin = rows > 1 ? 1 : 0
-    let boxWidth = max(12, min(78, cols &- 2))
-    let boxHeight = max(4, min(rows &- 2, max(4, rows * 2 / 5)))
-    let startCol = max(0, (cols &- boxWidth) / 2)
-    let startRow = max(topMargin, (rows &- boxHeight) / 2)
-
-    grid.blit(
-      column: startCol,
-      row: startRow,
-      width: boxWidth,
-      height: boxHeight,
-      repeating: TerminalCell(
-        glyph: " ",
-        foreground: .white,
-        background: .black,
-        flags: []))
-
-    let lines: [String]
-    if transcript.isEmpty {
-      lines = ["…"]
+    // ── transcript (rows 1 … keyRow-1) ──────────────────────────────────────
+    let contentRows = max(0, keyRow &- 1)
+    let hiddenBelow: Int
+    if contentRows > 0 {
+      hiddenBelow = paintTranscript(
+        into: &grid, transcript: transcript, streamingText: streamingText,
+        cols: cols, startRow: 1, height: contentRows,
+        firstVisibleRow: &firstVisibleRow,
+        followingLiveTranscript: &followingLiveTranscript)
     } else {
-      lines = linesFromTranscript(transcript, width: boxWidth)
-    }
-    let visible = Array(lines.suffix(boxHeight))
-    let paddingRows = boxHeight &- visible.count
-    var lineRow = startRow
-    if paddingRows > 0 {
-      lineRow &+= paddingRows
-    }
-    for line in visible {
-      grid.blitText(
-        column: startCol,
-        row: lineRow,
-        string: String(line.prefix(boxWidth)),
-        foreground: .white,
-        background: .black,
-        flags: [])
-      lineRow &+= 1
+      firstVisibleRow = 0
+      followingLiveTranscript = true
+      hiddenBelow = 0
     }
 
-    return grid
+    // ── key-history strip (row keyRow) ───────────────────────────────────────
+    paintKeyHistory(
+      into: &grid, keyHistory: keyHistory, row: keyRow, cols: cols,
+      hiddenBelow: hiddenBelow)
+
+    // ── input rows (inputStartRow … rows-1) ──────────────────────────────────
+    paintInput(
+      into: &grid, inputBuffer: inputBuffer,
+      startRow: inputStartRow, height: inputHeight, cols: cols)
   }
 
-  /// Splits on `\n` so each ``model.text += "\n"`` starts a new row in the viewport; each segment is word-wrapped to `width`.
-  private static func linesFromTranscript(_ transcript: String, width: Int) -> [String] {
-    var out: [String] = []
-    for segment in transcript.split(separator: "\n", omittingEmptySubsequences: false) {
-      let s = String(segment)
-      if s.isEmpty {
-        out.append("")
+  /// Wrapped-line count of the input buffer, capped to ``maxInputRows`` (and to the available
+  /// rows after reserving header + key strip).
+  static func computeInputHeight(inputBuffer: String, cols: Int, rows: Int) -> Int {
+    let prompt = "you: "
+    let textWidth = max(1, cols &- prompt.count &- 1)  // -1 for cursor glyph
+    let lines = wrapText(inputBuffer, width: textWidth)
+    let desired = max(1, lines.count)
+    let geometryCap = max(1, rows &- 2)  // header + key strip
+    return min(maxInputRows, min(desired, geometryCap))
+  }
+
+  // MARK: - Sections
+
+  private static func paintHeader(
+    into grid: inout TerminalCellGrid, cols: Int, keyCount: Int
+  ) {
+    grid.blit(
+      column: 0, row: 0, width: cols, height: 1,
+      repeating: TerminalCell(glyph: " ", foreground: P.light, background: P.headerBg, flags: []))
+
+    // Left: "Slate · Demo" — three spans, different colours
+    grid.blitSpans(column: 1, row: 0, maxWidth: cols &- 1, [
+      TerminalStyledSpan("Slate", foreground: P.title, background: P.headerBg, flags: .bold),
+      TerminalStyledSpan(" · ", foreground: P.dim, background: P.headerBg),
+      TerminalStyledSpan("Demo", foreground: P.light, background: P.headerBg),
+    ])
+
+    // Right: "keys: N" — right-aligned
+    let countLabel = "keys: "
+    let countValue = "\(keyCount)"
+    let totalW = countLabel.count &+ countValue.count &+ 1
+    let startCol = max(2, cols &- totalW)
+    grid.blitSpans(column: startCol, row: 0, maxWidth: cols &- startCol, [
+      TerminalStyledSpan(countLabel, foreground: P.dim, background: P.headerBg),
+      TerminalStyledSpan(countValue, foreground: P.yellow, background: P.headerBg, flags: .bold),
+    ])
+  }
+
+  /// Returns the count of wrapped transcript lines hidden below the visible viewport
+  /// (used by ``paintKeyHistory`` to render the "↑ N · End to follow" badge).
+  private static func paintTranscript(
+    into grid: inout TerminalCellGrid,
+    transcript: [(speaker: String, text: String)],
+    streamingText: String,
+    cols: Int,
+    startRow: Int,
+    height: Int,
+    firstVisibleRow: inout Int,
+    followingLiveTranscript: inout Bool
+  ) -> Int {
+    struct VLine {
+      var prefix: String
+      var prefixColor: TerminalRGB
+      var text: String
+      var textColor: TerminalRGB
+    }
+
+    var lines: [VLine] = []
+
+    func addEntry(speaker: String, text: String) {
+      let isUser = speaker == "you"
+      let speakerColor: TerminalRGB = isUser ? P.orange : P.blue
+      let textColor: TerminalRGB = isUser ? P.white : P.light
+      let prompt = speaker + ": "
+      let indent = String(repeating: " ", count: prompt.count)
+      let textWidth = max(1, cols &- prompt.count)
+      let wrapped = wrapText(text, width: textWidth)
+      for (i, chunk) in wrapped.enumerated() {
+        lines.append(VLine(
+          prefix: i == 0 ? prompt : indent,
+          prefixColor: i == 0 ? speakerColor : P.bg,
+          text: chunk,
+          textColor: textColor))
+      }
+    }
+
+    for entry in transcript { addEntry(speaker: entry.speaker, text: entry.text) }
+    if !streamingText.isEmpty { addEntry(speaker: "Neville", text: streamingText) }
+
+    // Resolve the effective top-of-viewport row using the current geometry. When following the
+    // live tail we always pin to the bottom; when scrolled, we clamp the caller's stored row
+    // and re-attach to the tail if it has caught up.
+    let maxFirstRow = max(0, lines.count &- height)
+    let effectiveFirstRow: Int
+    if followingLiveTranscript {
+      effectiveFirstRow = maxFirstRow
+    } else {
+      let clamped = max(0, min(firstVisibleRow, maxFirstRow))
+      if clamped >= maxFirstRow {
+        followingLiveTranscript = true
+        effectiveFirstRow = maxFirstRow
       } else {
-        out.append(contentsOf: wrappedLines(s, width: width))
+        effectiveFirstRow = clamped
       }
     }
-    return out
+    firstVisibleRow = effectiveFirstRow
+
+    let endIdx = min(effectiveFirstRow &+ height, lines.count)
+    let visible = Array(lines[effectiveFirstRow..<endIdx])
+    let topPad = height &- visible.count
+    for (i, line) in visible.enumerated() {
+      let row = startRow &+ topPad &+ i
+      guard row >= 0, row < grid.rows else { continue }
+      grid.blitSpans(column: 0, row: row, maxWidth: cols, [
+        TerminalStyledSpan(line.prefix, foreground: line.prefixColor, background: P.bg),
+        TerminalStyledSpan(line.text, foreground: line.textColor, background: P.bg),
+      ])
+    }
+    return max(0, lines.count &- (effectiveFirstRow &+ visible.count))
   }
 
-  private static func wrappedLines(_ text: String, width: Int) -> [String] {
-    guard width > 0 else { return [] }
+  private static func paintKeyHistory(
+    into grid: inout TerminalCellGrid, keyHistory: [String], row: Int, cols: Int,
+    hiddenBelow: Int
+  ) {
+    guard row >= 0, row < grid.rows else { return }
+    grid.blit(
+      column: 0, row: row, width: cols, height: 1,
+      repeating: TerminalCell(glyph: " ", foreground: P.dim, background: P.bg, flags: []))
+
+    let label = "keys: "
+    let tail = keyHistory.isEmpty ? "(type something)" : keyHistory.joined(separator: " ")
+    let maxTail = max(0, cols &- label.count)
+    let trimmedTail = tail.count > maxTail ? String(tail.suffix(maxTail)) : tail
+
+    grid.blitSpans(column: 0, row: row, maxWidth: cols, [
+      TerminalStyledSpan(label, foreground: P.dim, background: P.bg),
+      TerminalStyledSpan(trimmedTail, foreground: P.green, background: P.bg),
+    ])
+
+    // Right-aligned scroll indicator: only shown when the live tail is below the viewport.
+    if hiddenBelow > 0 {
+      let badge = "↓ \(hiddenBelow) · End to follow"
+      let startCol = max(label.count &+ trimmedTail.count &+ 2, cols &- badge.count)
+      if startCol < cols {
+        grid.blitSpans(column: startCol, row: row, maxWidth: cols &- startCol, [
+          TerminalStyledSpan(badge, foreground: P.yellow, background: P.bg),
+        ])
+      }
+    }
+  }
+
+  private static func paintInput(
+    into grid: inout TerminalCellGrid, inputBuffer: String,
+    startRow: Int, height: Int, cols: Int
+  ) {
+    guard height >= 1, startRow >= 0, startRow < grid.rows else { return }
+    let drawHeight = min(height, grid.rows &- startRow)
+    grid.blit(
+      column: 0, row: startRow, width: cols, height: drawHeight,
+      repeating: TerminalCell(glyph: " ", foreground: P.white, background: P.inputBg, flags: []))
+
+    let prompt = "you: "
+    let indent = String(repeating: " ", count: prompt.count)
+    let textWidth = max(1, cols &- prompt.count &- 1)  // -1 for cursor glyph
+    let allLines = wrapText(inputBuffer, width: textWidth)
+    let visibleLines = Array(allLines.suffix(drawHeight))
+    let lastIdx = visibleLines.count &- 1
+
+    for (i, line) in visibleLines.enumerated() {
+      let row = startRow &+ i
+      guard row < grid.rows else { break }
+      let pre = (i == 0) ? prompt : indent
+      let preColor: TerminalRGB = (i == 0) ? P.orange : P.white
+      var spans: [TerminalStyledSpan] = [
+        TerminalStyledSpan(pre, foreground: preColor, background: P.inputBg),
+        TerminalStyledSpan(line, foreground: P.white, background: P.inputBg),
+      ]
+      if i == lastIdx {
+        spans.append(
+          TerminalStyledSpan("▏", foreground: P.white, background: P.inputBg))
+      }
+      grid.blitSpans(column: 0, row: row, maxWidth: cols, spans)
+    }
+  }
+
+  // MARK: - Text wrapping
+
+  /// Word-wrap that **preserves explicit `\n`** as hard line breaks. Used for both transcript
+  /// entries (so multi-paragraph assistant text reads correctly) and the multi-line input
+  /// buffer (where Shift+Enter and pasted newlines insert real `\n`).
+  static func wrapText(_ text: String, width: Int) -> [String] {
+    guard width > 0 else { return [text] }
     var lines: [String] = []
-    var current = ""
-
-    func flushCurrent() {
-      if !current.isEmpty {
-        lines.append(current)
-        current = ""
-      }
-    }
-
-    for word in text.split(separator: " ", omittingEmptySubsequences: false) {
-      let w = String(word)
-      let sep = current.isEmpty ? "" : " "
-      let candidate = current + sep + w
-      if candidate.count <= width {
-        current = candidate
+    let paragraphs = text.split(
+      separator: "\n", maxSplits: Int.max, omittingEmptySubsequences: false)
+    for paragraph in paragraphs {
+      let para = String(paragraph)
+      if para.isEmpty {
+        lines.append("")
         continue
       }
-
-      flushCurrent()
-
-      if w.count <= width {
-        current = w
-        continue
+      var current = ""
+      for word in para.split(separator: " ", omittingEmptySubsequences: false) {
+        let w = String(word)
+        let sep = current.isEmpty ? "" : " "
+        let candidate = current + sep + w
+        if candidate.count <= width {
+          current = candidate
+          continue
+        }
+        if !current.isEmpty {
+          lines.append(current)
+          current = ""
+        }
+        if w.count <= width {
+          current = w
+          continue
+        }
+        var rest = Substring(w)
+        while !rest.isEmpty {
+          let take = min(width, rest.count)
+          lines.append(String(rest.prefix(take)))
+          rest = rest.dropFirst(take)
+        }
       }
-
-      var rest = Substring(w)
-      while !rest.isEmpty {
-        let take = min(width, rest.count)
-        lines.append(String(rest.prefix(take)))
-        rest = rest.dropFirst(take)
-      }
+      lines.append(current)
     }
-
-    flushCurrent()
-    return lines
+    return lines.isEmpty ? [""] : lines
   }
 }
