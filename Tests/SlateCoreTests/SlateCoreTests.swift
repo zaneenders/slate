@@ -10,25 +10,25 @@ struct EscapeParserTests {
   @Test
   func asciiCharacters() {
     var parser = EscapeParser()
-    #expect(parser.feed(0x61)?.code == .character("a"))
-    #expect(parser.feed(0x41)?.code == .character("A"))
-    #expect(parser.feed(0x30)?.code == .character("0"))
+    #expect(parser.feed(0x61).first?.code == .character("a"))
+    #expect(parser.feed(0x41).first?.code == .character("A"))
+    #expect(parser.feed(0x30).first?.code == .character("0"))
   }
 
   @Test
   func controlCharacters() {
     var parser = EscapeParser()
-    let ctrlC = parser.feed(0x03)
+    let ctrlC = parser.feed(0x03).first
     #expect(ctrlC?.code == .character("c"))
     #expect(ctrlC?.modifiers == .control)
 
-    let tab = parser.feed(0x09)
+    let tab = parser.feed(0x09).first
     #expect(tab?.code == .tab)
 
-    let enter = parser.feed(0x0D)
+    let enter = parser.feed(0x0D).first
     #expect(enter?.code == .enter)
 
-    let backspace = parser.feed(0x7F)
+    let backspace = parser.feed(0x7F).first
     #expect(backspace?.code == .backspace)
   }
 
@@ -79,6 +79,68 @@ struct EscapeParserTests {
     #expect(altX.count == 1)
     #expect(altX[0].code == .character("x"))
     #expect(altX[0].modifiers == .alt)
+  }
+
+  @Test
+  func bracketedPasteSimple() {
+    var parser = EscapeParser()
+    // \e[200~hello\e[201~
+    let bytes = bytesFromString("\u{001b}[200~hello\u{001b}[201~")
+    let events = parseSequence(&parser, bytes)
+    #expect(events.count == 5)
+    #expect(events[0].code == .character("h"))
+    #expect(events[1].code == .character("e"))
+    #expect(events[2].code == .character("l"))
+    #expect(events[3].code == .character("l"))
+    #expect(events[4].code == .character("o"))
+  }
+
+  @Test
+  func bracketedPasteWithNewlines() {
+    var parser = EscapeParser()
+    // \e[200~line1\nline2\r\nline3\e[201~
+    let bytes = bytesFromString("\u{001b}[200~line1\nline2\r\nline3\u{001b}[201~")
+    let events = parseSequence(&parser, bytes)
+    let chars = events.compactMap { ev -> Character? in
+      if case .character(let ch) = ev.code { return ch }
+      return nil
+    }
+    let text = String(chars)
+    #expect(text == "line1\nline2\r\nline3")
+  }
+
+  @Test
+  func bracketedPasteWithEscInside() {
+    var parser = EscapeParser()
+    // \e[200~a\eXb\e[201~  (ESC X in the middle is not the close sequence)
+    let bytes = bytesFromString("\u{001b}[200~a\u{001b}Xb\u{001b}[201~")
+    let events = parseSequence(&parser, bytes)
+    let chars = events.compactMap { ev -> Character? in
+      if case .character(let ch) = ev.code { return ch }
+      return nil
+    }
+    let text = String(chars)
+    #expect(text == "a\u{001b}Xb")
+  }
+
+  @Test
+  func kittyModifiedEnter() {
+    var parser = EscapeParser()
+    // CSI 13 ; 2 u → Shift+Enter
+    let shiftEnter = parseSequence(&parser, bytesFromString("\u{001b}[13;2u"))
+    #expect(shiftEnter.count == 1)
+    #expect(shiftEnter[0].code == .enter)
+    #expect(shiftEnter[0].modifiers == .shift)
+  }
+
+  @Test
+  func xtermModifyOtherKeysEnter() {
+    var parser = EscapeParser()
+    // CSI 27 ; 2 ; 13 ~ → Shift+Enter (xterm modifyOtherKeys)
+    let shiftEnter = parseSequence(&parser, bytesFromString("\u{001b}[27;2;13~"))
+    #expect(shiftEnter.count == 1)
+    #expect(shiftEnter[0].code == .enter)
+    #expect(shiftEnter[0].modifiers == .shift)
   }
 }
 
@@ -143,9 +205,7 @@ struct ScreenBufferTests {
 private func parseSequence(_ parser: inout EscapeParser, _ bytes: [UInt8]) -> [KeyEvent] {
   var events: [KeyEvent] = []
   for b in bytes {
-    if let ev = parser.feed(b) {
-      events.append(ev)
-    }
+    events.append(contentsOf: parser.feed(b))
   }
   return events
 }

@@ -4,6 +4,8 @@
 /// - UTF-8 multi-byte sequences.
 /// - ANSI escape sequences (arrows, function keys, etc.).
 /// - ASCII control characters (`Ctrl+C` = byte `0x03`).
+/// - Bracketed paste mode (`CSI 200 ~` … `CSI 201 ~`): all bytes inside the paste
+///   are emitted as `.character` events, including CR / LF / ESC.
 public struct EscapeParser: Sendable {
   private enum State: Sendable {
     case ground
@@ -12,56 +14,72 @@ public struct EscapeParser: Sendable {
     case csiParam
     case ss3
     case utf8Remaining(count: Int, codepoint: UInt32)
+    case paste
+    case pasteEscape
+    case pasteUtf8Remaining(count: Int, codepoint: UInt32)
   }
 
   private var state: State
   private var paramBuffer: [UInt8]
+  private var pasteEscapeBuffer: [UInt8]
 
   public init() {
     self.state = .ground
     self.paramBuffer = []
+    self.pasteEscapeBuffer = []
   }
 
-  /// Feed one byte. Returns a ``KeyEvent`` when a complete sequence has been parsed.
-  public mutating func feed(_ byte: UInt8) -> KeyEvent? {
+  /// Feed one byte. Returns zero or more ``KeyEvent`` values.
+  public mutating func feed(_ byte: UInt8) -> [KeyEvent] {
+    var result: [KeyEvent] = []
     switch state {
     case .ground:
-      return feedGround(byte)
+      feedGround(byte, into: &result)
     case .escape:
-      return feedEscape(byte)
+      feedEscape(byte, into: &result)
     case .csi:
-      return feedCsi(byte)
+      feedCsi(byte, into: &result)
     case .csiParam:
-      return feedCsiParam(byte)
+      feedCsiParam(byte, into: &result)
     case .ss3:
-      return feedSs3(byte)
+      feedSs3(byte, into: &result)
     case .utf8Remaining(let count, let codepoint):
-      return feedUtf8(byte, remaining: count, codepoint: codepoint)
+      feedUtf8(byte, remaining: count, codepoint: codepoint, into: &result)
+    case .paste:
+      feedPaste(byte, into: &result)
+    case .pasteEscape:
+      feedPasteEscape(byte, into: &result)
+    case .pasteUtf8Remaining(let count, let codepoint):
+      feedPasteUtf8(byte, remaining: count, codepoint: codepoint, into: &result)
     }
+    return result
   }
 
-  // MARK: - States
+  // MARK: - Ground state
 
-  private mutating func feedGround(_ byte: UInt8) -> KeyEvent? {
+  private mutating func feedGround(_ byte: UInt8, into result: inout [KeyEvent]) {
     if byte == 0x1B {
       state = .escape
-      return nil
+      return
     }
 
     // DEL (0x7F) is treated as backspace
     if byte == 0x7F {
-      return KeyEvent(code: .backspace)
+      result.append(KeyEvent(code: .backspace))
+      return
     }
 
     // Control characters (0x00–0x1F, excluding ESC which is handled above)
     if byte < 0x20 {
-      return parseControl(byte)
+      result.append(parseControl(byte))
+      return
     }
 
     // ASCII printable
     if byte < 0x80 {
       let scalar = Unicode.Scalar(byte)
-      return KeyEvent(code: .character(Character(scalar)))
+      result.append(KeyEvent(code: .character(Character(scalar))))
+      return
     }
 
     // UTF-8 start byte
@@ -74,74 +92,151 @@ public struct EscapeParser: Sendable {
     } else {
       // Invalid start byte; discard.
     }
-    return nil
   }
 
-  private mutating func feedEscape(_ byte: UInt8) -> KeyEvent? {
+  // MARK: - Escape sequences
+
+  private mutating func feedEscape(_ byte: UInt8, into result: inout [KeyEvent]) {
     if byte == 0x5B {  // [
       state = .csi
-      return nil
+      return
     }
     if byte == 0x4F {  // O
       state = .ss3
-      return nil
+      return
     }
     // ESC + char → Alt+char
     state = .ground
     let scalar = Unicode.Scalar(byte)
     if scalar.isASCII {
-      return KeyEvent(code: .character(Character(scalar)), modifiers: .alt)
+      result.append(KeyEvent(code: .character(Character(scalar)), modifiers: .alt))
     }
-    return nil
   }
 
-  private mutating func feedCsi(_ byte: UInt8) -> KeyEvent? {
+  private mutating func feedCsi(_ byte: UInt8, into result: inout [KeyEvent]) {
     paramBuffer.removeAll()
     if byte >= 0x30 && byte <= 0x3F {
       paramBuffer.append(byte)
       state = .csiParam
-      return nil
+      return
     }
     // No parameters; final byte follows immediately.
-    let result = parseCsi(params: [], final: byte)
+    let params = parseCsiParams(paramBuffer)
+    parseCsi(params: params, final: byte, into: &result)
     state = .ground
-    return result
   }
 
-  private mutating func feedCsiParam(_ byte: UInt8) -> KeyEvent? {
+  private mutating func feedCsiParam(_ byte: UInt8, into result: inout [KeyEvent]) {
     if byte >= 0x30 && byte <= 0x3F {
       paramBuffer.append(byte)
-      return nil
+      return
     }
     if byte >= 0x20 && byte <= 0x2F {
       // Intermediate byte (ignored for initial implementation).
       paramBuffer.append(byte)
-      return nil
+      return
     }
     // Final byte
     let params = parseCsiParams(paramBuffer)
-    let result = parseCsi(params: params, final: byte)
+
+    // Bracketed paste start: CSI 200 ~
+    if byte == 0x7E, params.first == 200 {
+      state = .paste
+      paramBuffer.removeAll()
+      return
+    }
+
+    parseCsi(params: params, final: byte, into: &result)
     state = .ground
     paramBuffer.removeAll()
-    return result
   }
 
-  private mutating func feedSs3(_ byte: UInt8) -> KeyEvent? {
+  private mutating func feedSs3(_ byte: UInt8, into result: inout [KeyEvent]) {
     state = .ground
-    return parseSs3(final: byte)
+    if let event = parseSs3(final: byte) {
+      result.append(event)
+    }
   }
 
-  private mutating func feedUtf8(_ byte: UInt8, remaining: Int, codepoint: UInt32) -> KeyEvent? {
+  // MARK: - UTF-8
+
+  private mutating func feedUtf8(_ byte: UInt8, remaining: Int, codepoint: UInt32, into result: inout [KeyEvent]) {
     let newCodepoint = (codepoint << 6) | UInt32(byte & 0x3F)
     if remaining == 1 {
       state = .ground
       if let scalar = Unicode.Scalar(newCodepoint) {
-        return KeyEvent(code: .character(Character(scalar)))
+        result.append(KeyEvent(code: .character(Character(scalar))))
       }
-      return nil
+      return
     }
     state = .utf8Remaining(count: remaining - 1, codepoint: newCodepoint)
-    return nil
+  }
+
+  // MARK: - Bracketed paste
+
+  private mutating func feedPaste(_ byte: UInt8, into result: inout [KeyEvent]) {
+    if byte == 0x1B {
+      state = .pasteEscape
+      pasteEscapeBuffer = [0x1B]
+      return
+    }
+
+    if byte < 0x80 {
+      let scalar = Unicode.Scalar(byte)
+      result.append(KeyEvent(code: .character(Character(scalar))))
+      return
+    }
+
+    if byte & 0xE0 == 0xC0 {
+      state = .pasteUtf8Remaining(count: 1, codepoint: UInt32(byte & 0x1F))
+    } else if byte & 0xF0 == 0xE0 {
+      state = .pasteUtf8Remaining(count: 2, codepoint: UInt32(byte & 0x0F))
+    } else if byte & 0xF8 == 0xF0 {
+      state = .pasteUtf8Remaining(count: 3, codepoint: UInt32(byte & 0x07))
+    }
+    // Invalid start byte; discard.
+  }
+
+  private mutating func feedPasteEscape(_ byte: UInt8, into result: inout [KeyEvent]) {
+    let closeSeq: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]  // \e[201~
+    pasteEscapeBuffer.append(byte)
+
+    if pasteEscapeBuffer.count <= closeSeq.count {
+      let prefix = Array(closeSeq.prefix(pasteEscapeBuffer.count))
+      if prefix == pasteEscapeBuffer {
+        if pasteEscapeBuffer.count == closeSeq.count {
+          // Full match — exit paste mode.
+          state = .ground
+          pasteEscapeBuffer.removeAll()
+          return
+        }
+        // Partial match — stay in pasteEscape.
+        return
+      }
+    }
+
+    // Mismatch — emit all buffered bytes as literal characters, then
+    // re-process the current byte in paste mode.
+    let currentByte = pasteEscapeBuffer.removeLast()
+    for b in pasteEscapeBuffer {
+      let scalar = Unicode.Scalar(b)
+      result.append(KeyEvent(code: .character(Character(scalar))))
+    }
+    pasteEscapeBuffer.removeAll()
+    state = .paste
+    feedPaste(currentByte, into: &result)
+  }
+
+  private mutating func feedPasteUtf8(_ byte: UInt8, remaining: Int, codepoint: UInt32, into result: inout [KeyEvent]) {
+    let newCodepoint = (codepoint << 6) | UInt32(byte & 0x3F)
+    if remaining == 1 {
+      state = .paste
+      if let scalar = Unicode.Scalar(newCodepoint) {
+        result.append(KeyEvent(code: .character(Character(scalar))))
+      }
+      return
+    }
+    state = .pasteUtf8Remaining(count: remaining - 1, codepoint: newCodepoint)
   }
 
   // MARK: - Parsers
@@ -158,7 +253,7 @@ public struct EscapeParser: Sendable {
     case 0x07: return KeyEvent(code: .character("g"), modifiers: .control)
     case 0x08: return KeyEvent(code: .backspace)
     case 0x09: return KeyEvent(code: .tab)
-    case 0x0A: return KeyEvent(code: .enter)
+    case 0x0A: return KeyEvent(code: .character("\n"))
     case 0x0B: return KeyEvent(code: .character("k"), modifiers: .control)
     case 0x0C: return KeyEvent(code: .character("l"), modifiers: .control)
     case 0x0D: return KeyEvent(code: .enter)
@@ -201,7 +296,7 @@ public struct EscapeParser: Sendable {
     return params
   }
 
-  private func parseCsi(params: [Int], final: UInt8) -> KeyEvent? {
+  private mutating func parseCsi(params: [Int], final: UInt8, into result: inout [KeyEvent]) {
     let mod: Modifiers
     if params.count >= 2, params[0] == 1 {
       mod = modifiersFromParam(params[1])
@@ -210,43 +305,62 @@ public struct EscapeParser: Sendable {
     }
 
     switch final {
-    case 0x41: return KeyEvent(code: .up, modifiers: mod)
-    case 0x42: return KeyEvent(code: .down, modifiers: mod)
-    case 0x43: return KeyEvent(code: .right, modifiers: mod)
-    case 0x44: return KeyEvent(code: .left, modifiers: mod)
-    case 0x48: return KeyEvent(code: .home, modifiers: mod)
-    case 0x46: return KeyEvent(code: .end, modifiers: mod)
-    case 0x5A: return KeyEvent(code: .tab, modifiers: .shift)
+    case 0x41: result.append(KeyEvent(code: .up, modifiers: mod)); return
+    case 0x42: result.append(KeyEvent(code: .down, modifiers: mod)); return
+    case 0x43: result.append(KeyEvent(code: .right, modifiers: mod)); return
+    case 0x44: result.append(KeyEvent(code: .left, modifiers: mod)); return
+    case 0x48: result.append(KeyEvent(code: .home, modifiers: mod)); return
+    case 0x46: result.append(KeyEvent(code: .end, modifiers: mod)); return
+    case 0x5A: result.append(KeyEvent(code: .tab, modifiers: .shift)); return
     default: break
     }
 
     // Sequences with trailing ~
     if final == 0x7E {
+      // xterm modifyOtherKeys: CSI 27 ; <modifier> ; <key> ~
+      if params.count >= 3, params[0] == 27, params[2] == 13 {
+        result.append(KeyEvent(code: .enter, modifiers: modifiersFromParam(params[1])))
+        return
+      }
+      // Alternate modified enter: CSI 13 ; <modifier> ~
+      if params.count >= 2, params[0] == 13, params[1] != 0 {
+        result.append(KeyEvent(code: .enter, modifiers: modifiersFromParam(params[1])))
+        return
+      }
+
       let code = params.first ?? 0
       switch code {
-      case 1: return KeyEvent(code: .home, modifiers: mod)
-      case 2: return KeyEvent(code: .insert, modifiers: mod)
-      case 3: return KeyEvent(code: .delete, modifiers: mod)
-      case 4: return KeyEvent(code: .end, modifiers: mod)
-      case 5: return KeyEvent(code: .pageUp, modifiers: mod)
-      case 6: return KeyEvent(code: .pageDown, modifiers: mod)
-      case 11: return KeyEvent(code: .f(1), modifiers: mod)
-      case 12: return KeyEvent(code: .f(2), modifiers: mod)
-      case 13: return KeyEvent(code: .f(3), modifiers: mod)
-      case 14: return KeyEvent(code: .f(4), modifiers: mod)
-      case 15: return KeyEvent(code: .f(5), modifiers: mod)
-      case 17: return KeyEvent(code: .f(6), modifiers: mod)
-      case 18: return KeyEvent(code: .f(7), modifiers: mod)
-      case 19: return KeyEvent(code: .f(8), modifiers: mod)
-      case 20: return KeyEvent(code: .f(9), modifiers: mod)
-      case 21: return KeyEvent(code: .f(10), modifiers: mod)
-      case 23: return KeyEvent(code: .f(11), modifiers: mod)
-      case 24: return KeyEvent(code: .f(12), modifiers: mod)
+      case 1: result.append(KeyEvent(code: .home, modifiers: mod)); return
+      case 2: result.append(KeyEvent(code: .insert, modifiers: mod)); return
+      case 3: result.append(KeyEvent(code: .delete, modifiers: mod)); return
+      case 4: result.append(KeyEvent(code: .end, modifiers: mod)); return
+      case 5: result.append(KeyEvent(code: .pageUp, modifiers: mod)); return
+      case 6: result.append(KeyEvent(code: .pageDown, modifiers: mod)); return
+      case 11: result.append(KeyEvent(code: .f(1), modifiers: mod)); return
+      case 12: result.append(KeyEvent(code: .f(2), modifiers: mod)); return
+      case 13: result.append(KeyEvent(code: .f(3), modifiers: mod)); return
+      case 14: result.append(KeyEvent(code: .f(4), modifiers: mod)); return
+      case 15: result.append(KeyEvent(code: .f(5), modifiers: mod)); return
+      case 17: result.append(KeyEvent(code: .f(6), modifiers: mod)); return
+      case 18: result.append(KeyEvent(code: .f(7), modifiers: mod)); return
+      case 19: result.append(KeyEvent(code: .f(8), modifiers: mod)); return
+      case 20: result.append(KeyEvent(code: .f(9), modifiers: mod)); return
+      case 21: result.append(KeyEvent(code: .f(10), modifiers: mod)); return
+      case 23: result.append(KeyEvent(code: .f(11), modifiers: mod)); return
+      case 24: result.append(KeyEvent(code: .f(12), modifiers: mod)); return
       default: break
       }
     }
 
-    return nil
+    // CSI u (kitty keyboard protocol)
+    if final == UInt8(ascii: "u") {
+      guard let key = params.first else { return }
+      let keyMod: Modifiers = params.count >= 2 ? modifiersFromParam(params[1]) : []
+      if key == 13 {
+        result.append(KeyEvent(code: .enter, modifiers: keyMod))
+        return
+      }
+    }
   }
 
   private func parseSs3(final: UInt8) -> KeyEvent? {

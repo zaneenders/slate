@@ -18,13 +18,22 @@ public struct EventStream: ~Copyable {
     let (stream, continuation) = AsyncStream<KeyEvent>.makeStream()
     let task = Task.detached {
       var parser = EscapeParser()
-      var buffer = [UInt8](repeating: 0, count: 256)
+      var buffer = [UInt8](repeating: 0, count: 4096)
       while !Task.isCancelled {
         if pollStdin(timeoutMs: 16) {
           let n = unsafe read(STDIN_FILENO, &buffer, buffer.count)
+          if n < 0 {
+            if errno == EINTR {
+              continue
+            }
+            // EOF or unrecoverable error
+            continuation.finish()
+            return
+          }
           if n > 0 {
             for i in 0..<n {
-              if let event = parser.feed(buffer[i]) {
+              let events = parser.feed(buffer[i])
+              for event in events {
                 continuation.yield(event)
               }
             }
