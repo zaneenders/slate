@@ -267,6 +267,83 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
     #expect(grid[column: 0, row: 0].glyph == "#")
     #expect(grid[column: 1, row: 0].glyph == ".")
   }
+
+  @Test func cellGrid_blitSpans_appliesPerSpanStyles() {
+    let fg1 = TerminalRGB(r: 1, g: 2, b: 3)
+    let bg1 = TerminalRGB(r: 4, g: 5, b: 6)
+    let fg2 = TerminalRGB(r: 7, g: 8, b: 9)
+    var grid = TerminalCellGrid(
+      cols: 5,
+      rows: 1,
+      filling: TerminalCell(
+        glyph: ".", foreground: .white, background: .black, flags: []))
+    grid.blitSpans(
+      column: 0,
+      row: 0,
+      maxWidth: 5,
+      [
+        TerminalStyledSpan("ab", foreground: fg1, background: bg1, flags: [.bold]),
+        TerminalStyledSpan("cd", foreground: fg2, background: .black, flags: []),
+      ])
+    #expect(grid[column: 0, row: 0].glyph == "a")
+    #expect(grid[column: 0, row: 0].foreground == fg1)
+    #expect(grid[column: 0, row: 0].background == bg1)
+    #expect(grid[column: 0, row: 0].flags == [.bold])
+    #expect(grid[column: 2, row: 0].glyph == "c")
+    #expect(grid[column: 2, row: 0].foreground == fg2)
+    #expect(grid[column: 4, row: 0].glyph == ".")
+  }
+
+  @Test func cellGrid_blitSpans_respectsMaxWidth() {
+    var grid = TerminalCellGrid(
+      cols: 4,
+      rows: 1,
+      filling: TerminalCell(
+        glyph: ".", foreground: .black, background: .white, flags: []))
+    grid.blitSpans(
+      column: 1,
+      row: 0,
+      maxWidth: 2,
+      [TerminalStyledSpan("xxxx", foreground: .white, background: .black, flags: [])])
+    #expect(grid[column: 0, row: 0].glyph == ".")
+    #expect(grid[column: 1, row: 0].glyph == "x")
+    #expect(grid[column: 2, row: 0].glyph == "x")
+    #expect(grid[column: 3, row: 0].glyph == ".")
+  }
+
+  @Test func cellGrid_blitSpans_noOpWhenMaxWidthZeroOrOutOfBounds() {
+    var grid = TerminalCellGrid(
+      cols: 2,
+      rows: 2,
+      filling: TerminalCell(
+        glyph: ".", foreground: .black, background: .white, flags: []))
+    let span = TerminalStyledSpan("@", foreground: .white, background: .black, flags: [])
+    grid.blitSpans(column: 0, row: 0, maxWidth: 0, [span])
+    grid.blitSpans(column: 0, row: -1, maxWidth: 1, [span])
+    grid.blitSpans(column: 0, row: 2, maxWidth: 1, [span])
+    grid.blitSpans(column: -1, row: 0, maxWidth: 1, [span])
+    grid.blitSpans(column: 2, row: 0, maxWidth: 1, [span])
+    #expect(grid[column: 0, row: 0].glyph == ".")
+  }
+
+  @Test func cellGrid_reset_refillsWithCell() {
+    var grid = TerminalCellGrid(
+      cols: 2,
+      rows: 2,
+      filling: TerminalCell(
+        glyph: ".", foreground: .black, background: .white, flags: []))
+    grid[column: 0, row: 0] = TerminalCell(
+      glyph: "!", foreground: .white, background: .black, flags: [])
+    let fill = TerminalCell(
+      glyph: "x", foreground: .white, background: .black, flags: [.bold])
+    grid.reset(filling: fill)
+    for x in 0..<2 {
+      for y in 0..<2 {
+        #expect(grid[column: x, row: y].glyph == "x")
+        #expect(grid[column: x, row: y].flags == [.bold])
+      }
+    }
+  }
 }
 
 @Suite struct IOCTLWindowSizeTests {

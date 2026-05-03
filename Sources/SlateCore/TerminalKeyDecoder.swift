@@ -1,6 +1,6 @@
 /// A decoded terminal key press (or paste boundary) decoded from raw stdin bytes.
-public enum TerminalKeyEvent: Sendable {
-  case character(Character)      // printable Unicode or space
+public enum TerminalKeyEvent: Sendable, Equatable {
+  case character(Character)  // printable Unicode or space
   case enter
   /// Shift+Enter (CSI u kitty: `\e[13;2u`; xterm: `\e[27;2;13~`; alternate: `\e[13;2~`).
   case shiftEnter
@@ -108,17 +108,24 @@ public struct TerminalKeyDecoder: Sendable {
       }
       i += 1
     }
-    tryDecodeUTF8(partial: false, emit: emit)
+    tryDecodeUTF8(partial: true, emit: emit)
   }
 
   private mutating func tryDecodeUTF8(partial: Bool, emit: (TerminalKeyEvent) -> Void) {
     while !utf8Staging.isEmpty {
       let first = utf8Staging[0]
       let need: Int
-      if first & 0xE0 == 0xC0 { need = 2 }
-      else if first & 0xF0 == 0xE0 { need = 3 }
-      else if first & 0xF8 == 0xF0 { need = 4 }
-      else { utf8Staging.removeFirst(); emit(.character("\u{FFFD}")); continue }
+      if first & 0xE0 == 0xC0 {
+        need = 2
+      } else if first & 0xF0 == 0xE0 {
+        need = 3
+      } else if first & 0xF8 == 0xF0 {
+        need = 4
+      } else {
+        utf8Staging.removeFirst()
+        emit(.character("\u{FFFD}"))
+        continue
+      }
 
       if utf8Staging.count < need {
         if partial { break }

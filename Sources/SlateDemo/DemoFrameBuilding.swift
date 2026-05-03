@@ -118,21 +118,25 @@ enum DemoFrameBuilder {
       repeating: TerminalCell(glyph: " ", foreground: P.light, background: P.headerBg, flags: []))
 
     // Left: "Slate · Demo" — three spans, different colours
-    grid.blitSpans(column: 1, row: 0, maxWidth: cols &- 1, [
-      TerminalStyledSpan("Slate", foreground: P.title, background: P.headerBg, flags: .bold),
-      TerminalStyledSpan(" · ", foreground: P.dim, background: P.headerBg),
-      TerminalStyledSpan("Demo", foreground: P.light, background: P.headerBg),
-    ])
+    grid.blitSpans(
+      column: 1, row: 0, maxWidth: cols &- 1,
+      [
+        TerminalStyledSpan("Slate", foreground: P.title, background: P.headerBg, flags: .bold),
+        TerminalStyledSpan(" · ", foreground: P.dim, background: P.headerBg),
+        TerminalStyledSpan("Demo", foreground: P.light, background: P.headerBg),
+      ])
 
     // Right: "keys: N" — right-aligned
     let countLabel = "keys: "
     let countValue = "\(keyCount)"
     let totalW = countLabel.count &+ countValue.count &+ 1
     let startCol = max(2, cols &- totalW)
-    grid.blitSpans(column: startCol, row: 0, maxWidth: cols &- startCol, [
-      TerminalStyledSpan(countLabel, foreground: P.dim, background: P.headerBg),
-      TerminalStyledSpan(countValue, foreground: P.yellow, background: P.headerBg, flags: .bold),
-    ])
+    grid.blitSpans(
+      column: startCol, row: 0, maxWidth: cols &- startCol,
+      [
+        TerminalStyledSpan(countLabel, foreground: P.dim, background: P.headerBg),
+        TerminalStyledSpan(countValue, foreground: P.yellow, background: P.headerBg, flags: .bold),
+      ])
   }
 
   /// Returns the count of wrapped transcript lines hidden below the visible viewport
@@ -165,11 +169,12 @@ enum DemoFrameBuilder {
       let textWidth = max(1, cols &- prompt.count)
       let wrapped = wrapText(text, width: textWidth)
       for (i, chunk) in wrapped.enumerated() {
-        lines.append(VLine(
-          prefix: i == 0 ? prompt : indent,
-          prefixColor: i == 0 ? speakerColor : P.bg,
-          text: chunk,
-          textColor: textColor))
+        lines.append(
+          VLine(
+            prefix: i == 0 ? prompt : indent,
+            prefixColor: i == 0 ? speakerColor : P.bg,
+            text: chunk,
+            textColor: textColor))
       }
     }
 
@@ -200,10 +205,12 @@ enum DemoFrameBuilder {
     for (i, line) in visible.enumerated() {
       let row = startRow &+ topPad &+ i
       guard row >= 0, row < grid.rows else { continue }
-      grid.blitSpans(column: 0, row: row, maxWidth: cols, [
-        TerminalStyledSpan(line.prefix, foreground: line.prefixColor, background: P.bg),
-        TerminalStyledSpan(line.text, foreground: line.textColor, background: P.bg),
-      ])
+      grid.blitSpans(
+        column: 0, row: row, maxWidth: cols,
+        [
+          TerminalStyledSpan(line.prefix, foreground: line.prefixColor, background: P.bg),
+          TerminalStyledSpan(line.text, foreground: line.textColor, background: P.bg),
+        ])
     }
     return max(0, lines.count &- (effectiveFirstRow &+ visible.count))
   }
@@ -222,19 +229,23 @@ enum DemoFrameBuilder {
     let maxTail = max(0, cols &- label.count)
     let trimmedTail = tail.count > maxTail ? String(tail.suffix(maxTail)) : tail
 
-    grid.blitSpans(column: 0, row: row, maxWidth: cols, [
-      TerminalStyledSpan(label, foreground: P.dim, background: P.bg),
-      TerminalStyledSpan(trimmedTail, foreground: P.green, background: P.bg),
-    ])
+    grid.blitSpans(
+      column: 0, row: row, maxWidth: cols,
+      [
+        TerminalStyledSpan(label, foreground: P.dim, background: P.bg),
+        TerminalStyledSpan(trimmedTail, foreground: P.green, background: P.bg),
+      ])
 
     // Right-aligned scroll indicator: only shown when the live tail is below the viewport.
     if hiddenBelow > 0 {
       let badge = "↓ \(hiddenBelow) · End to follow"
       let startCol = max(label.count &+ trimmedTail.count &+ 2, cols &- badge.count)
       if startCol < cols {
-        grid.blitSpans(column: startCol, row: row, maxWidth: cols &- startCol, [
-          TerminalStyledSpan(badge, foreground: P.yellow, background: P.bg),
-        ])
+        grid.blitSpans(
+          column: startCol, row: row, maxWidth: cols &- startCol,
+          [
+            TerminalStyledSpan(badge, foreground: P.yellow, background: P.bg)
+          ])
       }
     }
   }
