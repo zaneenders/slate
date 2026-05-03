@@ -20,22 +20,19 @@ enum DemoKeyFormatting {
   }
 
   private static func knownSequence(_ bytes: ArraySlice<UInt8>) -> String? {
-    switch Array(bytes) {
-    case [27]: return "Esc"
-    case [27, 91, 65]: return "↑"
-    case [27, 91, 66]: return "↓"
-    case [27, 91, 67]: return "→"
-    case [27, 91, 68]: return "←"
-    case [27, 91, 72]: return "Home"
-    case [27, 91, 70]: return "End"
-    case [27, 91, 53, 126]: return "PgUp"
-    case [27, 91, 54, 126]: return "PgDn"
-    case [127], [8]: return "⌫"
-    case [9]: return "Tab"
-    case [10], [13]: return "↵"
-    default:
-      return nil
-    }
+    if bytes == [27] { return "Esc" }
+    if bytes == [27, 91, 65] { return "↑" }
+    if bytes == [27, 91, 66] { return "↓" }
+    if bytes == [27, 91, 67] { return "→" }
+    if bytes == [27, 91, 68] { return "←" }
+    if bytes == [27, 91, 72] { return "Home" }
+    if bytes == [27, 91, 70] { return "End" }
+    if bytes == [27, 91, 53, 126] { return "PgUp" }
+    if bytes == [27, 91, 54, 126] { return "PgDn" }
+    if bytes == [127] || bytes == [8] { return "⌫" }
+    if bytes == [9] { return "Tab" }
+    if bytes == [10] || bytes == [13] { return "↵" }
+    return nil
   }
 
   private static func describeByte(_ b: UInt8) -> String {

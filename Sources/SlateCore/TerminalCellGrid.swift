@@ -13,12 +13,16 @@ private func appendEscBracket(to buf: inout TerminalByteBuffer) {
 /// Decimal encoding for non-negative `Int` (used for CUP rows/columns and RGB components).
 private func appendPositiveIntDecimal(_ value: Int, to buf: inout TerminalByteBuffer) {
   precondition(value >= 0)
-  if value < 10 {
+  if value >= 100 {
+    buf.append(UInt8(truncatingIfNeeded: value / 100) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: (value / 10) % 10) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
+  } else if value >= 10 {
+    buf.append(UInt8(truncatingIfNeeded: value / 10) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
+  } else {
     buf.append(UInt8(truncatingIfNeeded: value) &+ 0x30)
-    return
   }
-  appendPositiveIntDecimal(value / 10, to: &buf)
-  buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
 }
 
 private func appendCup(row row1: Int, column col1: Int, to buf: inout TerminalByteBuffer) {
@@ -92,11 +96,8 @@ private func appendGlyphUTF8(_ ch: Character, to buf: inout TerminalByteBuffer) 
     buf.append(ascii)
     return
   }
-  for scalar in ch.unicodeScalars {
-    let encoded = Unicode.UTF8.encode(scalar)!
-    for byte in encoded {
-      buf.append(byte)
-    }
+  for byte in ch.utf8 {
+    buf.append(byte)
   }
 }
 
@@ -168,7 +169,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     background: TerminalRGB,
     flags: TerminalCellFlags = []
   ) {
-    guard row0 >= 0, row0 < rows, column0 < cols else { return }
+    guard row0 >= 0, row0 < rows, column0 >= 0, column0 < cols else { return }
     var x = column0
     for ch in string {
       guard x < cols else { break }
@@ -183,18 +184,20 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   /// Skips redundant intensity / truecolor sequences when they match the previous cell (style persists in the terminal).
   internal func encode(into buf: inout TerminalByteBuffer) {
     buf.removeAll()
-    var previous: EmittedGraphicStyle?
+    var hasPrevious = false
+    var previous = EmittedGraphicStyle(bold: false, foreground: .black, background: .black)
+    var flatIdx = 0
     var y = 0
     while y < rows {
       appendCup(row: y &+ 1, column: 1, to: &buf)
       var x = 0
       while x < cols {
-        let cell = self[column: x, row: y]
+        let cell = cells[flatIdx]
         let bold = cell.flags.contains(.bold)
         let fg = cell.foreground
         let bg = cell.background
 
-        if previous.map({ $0.bold != bold }) ?? true {
+        if !hasPrevious || previous.bold != bold {
           if bold {
             appendSGRBold(to: &buf)
           } else {
@@ -202,12 +205,14 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
           }
         }
 
-        if previous.map({ $0.foreground != fg || $0.background != bg }) ?? true {
+        if !hasPrevious || previous.foreground != fg || previous.background != bg {
           appendTruecolorSGR(background: bg, foreground: fg, to: &buf)
         }
 
         previous = EmittedGraphicStyle(bold: bold, foreground: fg, background: bg)
+        hasPrevious = true
         appendGlyphUTF8(cell.glyph, to: &buf)
+        flatIdx &+= 1
         x &+= 1
       }
       y &+= 1
