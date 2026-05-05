@@ -12,7 +12,7 @@ import Musl
 /// One wake from stdin, terminal resize, or an outside producer (LLM tokens, network, etc.).
 /// Redraw by calling ``Slate/enscribe(grid:)`` (or your own output) inside the handler.
 public enum TerminalWakeEvent: Sendable {
-  /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or refresh via ``Slate/refreshWindowSize()`` before ``Slate/enscribe(grid:)``.
+  /// Terminal dimensions may have changed (detected via periodic `TIOCGWINSZ` poll). Read size via ``TTY/windowSize()`` or refresh via ``Slate/refreshWindowSize()`` before ``Slate/enscribe(grid:)``.
   case resize
   /// stdin read **in one wakeup** — chunks are often larger when pasting or when the tty has buffered keystrokes together. Empty means EOF (stdin closed).
   case stdinBytes(ContiguousArray<UInt8>)
@@ -29,7 +29,7 @@ public enum TerminalWakeRunOutcome: Sendable {
 /// Wakes the main loop from any isolation — e.g. each LLM token, a socket read, or a background ``Task``.
 ///
 /// ``TerminalWakePump`` vends one value per instance; hold it and call ``requestRender()`` when output should refresh.
-/// Calls are coalesced with [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) ``AsyncSequence`` throttle (``_throttle(for:latest:)``, `latest: true`) at ``TerminalWakePump/externalCoalesceMaxFramesPerSecond`` (default ``60``); pass ``0`` if every call must enqueue ``TerminalWakeEvent/external`` immediately.
+/// Calls are coalesced with [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) ``AsyncSequence`` throttle (``_throttle(for:latest:)``, `latest: true`) at ``TerminalWakePump/externalCoalesceMaxFramesPerSecond`` (default `60`); pass `0` if every call must enqueue ``TerminalWakeEvent/external`` immediately.
 public struct ExternalWake: Sendable {
   private let emit: @Sendable () -> Void
 
@@ -114,7 +114,7 @@ private func startStdinWakeTask(bus: WakeBus) -> Task<Void, Never> {
   }
 }
 
-/// Polls ``TTY/windowSize()`` and emits ``TerminalWakeEvent/resize`` when the terminal dimensions change (no GCD / ``Dispatch``).
+/// Polls ``TTY/windowSize()`` and emits ``TerminalWakeEvent/resize`` when the terminal dimensions change (no GCD / `Dispatch`).
 private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void, Never> {
   Task.detached { [bus] in
     var last: (cols: Int, rows: Int)?
@@ -131,15 +131,15 @@ private func startResizePollTask(bus: WakeBus, interval: Duration) -> Task<Void,
 
 /// Starts stdin wakes, periodic terminal-size polling (resize), and optional external-wake throttling; ``stop()`` tears producers down and finishes ``events``.
 ///
-/// ``ExternalWake`` forwards through [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) throttle (``_throttle(for:latest:)``) when ``externalCoalesceMaxFramesPerSecond`` is positive (default ``60``).
+/// ``ExternalWake`` forwards through [swift-async-algorithms](https://github.com/apple/swift-async-algorithms) throttle (``_throttle(for:latest:)``) when ``externalCoalesceMaxFramesPerSecond`` is positive (default `60`).
 ///
-/// Resize is detected by polling ``TTY/windowSize()`` (``TIOCGWINSZ``), not ``Dispatch`` or signal handlers.
+/// Resize is detected by polling ``TTY/windowSize()`` (`TIOCGWINSZ`), not `Dispatch` or signal handlers.
 ///
-/// Not ``Sendable``: the lifecycle vars (`externalSignalContinuation`, `externalThrottleConsumer`, `resizePollTask`) are written by ``init`` and ``stop()`` without a lock, so the pump must stay inside one isolation domain (``Slate/start(prepare:externalCoalesceMaxFramesPerSecond:onEvent:)`` is the only intended owner). Cross-isolation wakes go through ``ExternalWake`` (a ``Sendable`` handle around a ``Mutex``-guarded ``WakeBus``).
+/// Not `Sendable`: the lifecycle vars (`externalSignalContinuation`, `externalThrottleConsumer`, `resizePollTask`) are written by `init` and ``stop()`` without a lock, so the pump must stay inside one isolation domain (``Slate/start(prepare:externalCoalesceMaxFramesPerSecond:onEvent:)`` is the only intended owner). Cross-isolation wakes go through ``ExternalWake`` (a `Sendable` handle around a `Mutex`-guarded ``WakeBus``).
 internal final class TerminalWakePump {
   /// Low-level stream. Prefer ``run(onEvent:)`` for a structured loop that ends with ``stop()``.
   public let events: AsyncStream<TerminalWakeEvent>
-  /// Pass to code that runs outside the pump (streaming APIs, ``Task.detached``, callbacks). See ``ExternalWake``.
+  /// Pass to code that runs outside the pump (streaming APIs, `Task.detached`, callbacks). See ``ExternalWake``.
   public let externalWake: ExternalWake
   private let bus: WakeBus
   private var externalSignalContinuation: AsyncStream<ExternalWakeSignal>.Continuation?
@@ -156,7 +156,7 @@ internal final class TerminalWakePump {
     resizePollTask = nil
   }
 
-  /// - Parameter externalCoalesceMaxFramesPerSecond: ``ExternalWake/requestRender()`` feeds an ``AsyncStream`` through throttle (see [swift-async-algorithms](https://github.com/apple/swift-async-algorithms)) with `latest: true`, so bursty requests become at most this many ``TerminalWakeEvent/external`` per second. Use ``0`` for no cap (one event per call).
+  /// - Parameter externalCoalesceMaxFramesPerSecond: ``ExternalWake/requestRender()`` feeds an ``AsyncStream`` through throttle (see [swift-async-algorithms](https://github.com/apple/swift-async-algorithms)) with `latest: true`, so bursty requests become at most this many ``TerminalWakeEvent/external`` per second. Use `0` for no cap (one event per call).
   public init(externalCoalesceMaxFramesPerSecond: Int = 60) {
     let coalesceFps = max(0, externalCoalesceMaxFramesPerSecond)
     let (stream, continuation) = AsyncStream.makeStream(

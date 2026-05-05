@@ -47,7 +47,7 @@ public struct Slate: ~Copyable {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
-  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame (no ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``).
+  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame (no `ioctl` — dimensions come from ``init`` and ``refreshWindowSize()``).
   public func enscribe(grid: borrowing TerminalCellGrid) {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in grid.encode(into: &buf) }

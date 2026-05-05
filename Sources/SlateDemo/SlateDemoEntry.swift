@@ -128,6 +128,8 @@ enum SlateDemoEntry {
           case .backspace:
             if !state.inPaste, !state.inputBuffer.isEmpty { state.inputBuffer.removeLast() }
             state.recordKey(key)
+          case .delete:
+            state.recordKey(key)
           case .shiftEnter:
             // Insert a real newline; the input region grows on the next render.
             state.inputBuffer.append("\n")

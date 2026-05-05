@@ -29,6 +29,11 @@ import Testing
     #expect(collect(chunks: [[127]]) == [.backspace])
   }
 
+  @Test func decodes_delete_csi() {
+    // \e[3~
+    #expect(collect(chunks: [[0x1B, 0x5B, 0x33, 0x7E]]) == [.delete])
+  }
+
   @Test func decodes_tab() {
     #expect(collect(chunks: [[9]]) == [.tab])
   }
