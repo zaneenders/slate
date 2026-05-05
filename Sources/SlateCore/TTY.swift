@@ -1,3 +1,5 @@
+import Synchronization
+
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -6,35 +8,38 @@ import Glibc
 import Musl
 #endif
 
-@MainActor
-internal enum GlobalTTY {
-  static var snapshot = termios()
-  static var snapshotValid = false
+private struct RawModeRestoreState {
+  var snapshot = termios()
+  var snapshotValid = false
 }
 
-@MainActor
-internal func ttyWriteRaw(_ bytes: borrowing RawSpan) {
-  func flush(_ buffer: UnsafeRawBufferPointer) {
-    var sent = 0
-    while sent < buffer.count {
-      let n = unsafe write(
-        STDOUT_FILENO, buffer.baseAddress!.advanced(by: sent), buffer.count &- sent)
-      if n <= 0 {
-        guard errno == EINTR else { return }
-        continue
-      }
-      sent += n
+private let rawModeRestoreState = Mutex(RawModeRestoreState())
+
+/// `write(STDOUT_FILENO)` with **EINTR** retry; shared by ``ttyWriteRaw(_:)`` and ``AsyncFrameWriter``.
+internal func ttyWriteStdoutAll(_ buffer: UnsafeRawBufferPointer) {
+  guard buffer.count > 0, let baseAddress = buffer.baseAddress else { return }
+  var sent = 0
+  while sent < buffer.count {
+    let n = unsafe write(
+      STDOUT_FILENO, baseAddress.advanced(by: sent), buffer.count &- sent)
+    if n <= 0 {
+      guard errno == EINTR else { return }
+      continue
     }
+    sent += n
   }
+}
+
+internal func ttyWriteRaw(_ bytes: borrowing RawSpan) {
   #if compiler(>=6.4)
-  bytes.withUnsafeBytes(flush)
+  bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
   #else
-  unsafe bytes.withUnsafeBytes(flush)
+  unsafe bytes.withUnsafeBytes { raw in unsafe ttyWriteStdoutAll(raw) }
   #endif
 }
 
-/// Clamped `ioctl(STDOUT_FILENO, TIOCGWINSZ)` (both dimensions ≥ 1). Shared by ``TTY/windowSize()`` and ``TTYPoll/windowSize()``.
-internal nonisolated func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, rows: Int) {
+/// Clamped `ioctl(STDOUT_FILENO, TIOCGWINSZ)` (both dimensions ≥ 1).
+internal func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (cols: Int, rows: Int) {
   var ws = winsize()
   let c: Int
   let r: Int
@@ -52,22 +57,15 @@ internal nonisolated func ioctlStdoutWindowSize(maxCols: Int, maxRows: Int) -> (
   return (min(maxCols, max(1, c)), min(maxRows, max(1, r)))
 }
 
-@MainActor
 internal enum TTY {
   /// Clamped `ioctl(TIOCGWINSZ)` layout (both dimensions ≥ 1).
+  ///
+  /// Safe from any isolation; callers that poll for resize typically invoke this off the main actor.
   internal static func windowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
     ioctlStdoutWindowSize(maxCols: maxCols, maxRows: maxRows)
   }
 }
 
-/// Off-main ``ioctl(TIOCGWINSZ)`` for background tasks (e.g. terminal resize polling without GCD).
-internal enum TTYPoll {
-  nonisolated static func windowSize(maxCols: Int = 512, maxRows: Int = 512) -> (cols: Int, rows: Int) {
-    ioctlStdoutWindowSize(maxCols: maxCols, maxRows: maxRows)
-  }
-}
-
-@MainActor
 internal func ttyEnterRawOrExit() -> Bool {
   guard isatty(STDIN_FILENO) != 0 else {
     print("error: stdin must be a tty")
@@ -77,13 +75,19 @@ internal func ttyEnterRawOrExit() -> Bool {
     print("error: stdout must be a tty")
     return false
   }
-  guard unsafe tcgetattr(STDIN_FILENO, &GlobalTTY.snapshot) == 0 else {
+  guard
+    rawModeRestoreState.withLock({ state in
+      unsafe tcgetattr(STDIN_FILENO, &state.snapshot) == 0
+    })
+  else {
     print("error: tcgetattr failed")
     return false
   }
-  GlobalTTY.snapshotValid = true
 
-  var rawMode = GlobalTTY.snapshot
+  var rawMode = rawModeRestoreState.withLock { state in
+    state.snapshotValid = true
+    return state.snapshot
+  }
   unsafe cfmakeraw(&rawMode)
   #if os(macOS)
   rawMode.c_cc.16 /* VMIN */ = 1
@@ -94,7 +98,7 @@ internal func ttyEnterRawOrExit() -> Bool {
   #endif
   guard unsafe tcsetattr(STDIN_FILENO, TCSAFLUSH, &rawMode) == 0 else {
     print("error: tcsetattr(raw) failed")
-    GlobalTTY.snapshotValid = false
+    rawModeRestoreState.withLock { state in state.snapshotValid = false }
     return false
   }
   _ = signal(SIGQUIT, SIG_IGN)
@@ -102,15 +106,19 @@ internal func ttyEnterRawOrExit() -> Bool {
   return true
 }
 
-@MainActor
 internal func ttyRestoreSaved() {
   _ = signal(SIGQUIT, SIG_DFL)
   _ = signal(SIGTSTP, SIG_DFL)
   do {
-    var tail = CSI.batchOff + CSI.sgr0 + CSI.curShow + CSI.altOff
+    // Disable bracketed paste before leaving the alt screen so the user's regular shell
+    // doesn't inherit it (matches the `bracketedPasteOn` emitted by ``writeRedrawBootstrapCSI``).
+    var tail =
+      CSI.batchOff + CSI.bracketedPasteOff + CSI.sgr0 + CSI.curShow + CSI.altOff
     tail.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
   }
-  guard GlobalTTY.snapshotValid else { return }
-  GlobalTTY.snapshotValid = false
-  _ = unsafe tcsetattr(STDIN_FILENO, TCSAFLUSH, &GlobalTTY.snapshot)
+  rawModeRestoreState.withLock { state in
+    guard state.snapshotValid else { return }
+    state.snapshotValid = false
+    _ = unsafe tcsetattr(STDIN_FILENO, TCSAFLUSH, &state.snapshot)
+  }
 }

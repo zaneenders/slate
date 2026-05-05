@@ -13,12 +13,16 @@ private func appendEscBracket(to buf: inout TerminalByteBuffer) {
 /// Decimal encoding for non-negative `Int` (used for CUP rows/columns and RGB components).
 private func appendPositiveIntDecimal(_ value: Int, to buf: inout TerminalByteBuffer) {
   precondition(value >= 0)
-  if value < 10 {
+  if value >= 100 {
+    buf.append(UInt8(truncatingIfNeeded: value / 100) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: (value / 10) % 10) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
+  } else if value >= 10 {
+    buf.append(UInt8(truncatingIfNeeded: value / 10) &+ 0x30)
+    buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
+  } else {
     buf.append(UInt8(truncatingIfNeeded: value) &+ 0x30)
-    return
   }
-  appendPositiveIntDecimal(value / 10, to: &buf)
-  buf.append(UInt8(truncatingIfNeeded: value % 10) &+ 0x30)
 }
 
 private func appendCup(row row1: Int, column col1: Int, to buf: inout TerminalByteBuffer) {
@@ -92,11 +96,8 @@ private func appendGlyphUTF8(_ ch: Character, to buf: inout TerminalByteBuffer) 
     buf.append(ascii)
     return
   }
-  for scalar in ch.unicodeScalars {
-    let encoded = Unicode.UTF8.encode(scalar)!
-    for byte in encoded {
-      buf.append(byte)
-    }
+  for byte in ch.utf8 {
+    buf.append(byte)
   }
 }
 
@@ -159,6 +160,36 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     }
   }
 
+  /// Overwrite a horizontal run at (`column0`, `row`) with a sequence of styled spans.
+  /// `maxWidth` caps the total columns written; the run is clipped to grid bounds.
+  public mutating func blitSpans(
+    column column0: Int,
+    row: Int,
+    maxWidth: Int,
+    _ spans: [TerminalStyledSpan]
+  ) {
+    guard row >= 0, row < rows, column0 >= 0, column0 < cols, maxWidth > 0 else { return }
+    let endCol = min(column0 &+ maxWidth, cols)
+    let rowBase = row &* cols
+    var x = column0
+    for span in spans {
+      guard x < endCol else { break }
+      let fg = span.foreground
+      let bg = span.background
+      let flags = span.flags
+      for ch in span.text {
+        guard x < endCol else { break }
+        cells[rowBase &+ x] = TerminalCell(glyph: ch, foreground: fg, background: bg, flags: flags)
+        x &+= 1
+      }
+    }
+  }
+
+  /// Fills every cell in the grid with `fill` without reallocating — use to reset between frames.
+  public mutating func reset(filling fill: TerminalCell) {
+    blit(column: 0, row: 0, width: cols, height: rows, repeating: fill)
+  }
+
   /// Overwrite a horizontal run starting at (**column0**, **row0**), one grid cell per `Character`.
   public mutating func blitText(
     column column0: Int,
@@ -168,7 +199,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     background: TerminalRGB,
     flags: TerminalCellFlags = []
   ) {
-    guard row0 >= 0, row0 < rows, column0 < cols else { return }
+    guard row0 >= 0, row0 < rows, column0 >= 0, column0 < cols else { return }
     var x = column0
     for ch in string {
       guard x < cols else { break }
@@ -183,18 +214,20 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   /// Skips redundant intensity / truecolor sequences when they match the previous cell (style persists in the terminal).
   internal func encode(into buf: inout TerminalByteBuffer) {
     buf.removeAll()
-    var previous: EmittedGraphicStyle?
+    var hasPrevious = false
+    var previous = EmittedGraphicStyle(bold: false, foreground: .black, background: .black)
+    var flatIdx = 0
     var y = 0
     while y < rows {
       appendCup(row: y &+ 1, column: 1, to: &buf)
       var x = 0
       while x < cols {
-        let cell = self[column: x, row: y]
+        let cell = cells[flatIdx]
         let bold = cell.flags.contains(.bold)
         let fg = cell.foreground
         let bg = cell.background
 
-        if previous.map({ $0.bold != bold }) ?? true {
+        if !hasPrevious || previous.bold != bold {
           if bold {
             appendSGRBold(to: &buf)
           } else {
@@ -202,12 +235,14 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
           }
         }
 
-        if previous.map({ $0.foreground != fg || $0.background != bg }) ?? true {
+        if !hasPrevious || previous.foreground != fg || previous.background != bg {
           appendTruecolorSGR(background: bg, foreground: fg, to: &buf)
         }
 
         previous = EmittedGraphicStyle(bold: bold, foreground: fg, background: bg)
+        hasPrevious = true
         appendGlyphUTF8(cell.glyph, to: &buf)
+        flatIdx &+= 1
         x &+= 1
       }
       y &+= 1

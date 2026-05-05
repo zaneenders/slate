@@ -22,6 +22,7 @@ let package = Package(
         .product(name: "BasicContainers", package: "swift-collections"),
       ],
       swiftSettings: [
+        .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
       ]),
@@ -31,6 +32,7 @@ let package = Package(
         "SlateCore"
       ],
       swiftSettings: [
+        .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
       ]),
@@ -40,6 +42,7 @@ let package = Package(
         "SlateCore"
       ],
       swiftSettings: [
+        .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
       ]),
