@@ -1,6 +1,5 @@
 /// Interactive terminal session backed by raw mode + alternate screen (when initialized successfully).
-@MainActor
-public final class Slate {
+public struct Slate: ~Copyable {
   public enum InstallationError: Error {
     case notInteractiveTerminal
   }
@@ -10,10 +9,6 @@ public final class Slate {
 
   private let presenter = DoubleBufferedTerminalPresenter()
 
-  /// Enter raw mode and bootstrap alternate-screen redraw state.
-  ///
-  /// If terminal setup fails after raw mode is entered, raw mode is cleared before the error propagates.
-  /// Successful installs restore the saved tty in ``deinit`` (via ``MainActor/assumeIsolated`` — use ``Slate`` only on the main actor).
   public init() throws {
     guard ttyEnterRawOrExit() else {
       throw InstallationError.notInteractiveTerminal
@@ -34,24 +29,25 @@ public final class Slate {
     installationComplete = true
   }
 
-  nonisolated deinit {
-    // `deinit` is nonisolated; terminal globals are `@MainActor`. This assumes teardown runs on the main actor (true for `@MainActor main`).
-    MainActor.assumeIsolated {
-      ttyRestoreSaved()
-    }
+  deinit {
+    // Best-effort terminal restore for paths where ``start()`` was never called.
+    // When ``start()`` is used it performs ordered async teardown (flush then
+    // restore) before returning, so this call is a no-op because the restore
+    // state has already been consumed.
+    ttyRestoreSaved()
   }
 
   /// Reread ``TTY/windowSize()``, update ``cols`` / ``rows``, and resize encode buffers if needed.
   ///
   /// Call this when you receive ``TerminalWakeEvent/resize`` (or anytime dimensions may have changed outside ``TerminalWakePump``).
-  public func refreshWindowSize() {
+  public mutating func refreshWindowSize() {
     let size = TTY.windowSize()
     cols = size.cols
     rows = size.rows
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
-  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame (no ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``).
+  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame (no `ioctl` — dimensions come from ``init`` and ``refreshWindowSize()``).
   public func enscribe(grid: borrowing TerminalCellGrid) {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in grid.encode(into: &buf) }
@@ -59,22 +55,42 @@ public final class Slate {
 
   /// Runs stdin + periodic terminal-size polling (resize) + cross-isolation ``ExternalWake`` wakes until the stream ends or `onEvent` returns ``TerminalWakeRunOutcome/stop``.
   ///
-  /// `prepare` runs once on the caller actor before ``run`` begins — use it to spawn work that calls ``ExternalWake/requestRender()`` (LLM stream, URL session, etc.; coalesced with swift-async-algorithms throttle to ``externalCoalesceMaxFramesPerSecond`` by default).
-  /// On ``TerminalWakeEvent/resize``, call ``refreshWindowSize()`` before ``present`` so cached dimensions match the tty. Call ``present`` from `onEvent` when stdin, resize, or ``TerminalWakeEvent/external`` should refresh the screen (and once before ``start`` if you need an initial frame).
+  /// `prepare` runs once on the caller actor before the event loop begins — use it to spawn work that calls ``ExternalWake/requestRender()`` (LLM stream, URL session, etc.; coalesced with swift-async-algorithms throttle to ``externalCoalesceMaxFramesPerSecond`` by default).
+  ///
+  /// `onEvent` receives the active ``Slate`` as an `inout` parameter rather than capturing it from the enclosing scope — escaping closures cannot capture noncopyable values, so the inout passes a fresh borrow per call. Inside the handler, call ``refreshWindowSize()`` on ``TerminalWakeEvent/resize`` before re-encoding, and call ``enscribe(grid:)`` whenever stdin, resize, or ``TerminalWakeEvent/external`` should refresh the screen.
+  ///
   /// Creates a ``TerminalWakePump`` for the loop; producers are stopped before this returns.
-  public func start(
+  ///
+  /// `@MainActor` here is the **only** isolation annotation in the public API — see the type-level
+  /// docs for why. ``TerminalWakePump`` keeps unsynchronized lifecycle vars on its single owner,
+  /// and the ``onEvent`` closure typically captures app state (``DemoTranscript`` etc.) that the
+  /// caller's `@main`-isolated code mutates from spawned tasks; pinning ``start`` to the main
+  /// actor matches the realistic usage pattern without forcing every other ``Slate`` method to
+  /// be `@MainActor`.
+  @MainActor
+  public mutating func start(
     prepare: (ExternalWake) -> Void = { _ in },
     externalCoalesceMaxFramesPerSecond: Int = 60,
-    onEvent: @escaping @MainActor (TerminalWakeEvent) async -> TerminalWakeRunOutcome
+    onEvent: @MainActor (inout Self, TerminalWakeEvent) async -> TerminalWakeRunOutcome
   ) async {
     let pump = TerminalWakePump(externalCoalesceMaxFramesPerSecond: externalCoalesceMaxFramesPerSecond)
+    defer { pump.stop() }
     prepare(pump.externalWake)
-    await pump.run(onEvent: onEvent)
+    for await event in pump.events {
+      if await onEvent(&self, event) == .stop { break }
+    }
+    // Ordered async teardown: flush the final frame, wait for the writer task
+    // to drain, then restore the terminal. `ttyRestoreSaved()` is idempotent,
+    // so the matching `deinit` call becomes a no-op.
+    await presenter.flushAndStopWriter()
+    ttyRestoreSaved()
   }
 }
 
-@MainActor
 private func writeRedrawBootstrapCSI() {
-  var setup = CSI.altOn + CSI.curHide + CSI.clrHome
+  // Enabling bracketed paste here (matched by ``ttyRestoreSaved`` on teardown) lets the terminal
+  // wrap pasted text with `\e[200~` / `\e[201~` so ``TerminalKeyDecoder`` can keep pasted
+  // newlines distinct from a typed Enter.
+  var setup = CSI.altOn + CSI.curHide + CSI.bracketedPasteOn + CSI.clrHome
   setup.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
 }
