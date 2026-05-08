@@ -37,7 +37,12 @@ enum SlateDemoEntry {
 
       func resize(cols: Int, rows: Int) {
         guard grid.cols != cols || grid.rows != rows else { return }
-        grid = DemoFrameBuilder.makeGrid(cols: cols, rows: rows)
+        let fill = TerminalCell(
+          glyph: " ",
+          foreground: TerminalRGB(r: 195, g: 205, b: 220),
+          background: TerminalRGB(r: 14, g: 14, b: 24),
+          flags: [])
+        grid.resize(cols: cols, rows: rows, filling: fill)
         // Wrap geometry changed; snap to live tail so the user isn't left at a stale row.
         followingLiveTranscript = true
       }
@@ -64,7 +69,7 @@ enum SlateDemoEntry {
           keyCount: keyCount,
           firstVisibleRow: &transcriptFirstVisibleRow,
           followingLiveTranscript: &followingLiveTranscript)
-        slate.enscribe(grid: grid)
+        slate.enscribe(grid: &grid)
       }
     }
 
@@ -127,6 +132,8 @@ enum SlateDemoEntry {
             state.recordKey(key)
           case .backspace:
             if !state.inPaste, !state.inputBuffer.isEmpty { state.inputBuffer.removeLast() }
+            state.recordKey(key)
+          case .delete:
             state.recordKey(key)
           case .shiftEnter:
             // Insert a real newline; the input region grows on the next render.

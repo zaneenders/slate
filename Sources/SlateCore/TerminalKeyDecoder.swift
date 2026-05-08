@@ -5,6 +5,7 @@ public enum TerminalKeyEvent: Sendable, Equatable {
   /// Shift+Enter (CSI u kitty: `\e[13;2u`; xterm: `\e[27;2;13~`; alternate: `\e[13;2~`).
   case shiftEnter
   case backspace
+  case delete  // \e[3~
   case tab
   case escape
   case arrowUp, arrowDown, arrowLeft, arrowRight
@@ -206,6 +207,7 @@ public struct TerminalKeyDecoder: Sendable {
         return
       }
       switch paramStr {
+      case "3": emit(.delete)
       case "5": emit(.pageUp)
       case "6": emit(.pageDown)
       case "200": emit(.bracketedPasteStart)

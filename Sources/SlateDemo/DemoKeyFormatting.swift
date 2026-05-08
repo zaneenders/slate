@@ -8,6 +8,7 @@ enum DemoKeyFormatting {
     case .enter: return "↵"
     case .shiftEnter: return "⇧↵"
     case .backspace: return "⌫"
+    case .delete: return "⌦"
     case .tab: return "⇥"
     case .escape: return "Esc"
     case .arrowUp: return "↑"

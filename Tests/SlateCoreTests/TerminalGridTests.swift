@@ -83,7 +83,7 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
   }
 
   @Test func cellGrid_encode_replacesPriorBufferContents() {
-    let grid = TerminalCellGrid(
+    var grid = TerminalCellGrid(
       cols: 1,
       rows: 1,
       filling: TerminalCell(
@@ -384,7 +384,7 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
   }
 
   @Test func cellGrid_encode_cupDoubleDigitRow() {
-    let grid = TerminalCellGrid(
+    var grid = TerminalCellGrid(
       cols: 1,
       rows: 12,
       filling: TerminalCell(

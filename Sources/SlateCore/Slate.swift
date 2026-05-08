@@ -47,8 +47,13 @@ public struct Slate: ~Copyable {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
-  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame (no ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``).
-  public func enscribe(grid: borrowing TerminalCellGrid) {
+  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame.
+  ///
+  /// Only rows modified since the last encode are emitted (dirty-region tracking).
+  /// The grid's dirty flags are cleared as each row is encoded.
+  ///
+  /// No ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``.
+  public func enscribe(grid: inout TerminalCellGrid) {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in grid.encode(into: &buf) }
   }
