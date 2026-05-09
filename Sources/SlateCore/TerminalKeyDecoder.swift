@@ -161,16 +161,13 @@ public struct TerminalKeyDecoder: Sendable {
 
   /// Zero-allocation CSI parameter parser: extracts semicolon-delimited integers
   /// directly from the raw byte buffer without String/Array/Substring allocations.
-  ///
-  /// Trailing semicolons (e.g. `"1;"`) do not produce a phantom zero — only
-  /// digit-bearing segments contribute to the result.
   private func parseIntsFromBytes(_ bytes: ContiguousArray<UInt8>) -> [Int] {
     var result: [Int] = []
     var val = 0
     var hasDigit = false
     for b in bytes {
       if b == 0x3B {  // ';'
-        if hasDigit { result.append(val) }
+        result.append(val)
         val = 0
         hasDigit = false
       } else if b >= 0x30 && b <= 0x39 {
@@ -178,7 +175,7 @@ public struct TerminalKeyDecoder: Sendable {
         hasDigit = true
       }
     }
-    if hasDigit { result.append(val) }
+    if hasDigit || !result.isEmpty { result.append(val) }
     return result
   }
 
