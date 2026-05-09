@@ -109,12 +109,26 @@ private func runBenchmarks(outputPath: String) async throws {
     throw ExitCode.failure
   }
 
-  // Print non-build lines for user visibility
+  // Print relevant output, suppressing build noise and per-cycle chatter.
+  var finishedLine: String?
   for line in output.split(separator: "\n") {
     let s = String(line)
-    if !s.hasPrefix("Build") && !s.hasPrefix("[") {
-      print(s)
+    if s.hasPrefix("Build") || s.hasPrefix("[") { continue }
+    // Suppress per-cycle progress dots ("1.. -- 191ms")
+    if s.contains(".. --") { continue }
+    // Suppress framework boilerplate
+    if s.hasPrefix("Output file:") || s.hasPrefix("Discarding") || s.hasPrefix("Collecting data:") {
+      continue
     }
+    // Hold the "Finished in Xs" line for the end
+    if s.hasPrefix("Finished in") {
+      finishedLine = s
+      continue
+    }
+    print(s)
+  }
+  if let finished = finishedLine {
+    print("  \(finished)")
   }
 
   guard FileManager.default.fileExists(atPath: outputPath) else {
@@ -256,50 +270,83 @@ private enum Check {
       throw ExitCode.failure
     }
 
-    // Table header
-    let titleWidth = max(44, comparisons.map(\.title.count).max() ?? 0)
+    // Print full comparison table with per-size ratios and delta.
+    let titleWidth = max(38, comparisons.map(\.title.count).max() ?? 0)
     let hdrTitle = "Task".padding(toLength: titleWidth, withPad: " ", startingAt: 0)
-    print("  \(hdrTitle)  Geomean  Per-size ratios")
-    print("  \(String(repeating: "─", count: titleWidth))  ───────  ──────────────")
-
-    var regressions: [TaskComparison] = []
+    print("  \(hdrTitle)   1        2000      10000    Δ")
+    print("  \(String(repeating: "─", count: titleWidth))  ──────  ──────  ──────  ────")
 
     for c in comparisons {
       let geo = summaryRatio(c)
-      let flag = hasRegression(c) ? "\(ANSI.red)" : "\(ANSI.green)"
-      let marker = hasRegression(c) ? " ✗" : " ✓"
+      let sizes = c.ratios.sorted { (Int($0.key) ?? 0) < (Int($1.key) ?? 0) }
 
-      let sizeSummary = c.ratios
-        .sorted { (Int($0.key) ?? 0) < (Int($1.key) ?? 0) }
-        .map { size, ratio in
-          String(format: "\(size):%.3f", ratio)
-        }
-        .joined(separator: " ")
+      // Color-code the task name by severity.
+      let color: String
+      let marker: String
+      if geo > C.regressionThreshold {
+        color = ANSI.red; marker = " ⬆"
+      } else if geo < 1.0 / C.regressionThreshold {
+        color = ANSI.green; marker = " ⬇"
+      } else if geo > 1.05 {
+        color = ANSI.bold; marker = " ⚡"
+      } else {
+        color = ""; marker = ""
+      }
+
+      // Per-size ratio columns.
+      let cols = sizes.map { String(format: "%.3f", $0.value) }
+      let c1 = cols.count > 0 ? cols[0] : "  -"
+      let c2 = cols.count > 1 ? cols[1] : "  -"
+      let c3 = cols.count > 2 ? cols[2] : "  -"
+
+      // Delta percentage (positive = slower, negative = faster).
+      let delta = (geo - 1.0) * 100
+      let deltaStr: String
+      if abs(delta) < 0.5 {
+        deltaStr = " ·"
+      } else if delta > 0 {
+        deltaStr = String(format: "+%.0f%%", delta)
+      } else {
+        deltaStr = String(format: "−%.0f%%", -delta)
+      }
 
       let paddedTitle = c.title.padding(toLength: titleWidth, withPad: " ", startingAt: 0)
-      print("  \(flag)\(paddedTitle)\(ANSI.reset)\(marker)  \(String(format: "%.3f", geo))   \(sizeSummary)")
-
-      if hasRegression(c) {
-        regressions.append(c)
-      }
+      print("  \(color)\(paddedTitle)\(ANSI.reset)\(marker)  \(c1)   \(c2)   \(c3)   \(deltaStr)")
     }
 
     print("")
 
-    if !regressions.isEmpty {
-      let label = regressions.count == 1 ? "task" : "tasks"
-      let pct = Int((C.regressionThreshold - 1) * 100)
-      print("\(ANSI.red)\(ANSI.bold)⚠  \(regressions.count) \(label) regressed >\(pct)% (geometric mean)\(ANSI.reset)")
-      print("")
-      for r in regressions {
-        let geo = geometricMean(r)
-        let pct = Int((geo - 1) * 100)
-        print("  \(ANSI.red)+\(pct)%\(ANSI.reset)  \(r.title)  (per-size: \(r.ratios.sorted { (Int($0.key) ?? 0) < (Int($1.key) ?? 0) }.map { "\($0.key):\(String(format: "%.3f", $0.value))" }.joined(separator: " ")))")
+    // Summary section — only call out the interesting ones.
+    let improvementThreshold = 1.0 / C.regressionThreshold
+    var improved: [TaskComparison] = []
+    var regressed: [TaskComparison] = []
+    for c in comparisons {
+      let geo = summaryRatio(c)
+      if geo > C.regressionThreshold { regressed.append(c) }
+      else if geo < improvementThreshold { improved.append(c) }
+    }
+
+    if !improved.isEmpty {
+      for c in improved {
+        let geo = geometricMean(c)
+        let pct = Int(((1.0 - geo) * 100).rounded())
+        print("  \(ANSI.green)⬇ −\(pct)%\(ANSI.reset)  \(c.title)")
       }
+      print("")
+    }
+
+    if !regressed.isEmpty {
+      for r in regressed {
+        let geo = geometricMean(r)
+        let pct = Int(((geo - 1) * 100).rounded())
+        print("  \(ANSI.red)⬆ +\(pct)%\(ANSI.reset)  \(r.title)")
+      }
+      print("")
+      print("\(ANSI.red)\(ANSI.bold)⚠  \(regressed.count) task\(regressed.count == 1 ? "" : "s") regressed\(ANSI.reset)")
       throw ExitCode.failure
     }
 
-    print("\(ANSI.green)✓\(ANSI.reset) No significant regressions detected")
+    print("\(ANSI.green)✓\(ANSI.reset) No regressions detected")
   }
 }
 
