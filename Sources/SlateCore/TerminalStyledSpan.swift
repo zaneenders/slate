@@ -1,5 +1,5 @@
 /// A run of text with uniform styling, for use with ``TerminalCellGrid/blitSpans(column:row:maxWidth:_:)``.
-public struct TerminalStyledSpan: Sendable {
+public struct TerminalStyledSpan: Sendable, TerminalSpanProtocol {
   public var text: String
   public var foreground: TerminalRGB
   public var background: TerminalRGB

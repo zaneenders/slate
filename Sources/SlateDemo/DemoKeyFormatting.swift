@@ -8,6 +8,7 @@ enum DemoKeyFormatting {
     case .enter: return "↵"
     case .shiftEnter: return "⇧↵"
     case .backspace: return "⌫"
+    case .delete: return "⌦"
     case .tab: return "⇥"
     case .escape: return "Esc"
     case .arrowUp: return "↑"
@@ -26,6 +27,24 @@ enum DemoKeyFormatting {
     case .bracketedPasteStart: return "paste↓"
     case .bracketedPasteEnd: return "paste↑"
     case .unknown: return "?"
+    }
+  }
+
+  static func describe(_ action: TerminalInputAction) -> String {
+    switch action {
+    case .character(let ch): return ch == " " ? "␠" : String(ch)
+    case .enter: return "↵"
+    case .newline: return "⇧↵"
+    case .backspace: return "⌫"
+    case .tab: return "⇥"
+    case .ctrlC: return "^C"
+    case .ctrlD: return "^D"
+    case .arrowUp: return "↑"
+    case .arrowDown: return "↓"
+    case .pageUp: return "PgUp"
+    case .pageDown: return "PgDn"
+    case .home: return "Home"
+    case .end: return "End"
     }
   }
 }

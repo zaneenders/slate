@@ -32,10 +32,10 @@ enum DemoFrameBuilder {
       filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))
   }
 
-  /// Renders one frame into `grid` (which must already match `cols`×`rows`).
-  /// Uses ``TerminalCellGrid/reset(filling:)`` to clear, ``TerminalCellGrid/blitSpans(column:row:maxWidth:_:)``
-  /// for all styled text, and ``TerminalCellGrid/blitText(column:row:string:foreground:background:flags:)``
-  /// for plain text runs.
+  /// Reuses `grid` across frames. The grid is ``TerminalCellGrid/reset(filling:)`` at the
+  /// start of each render, which marks all rows dirty. The ``TerminalCellGrid/encode(into:)``
+  /// method then only emits rows that were actually painted — unchanged rows (such as
+  /// empty padding) are skipped via dirty-region tracking.
   ///
   /// Scrollback uses an **absolute first-visible-row** model (matching scribe's
   /// `Sources/ScribeCLI/SlateChat/SlateChatHost.swift`): when ``followingLiveTranscript`` is

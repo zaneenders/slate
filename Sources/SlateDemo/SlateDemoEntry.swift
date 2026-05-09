@@ -13,9 +13,7 @@ enum SlateDemoEntry {
 
     final class DemoState {
       var grid: TerminalCellGrid
-      var decoder = TerminalKeyDecoder()
-      var inputBuffer = ""
-      var inPaste = false
+      var input = TerminalInputHandler()
       var transcript: [(speaker: String, text: String)] = []
       var streamingText = ""
       var keyHistory: [String] = []
@@ -37,13 +35,18 @@ enum SlateDemoEntry {
 
       func resize(cols: Int, rows: Int) {
         guard grid.cols != cols || grid.rows != rows else { return }
-        grid = DemoFrameBuilder.makeGrid(cols: cols, rows: rows)
+        let fill = TerminalCell(
+          glyph: " ",
+          foreground: TerminalRGB(r: 195, g: 205, b: 220),
+          background: TerminalRGB(r: 14, g: 14, b: 24),
+          flags: [])
+        grid.resize(cols: cols, rows: rows, filling: fill)
         // Wrap geometry changed; snap to live tail so the user isn't left at a stale row.
         followingLiveTranscript = true
       }
 
-      func recordKey(_ event: TerminalKeyEvent) {
-        let label = DemoKeyFormatting.describe(event)
+      func recordKey(_ action: TerminalInputAction) {
+        let label = DemoKeyFormatting.describe(action)
         guard !label.isEmpty else { return }
         keyCount &+= 1
         keyHistory.append(label)
@@ -59,12 +62,12 @@ enum SlateDemoEntry {
           rows: slate.rows,
           transcript: transcript,
           streamingText: streamingText,
-          inputBuffer: inputBuffer,
+          inputBuffer: input.buffer,
           keyHistory: keyHistory,
           keyCount: keyCount,
           firstVisibleRow: &transcriptFirstVisibleRow,
           followingLiveTranscript: &followingLiveTranscript)
-        slate.enscribe(grid: grid)
+        slate.enscribe(grid: &grid)
       }
     }
 
@@ -114,72 +117,43 @@ enum SlateDemoEntry {
       case .stdinBytes(let bytes):
         if bytes.isEmpty { return .stop }
         var shouldStop = false
-        state.decoder.decode(bytes) { key in
-          switch key {
-          case .ctrl(3), .ctrl(4):  // Ctrl+C / Ctrl+D
-            shouldStop = true
-          case .bracketedPasteStart:
-            state.inPaste = true
-          case .bracketedPasteEnd:
-            state.inPaste = false
-          case .character(let ch):
-            state.inputBuffer.append(ch)
-            state.recordKey(key)
-          case .backspace:
-            if !state.inPaste, !state.inputBuffer.isEmpty { state.inputBuffer.removeLast() }
-            state.recordKey(key)
-          case .shiftEnter:
-            // Insert a real newline; the input region grows on the next render.
-            state.inputBuffer.append("\n")
-            state.recordKey(key)
-          case .enter:
-            if state.inPaste {
-              // Pasted newlines are kept as real newlines so multi-line snippets
-              // round-trip into the buffer instead of collapsing to spaces.
-              state.inputBuffer.append("\n")
-            } else if !state.inputBuffer.isEmpty {
-              state.transcript.append((speaker: "you", text: state.inputBuffer))
-              state.inputBuffer = ""
-              // Submitting always re-attaches to the live tail so the user sees their message
-              // (and any reply that follows) instead of staying parked in scroll-back.
-              state.followingLiveTranscript = true
-              state.recordKey(key)
-            }
-          case .tab:
-            if state.inPaste {
-              // Pasted tabs become spaces so wrapping/blit don't choke on `\t`.
-              state.inputBuffer.append("    ")
-            } else {
-              state.recordKey(key)
-            }
 
-          // ── Transcript scroll-back (matches scribe's SlateChatHost bindings) ────────────
+        for action in state.input.handle(bytes) {
+          switch action {
+          case .ctrlC, .ctrlD:
+            shouldStop = true
+          case .enter:
+            let text = state.input.takeBuffer()
+            if !text.isEmpty {
+              state.transcript.append((speaker: "you", text: text))
+              state.followingLiveTranscript = true
+            }
+            state.recordKey(action)
           case .arrowUp:
             state.transcriptFirstVisibleRow -= 1
             state.followingLiveTranscript = false
-            state.recordKey(key)
+            state.recordKey(action)
           case .arrowDown:
             state.transcriptFirstVisibleRow += 1
             state.followingLiveTranscript = false
-            state.recordKey(key)
-          case .pageUp, .ctrl(2):  // PgUp or Ctrl+B
+            state.recordKey(action)
+          case .pageUp:
             state.transcriptFirstVisibleRow -= DemoFrameBuilder.pageScrollLines
             state.followingLiveTranscript = false
-            state.recordKey(key)
-          case .pageDown, .ctrl(6):  // PgDn or Ctrl+F
+            state.recordKey(action)
+          case .pageDown:
             state.transcriptFirstVisibleRow += DemoFrameBuilder.pageScrollLines
             state.followingLiveTranscript = false
-            state.recordKey(key)
+            state.recordKey(action)
           case .home:
             state.transcriptFirstVisibleRow = 0
             state.followingLiveTranscript = false
-            state.recordKey(key)
+            state.recordKey(action)
           case .end:
             state.followingLiveTranscript = true
-            state.recordKey(key)
-
+            state.recordKey(action)
           default:
-            state.recordKey(key)
+            state.recordKey(action)
           }
         }
         if shouldStop { return .stop }
