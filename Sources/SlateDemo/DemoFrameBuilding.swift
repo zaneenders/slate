@@ -25,13 +25,6 @@ enum DemoFrameBuilder {
   /// Lines moved per ``TerminalKeyEvent/pageUp`` / ``TerminalKeyEvent/pageDown`` press.
   static let pageScrollLines = 5
 
-  /// Makes a fresh grid for the given terminal size. Use when the terminal is resized.
-  static func makeGrid(cols: Int, rows: Int) -> TerminalCellGrid {
-    TerminalCellGrid(
-      cols: cols, rows: rows,
-      filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))
-  }
-
   /// Reuses `grid` across frames. The grid is ``TerminalCellGrid/reset(filling:)`` at the
   /// start of each render, which marks all rows dirty. The ``TerminalCellGrid/encode(into:)``
   /// method then only emits rows that were actually painted — unchanged rows (such as
@@ -47,8 +40,6 @@ enum DemoFrameBuilder {
   /// bottom.
   static func render(
     into grid: inout TerminalCellGrid,
-    cols: Int,
-    rows: Int,
     transcript: [(speaker: String, text: String)],
     streamingText: String,
     inputBuffer: String,
@@ -57,6 +48,8 @@ enum DemoFrameBuilder {
     firstVisibleRow: inout Int,
     followingLiveTranscript: inout Bool
   ) {
+    let rows = grid.rows
+    let cols = grid.cols
     // ── reset ────────────────────────────────────────────────────────────────
     grid.reset(
       filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))
