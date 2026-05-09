@@ -271,7 +271,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
         x &+= 1
       }
     }
-    markDirty(row: row)
+    if x > column0 { markDirty(row: row) }
   }
 
   /// Variadic overload — avoids array literal allocation at the call site.
