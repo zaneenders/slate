@@ -317,7 +317,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
         x &+= 1
       }
     }
-    markDirty(row: row)
+    if x > column0 { markDirty(row: row) }
   }
 
   /// Variadic overload — avoids array literal allocation at the call site.
@@ -374,7 +374,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   ///
   /// Skips redundant intensity / truecolor sequences when they match the previous
   /// cell (style persists in the terminal).
-  internal mutating func encode(into buf: inout TerminalByteBuffer) {
+  public mutating func encode(into buf: inout TerminalByteBuffer) {
     buf.removeAll()
     var hasPrevious = false
     var previous = EmittedGraphicStyle(bold: false, foreground: .black, background: .black)

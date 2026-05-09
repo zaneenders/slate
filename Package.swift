@@ -13,6 +13,7 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", from: "1.4.1"),
     .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.1.3"),
+    .package(url: "https://github.com/apple/swift-profile-recorder.git", .upToNextMinor(from: "0.3.13")),
   ],
   targets: [
     .target(
@@ -29,7 +30,8 @@ let package = Package(
     .executableTarget(
       name: "SlateDemo",
       dependencies: [
-        "SlateCore"
+        "SlateCore",
+        .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
       ],
       swiftSettings: [
         .swiftLanguageMode(.v6),
@@ -45,6 +47,16 @@ let package = Package(
         .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
+      ]),
+    .executableTarget(
+      name: "SlateBench",
+      dependencies: [
+        "SlateCore"
+      ],
+      path: "Benchmarks/SlateBench",
+      swiftSettings: [
+        .swiftLanguageMode(.v6),
+        .unsafeFlags(["-O"]),
       ]),
   ]
 )
