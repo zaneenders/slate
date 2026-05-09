@@ -40,8 +40,6 @@ enum DemoFrameBuilder {
   /// bottom.
   static func render(
     into grid: inout TerminalCellGrid,
-    cols: Int,
-    rows: Int,
     transcript: [(speaker: String, text: String)],
     streamingText: String,
     inputBuffer: String,
@@ -50,6 +48,8 @@ enum DemoFrameBuilder {
     firstVisibleRow: inout Int,
     followingLiveTranscript: inout Bool
   ) {
+    let rows = grid.rows
+    let cols = grid.cols
     // ── reset ────────────────────────────────────────────────────────────────
     grid.reset(
       filling: TerminalCell(glyph: " ", foreground: P.light, background: P.bg, flags: []))

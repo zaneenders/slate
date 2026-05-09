@@ -48,13 +48,9 @@ enum SlateDemoEntry {
 
     // Initial paint — Slate owns the grid.
     do {
-      let cols = slate.cols
-      let rows = slate.rows
       slate.with { grid in
         DemoFrameBuilder.render(
           into: &grid,
-          cols: cols,
-          rows: rows,
           transcript: state.transcript,
           streamingText: state.streamingText,
           inputBuffer: state.input.buffer,
@@ -150,13 +146,9 @@ enum SlateDemoEntry {
         if shouldStop { return .stop }
       }
 
-      let cols = slate.cols
-      let rows = slate.rows
       slate.with { grid in
         DemoFrameBuilder.render(
           into: &grid,
-          cols: cols,
-          rows: rows,
           transcript: state.transcript,
           streamingText: state.streamingText,
           inputBuffer: state.input.buffer,

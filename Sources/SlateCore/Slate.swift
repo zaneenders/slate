@@ -39,8 +39,8 @@ public struct Slate: ~Copyable {
     case notInteractiveTerminal
   }
 
-  public private(set) var cols: Int
-  public private(set) var rows: Int
+  private var cols: Int
+  private var rows: Int
 
   /// The reusable cell grid owned by this terminal session.
   ///
