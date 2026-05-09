@@ -12,13 +12,13 @@ import Musl
 // MARK: - Wake event types
 
 /// One wake from stdin, terminal resize, or an outside producer (LLM tokens, network, etc.).
-/// Redraw by calling ``Slate/enscribe(grid:)`` (or your own output) inside the handler.
+/// Redraw by calling ``Slate/with(_:)`` inside the handler.
 public enum TerminalWakeEvent: Sendable {
-  /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or refresh via ``Slate/refreshWindowSize()`` before ``Slate/enscribe(grid:)``.
+  /// Terminal dimensions may have changed (detected via periodic ``TIOCGWINSZ`` poll). Read size via ``TTY/windowSize()`` or refresh via ``Slate/refreshWindowSize()`` before ``Slate/with(_:)``.
   case resize
   /// stdin read **in one wakeup** — chunks are often larger when pasting or when the tty has buffered keystrokes together. Empty means EOF (stdin closed).
   case stdinBytes(ContiguousArray<UInt8>)
-  /// Another source asked for a frame (``ExternalWake/requestRender()``). Read shared model / buffer and redraw with ``Slate/enscribe(grid:)``.
+  /// Another source asked for a frame (``ExternalWake/requestRender()``). Read shared model / buffer and redraw with ``Slate/with(_:)``.
   case external
 }
 
@@ -241,49 +241,13 @@ public struct Slate: ~Copyable {
   /// }
   /// ```
   public mutating func with(_ paint: (inout TerminalCellGrid) -> Void) {
-    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     paint(&_grid)
-    presenter.presentFrame { buf in _grid.encode(into: &buf) }
+    enscribe()
   }
 
-  /// Paint into an externally-owned grid then encode + write one frame.
-  ///
-  /// Like ``with(_:)`` but receives the grid as an `inout` parameter so you can
-  /// keep the grid in an external model object:
-  ///
-  /// ```swift
-  /// slate.with(grid: &myModel.grid) { grid in
-  ///     grid.reset(filling: .defaultCell)
-  ///     // … paint into grid …
-  /// }
-  /// ```
-  public mutating func with(grid: inout TerminalCellGrid, _ paint: (inout TerminalCellGrid) -> Void) {
-    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
-    paint(&grid)
-    presenter.presentFrame { buf in grid.encode(into: &buf) }
-  }
-
-  /// Encode the Slate-owned grid and write one raw frame.
-  ///
-  /// Only rows modified since the last encode are emitted (dirty-region tracking).
-  /// The grid's dirty flags are cleared as each row is encoded.
-  ///
-  /// No `ioctl` — dimensions come from ``init`` and ``refreshWindowSize()``.
-  ///
-  /// **Prefer** ``with(_:)`` — it scopes grid mutation so you can't forget to encode.
-  public mutating func enscribe() {
+  internal mutating func enscribe() {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in _grid.encode(into: &buf) }
-  }
-
-  /// Encode an externally-owned `grid` using cached ``cols`` / ``rows`` and write one
-  /// raw frame. Prefer ``with(grid:_:)`` when using an external grid.
-  ///
-  /// Only rows modified since the last encode are emitted (dirty-region tracking).
-  /// The grid's dirty flags are cleared as each row is encoded.
-  public func enscribe(grid: inout TerminalCellGrid) {
-    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
-    presenter.presentFrame { buf in grid.encode(into: &buf) }
   }
 
   /// Subscribe to terminal events — the primary event-loop entry point.
