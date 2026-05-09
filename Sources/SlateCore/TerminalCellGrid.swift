@@ -150,6 +150,10 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   /// by ``encode(into:)``.
   private var dirtyRows: BitArray
 
+  /// Running count of dirty rows — allows O(1) early exit in `encode`
+  /// when nothing has changed since the last frame.
+  private var dirtyCount: Int
+
   public init(cols: Int, rows: Int, filling fill: TerminalCell) {
     precondition(cols >= 1 && rows >= 1)
     self.cols = cols
@@ -157,6 +161,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     self.cells = RigidArray(repeating: fill, count: cols &* rows)
     // All rows start dirty so the first encode emits a full frame.
     self.dirtyRows = BitArray(repeating: true, count: rows)
+    self.dirtyCount = rows
   }
 
   /// Re-create the grid for a new size. All rows are marked dirty.
@@ -166,6 +171,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     self.rows = newRows
     self.cells = RigidArray(repeating: fill, count: newCols &* newRows)
     self.dirtyRows = BitArray(repeating: true, count: newRows)
+    self.dirtyCount = newRows
   }
 
   // MARK: - Dirty-row helpers
@@ -173,13 +179,25 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   @inline(__always)
   private mutating func markDirty(row y: Int) {
     precondition(y >= 0 && y < rows)
-    dirtyRows[y] = true
+    if !dirtyRows[y] {
+      dirtyRows[y] = true
+      dirtyCount &+= 1
+    }
   }
 
   /// Marks all rows in the half-open range `[y0, y1)` as dirty.
   @inline(__always)
   private mutating func markDirty(rowRange y0: Int, _ y1: Int) {
-    dirtyRows.fill(in: max(0, y0)..<min(rows, y1), with: true)
+    let r0 = max(0, y0)
+    let r1 = min(rows, y1)
+    guard r1 > r0 else { return }
+    // Count rows not already dirty before the bulk fill.
+    var newDirty = 0
+    for y in r0..<r1 {
+      if !dirtyRows[y] { newDirty &+= 1 }
+    }
+    dirtyRows.fill(in: r0..<r1, with: true)
+    dirtyCount &+= newDirty
   }
 
   // MARK: - Indexing
@@ -312,6 +330,13 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   /// cell (style persists in the terminal).
   public mutating func encode(into buf: inout TerminalByteBuffer) {
     buf.removeAll()
+
+    // Fast path: nothing changed since last encode — just emit SGR reset.
+    if dirtyCount == 0 {
+      appendSGRReset(to: &buf)
+      return
+    }
+
     var hasPrevious = false
     var previous = EmittedGraphicStyle(bold: false, foreground: .black, background: .black)
     var flatIdx = 0
@@ -352,6 +377,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
       }
 
       dirtyRows[y] = false  // Clear dirty flag for this row
+      dirtyCount &-= 1
       y &+= 1
     }
     appendSGRReset(to: &buf)
