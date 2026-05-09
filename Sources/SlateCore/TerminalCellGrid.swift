@@ -9,7 +9,7 @@ public typealias TerminalByteBuffer = RigidArray<UInt8>
 private let decimalByteTable: [[UInt8]] = (0...255).map { Array(String($0).utf8) }
 
 /// Pre-encoded CSI fragments as `[[UInt8]]` — bulk-copied instead of byte-by-byte.
-private let escBracketBytes: [UInt8] = [0x1B, 0x5B]           // ESC[
+private let escBracketBytes: [UInt8] = [0x1B, 0x5B]  // ESC[
 private let sgrBoldBytes: [UInt8] = [0x1B, 0x5B, 0x31, 0x6D]  // ESC[1m
 private let sgrNormalIntensityBytes: [UInt8] = [0x1B, 0x5B, 0x32, 0x32, 0x6D]  // ESC[22m
 private let sgrResetBytes: [UInt8] = [0x1B, 0x5B, 0x30, 0x6D]  // ESC[0m
@@ -111,6 +111,17 @@ private struct EmittedGraphicStyle: Equatable {
   var background: TerminalRGB
 }
 
+// MARK: - Generic span protocol
+
+/// Protocol for styled text spans that can be blitted directly into a ``TerminalCellGrid``
+/// without conversion. Conform your own span type to skip the intermediate array allocation.
+public protocol TerminalSpanProtocol {
+  var text: String { get }
+  var foreground: TerminalRGB { get }
+  var background: TerminalRGB { get }
+  var flags: TerminalCellFlags { get }
+}
+
 // MARK: - Inline bitset for dirty-row tracking
 
 /// Compact bitset for up to 512 rows (8 × UInt64 = 64 bytes).
@@ -146,6 +157,33 @@ private struct RowBitset: ~Copyable, Sendable {
   @inline(__always)
   mutating func setAll() {
     for i in words.indices { words[i] = ~0 }
+  }
+
+  /// Set all bits in the half-open range `[y0, y1)` to `true` using bulk word operations.
+  @inline(__always)
+  mutating func setAll(in y0: Int, _ y1: Int) {
+    let start = Swift.max(0, y0)
+    let end = Swift.min(words.count &* 64, y1)
+    guard start < end else { return }
+    let w0 = start / 64
+    let w1 = (end &- 1) / 64
+    if w0 == w1 {
+      // Single word: set bits from start to end
+      let mask = (UInt64.max &<< UInt64(start % 64)) & (UInt64.max &>> UInt64(63 &- ((end &- 1) % 64)))
+      words[w0] |= mask
+    } else {
+      // First partial word
+      words[w0] |= (UInt64.max &<< UInt64(start % 64))
+      // Full words in between
+      var w = w0 &+ 1
+      while w < w1 {
+        words[w] = ~0
+        w &+= 1
+      }
+      // Last partial word
+      let lastBit = (end &- 1) % 64
+      words[w1] |= (UInt64.max &>> UInt64(63 &- lastBit))
+    }
   }
 }
 
@@ -202,16 +240,10 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     dirtyRows[y] = true
   }
 
-  /// Marks all rows in the half-open range `[y0, y1)` as dirty.
+  /// Marks all rows in the half-open range `[y0, y1)` as dirty using bulk bit operations.
   @inline(__always)
   private mutating func markDirty(rowRange y0: Int, _ y1: Int) {
-    let start = max(0, y0)
-    let end = min(rows, y1)
-    var r = start
-    while r < end {
-      dirtyRows[r] = true
-      r &+= 1
-    }
+    dirtyRows.setAll(in: y0, y1)
   }
 
   // MARK: - Indexing
@@ -262,11 +294,13 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
 
   /// Overwrite a horizontal run at (`column0`, `row`) with a sequence of styled spans.
   /// `maxWidth` caps the total columns written; the run is clipped to grid bounds.
-  public mutating func blitSpans(
+  /// Generic over ``TerminalSpanProtocol`` so consumers can use their own span types
+  /// without an intermediate conversion.
+  public mutating func blitSpans<S: TerminalSpanProtocol>(
     column column0: Int,
     row: Int,
     maxWidth: Int,
-    _ spans: [TerminalStyledSpan]
+    _ spans: [S]
   ) {
     guard row >= 0, row < rows, column0 >= 0, column0 < cols, maxWidth > 0 else { return }
     let endCol = min(column0 &+ maxWidth, cols)
@@ -286,6 +320,17 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     markDirty(row: row)
   }
 
+  /// Variadic overload — avoids array literal allocation at the call site.
+  @inline(__always)
+  public mutating func blitSpans(
+    column column0: Int,
+    row: Int,
+    maxWidth: Int,
+    _ spans: TerminalStyledSpan...
+  ) {
+    blitSpans(column: column0, row: row, maxWidth: maxWidth, spans)
+  }
+
   /// Fills every cell in the grid with `fill` without reallocating — use to reset between frames.
   /// Marks all rows dirty.
   public mutating func reset(filling fill: TerminalCell) {
@@ -293,6 +338,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   }
 
   /// Overwrite a horizontal run starting at (**column0**, **row0**), one grid cell per `Character`.
+  /// Marks the row dirty exactly once instead of per-character.
   public mutating func blitText(
     column column0: Int,
     row row0: Int,
@@ -302,16 +348,16 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     flags: TerminalCellFlags = []
   ) {
     guard row0 >= 0, row0 < rows, column0 >= 0, column0 < cols else { return }
+    let rowBase = row0 &* cols
     var x = column0
     for ch in string {
       guard x < cols else { break }
-      self[column: x, row: row0] = TerminalCell(
+      cells[rowBase &+ x] = TerminalCell(
         glyph: ch, foreground: foreground, background: background, flags: flags)
       x &+= 1
     }
-    // `self[column:row:]` setter already marks the row dirty per-character,
-    // but we also ensure it once here for the empty-string / no-op case.
-    markDirty(row: row0)
+    // Mark dirty once at end (no per-char subscript overhead).
+    if x > column0 { markDirty(row: row0) }
   }
 
   // MARK: - Encoding

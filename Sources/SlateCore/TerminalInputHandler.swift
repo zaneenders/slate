@@ -88,7 +88,7 @@ public struct TerminalInputHandler: Sendable {
         actions.append(.newline)
       case .tab:
         if paste { actions.append(.tab) }
-      case .arrowUp:   actions.append(.arrowUp)
+      case .arrowUp: actions.append(.arrowUp)
       case .arrowDown: actions.append(.arrowDown)
       case .pageUp, .ctrl(2): actions.append(.pageUp)
       case .pageDown, .ctrl(6): actions.append(.pageDown)

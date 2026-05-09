@@ -159,6 +159,26 @@ public struct TerminalKeyDecoder: Sendable {
     b >= 0x40 && b <= 0x7E
   }
 
+  /// Zero-allocation CSI parameter parser: extracts semicolon-delimited integers
+  /// directly from the raw byte buffer without String/Array/Substring allocations.
+  private func parseIntsFromBytes(_ bytes: ContiguousArray<UInt8>) -> [Int] {
+    var result: [Int] = []
+    var val = 0
+    var hasDigit = false
+    for b in bytes {
+      if b == 0x3B {  // ';'
+        result.append(val)
+        val = 0
+        hasDigit = false
+      } else if b >= 0x30 && b <= 0x39 {
+        val = val &* 10 &+ Int(b &- 0x30)
+        hasDigit = true
+      }
+    }
+    if hasDigit || !result.isEmpty { result.append(val) }
+    return result
+  }
+
   private func emitCSI(
     params: ContiguousArray<UInt8>,
     terminator: UInt8,
@@ -178,12 +198,10 @@ public struct TerminalKeyDecoder: Sendable {
       return
     }
 
-    let paramStr = String(bytes: Array(params), encoding: .utf8) ?? ""
-    let ints = paramStr.split(separator: ";").compactMap { Int($0) }
-
     // CSI u — kitty keyboard protocol: `\e[code;modifiersu`.
     // Non-zero modifier means a modified key; modifier 1 = unshifted (same as plain).
     if terminator == 0x75 {
+      let ints = parseIntsFromBytes(params)
       if let key = ints.first, key == 13, ints.count >= 2, ints[1] != 1 {
         emit(.shiftEnter)
       } else {
@@ -196,6 +214,7 @@ public struct TerminalKeyDecoder: Sendable {
     }
 
     if terminator == 0x7E {
+      let ints = parseIntsFromBytes(params)
       // xterm-style `\e[27;modifier;13~` (Shift+Enter is modifier 2).
       if ints.count >= 3, ints[0] == 27, ints[2] == 13, ints[1] != 1 {
         emit(.shiftEnter)
@@ -206,18 +225,26 @@ public struct TerminalKeyDecoder: Sendable {
         emit(.shiftEnter)
         return
       }
-      switch paramStr {
-      case "3": emit(.delete)
-      case "5": emit(.pageUp)
-      case "6": emit(.pageDown)
-      case "200": emit(.bracketedPasteStart)
-      case "201": emit(.bracketedPasteEnd)
-      default:
-        var full: ContiguousArray<UInt8> = [0x1B, 0x5B]
-        full.append(contentsOf: params)
-        full.append(0x7E)
-        emit(.unknown(full))
+      // Single-parameter ~-terminated sequences: delete, page up/down, bracketed paste.
+      if ints.count == 1 {
+        switch ints[0] {
+        case 3: emit(.delete)
+        case 5: emit(.pageUp)
+        case 6: emit(.pageDown)
+        case 200: emit(.bracketedPasteStart)
+        case 201: emit(.bracketedPasteEnd)
+        default:
+          var full: ContiguousArray<UInt8> = [0x1B, 0x5B]
+          full.append(contentsOf: params)
+          full.append(0x7E)
+          emit(.unknown(full))
+        }
+        return
       }
+      var full: ContiguousArray<UInt8> = [0x1B, 0x5B]
+      full.append(contentsOf: params)
+      full.append(0x7E)
+      emit(.unknown(full))
       return
     }
 

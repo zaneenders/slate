@@ -16,4 +16,8 @@ public struct TerminalCell: Equatable, Sendable {
     self.background = background
     self.flags = flags
   }
+
+  /// A space with default white-on-black styling — suitable as a grid initial fill.
+  public static let defaultCell = TerminalCell(
+    glyph: " ", foreground: .white, background: .black, flags: [])
 }

@@ -7,6 +7,21 @@ public struct Slate: ~Copyable {
   public private(set) var cols: Int
   public private(set) var rows: Int
 
+  /// The reusable cell grid owned by this terminal session.
+  /// Paint into it between ``enscribe()`` calls; dirty-region tracking
+  /// ensures only modified rows are emitted to the tty.
+  ///
+  /// ```swift
+  /// slate.grid.reset(filling: .defaultCell)
+  /// // ... paint into slate.grid ...
+  /// slate.enscribe()
+  /// ```
+  public var grid: TerminalCellGrid {
+    _read { yield _grid }
+    _modify { yield &_grid }
+  }
+
+  private var _grid: TerminalCellGrid
   private let presenter = DoubleBufferedTerminalPresenter()
 
   public init() throws {
@@ -24,6 +39,7 @@ public struct Slate: ~Copyable {
     let size = TTY.windowSize()
     cols = size.cols
     rows = size.rows
+    _grid = TerminalCellGrid(cols: cols, rows: rows, filling: .defaultCell)
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
 
     installationComplete = true
@@ -37,22 +53,36 @@ public struct Slate: ~Copyable {
     ttyRestoreSaved()
   }
 
-  /// Reread ``TTY/windowSize()``, update ``cols`` / ``rows``, and resize encode buffers if needed.
+  /// Reread ``TTY/windowSize()``, update ``cols`` / ``rows``, resize the grid,
+  /// and resize encode buffers if needed.
   ///
-  /// Call this when you receive ``TerminalWakeEvent/resize`` (or anytime dimensions may have changed outside ``TerminalWakePump``).
+  /// Call this when you receive ``TerminalWakeEvent/resize`` (or anytime dimensions
+  /// may have changed outside ``TerminalWakePump``).
   public mutating func refreshWindowSize() {
     let size = TTY.windowSize()
+    guard size.cols != cols || size.rows != rows else { return }
     cols = size.cols
     rows = size.rows
+    _grid.resize(cols: cols, rows: rows, filling: .defaultCell)
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
-  /// Encode `grid` using cached ``cols`` / ``rows`` and write one raw frame.
+  /// Encode the Slate-owned ``grid`` and write one raw frame.
   ///
   /// Only rows modified since the last encode are emitted (dirty-region tracking).
   /// The grid's dirty flags are cleared as each row is encoded.
   ///
   /// No ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``.
+  public mutating func enscribe() {
+    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
+    presenter.presentFrame { buf in _grid.encode(into: &buf) }
+  }
+
+  /// Encode an externally-owned `grid` using cached ``cols`` / ``rows`` and write one
+  /// raw frame. Prefer ``enscribe()`` when using the Slate-owned ``grid``.
+  ///
+  /// Only rows modified since the last encode are emitted (dirty-region tracking).
+  /// The grid's dirty flags are cleared as each row is encoded.
   public func enscribe(grid: inout TerminalCellGrid) {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in grid.encode(into: &buf) }
