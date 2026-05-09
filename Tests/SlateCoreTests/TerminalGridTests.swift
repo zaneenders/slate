@@ -479,6 +479,13 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
     #expect(rows.isEmpty)
   }
 
+  @Test func blit_zeroWidth_nonZeroHeight_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blit(column: 1, row: 1, width: 0, height: 2, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
   @Test func blit_outOfBoundsRowRange_clipsAndNoDirty() {
     var grid = cleanGrid(cols: 4, rows: 4)
     // Entirely below grid

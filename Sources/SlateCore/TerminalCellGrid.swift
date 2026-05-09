@@ -230,20 +230,22 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     repeating cell: TerminalCell
   ) {
     precondition(width >= 0 && height >= 0)
+    let c0 = max(0, column0)
     let c1 = min(column0 &+ width, cols)
-    let r1 = min(row0 &+ height, rows)
     let r0 = max(0, row0)
+    let r1 = min(row0 &+ height, rows)
+    guard c1 > c0, r1 > r0 else { return }
     var r = r0
     while r < r1 {
       let rowBase = r &* cols
-      var c = max(0, column0)
+      var c = c0
       while c < c1 {
         cells[rowBase &+ c] = cell
         c &+= 1
       }
       r &+= 1
     }
-    if r1 > r0 { markDirty(rowRange: r0, r1) }
+    markDirty(rowRange: r0, r1)
   }
 
   /// Overwrite a horizontal run at (`column0`, `row`) with a sequence of styled spans.

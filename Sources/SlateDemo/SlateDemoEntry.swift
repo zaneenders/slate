@@ -10,8 +10,10 @@ enum SlateDemoEntry {
     // Then collect samples:
     //   curl -sd '{"numberOfSamples":500,"timeInterval":"10 ms"}' --unix-socket /tmp/slate-samples-PID.sock http://unix/sample | swift demangle --simplified > /tmp/samples.perf
     // Drag /tmp/samples.perf onto https://speedscope.app or https://profiler.firefox.com
-    async let _ = ProfileRecorderServer(configuration: .parseFromEnvironment())
-      .runIgnoringFailures(logger: Logger(label: "slate-profiler"))
+    Task {
+      guard let server = try? await ProfileRecorderServer(configuration: .parseFromEnvironment()) else { return }
+      await server.runIgnoringFailures(logger: Logger(label: "slate-profiler"))
+    }
 
     var slate: Slate
     do {
