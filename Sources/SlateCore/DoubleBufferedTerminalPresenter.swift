@@ -56,12 +56,13 @@ internal final class DoubleBufferedTerminalPresenter {
   /// single bulk memory copy (one allocation + `memcpy`-equivalent), not a per-byte append
   /// loop, so a 300 KB frame finishes in well under a millisecond.
   private func copyContiguousBytes(_ buf: borrowing TerminalByteBuffer) -> [UInt8] {
-    let raw = unsafe buf.span.bytes
     #if compiler(>=6.4)
+    let raw = buf.span.bytes
     return raw.withUnsafeBytes { src in
       unsafe Array(unsafe src.bindMemory(to: UInt8.self))
     }
     #else
+    let raw = unsafe buf.span.bytes
     return unsafe raw.withUnsafeBytes { src in
       unsafe Array(unsafe src.bindMemory(to: UInt8.self))
     }

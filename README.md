@@ -36,8 +36,8 @@ xcrun llvm-cov report "$BIN" \
 
 ```bash
 swift test --enable-code-coverage
-BIN="$(find .build -type f \( -path '*/debug/slatePackageTests.xctest/**/slatePackageTests' -o -path '*/debug/slatePackageTests' \) ! -path '*dSYM*' | head -n 1)"
-PROF="$(find .build -path '*/codecov/default.profdata' | head -n 1)"
+BIN=".build/x86_64-unknown-linux-gnu/debug/slatePackageTests.xctest"
+PROF=".build/x86_64-unknown-linux-gnu/debug/codecov/default.profdata"
 llvm-cov report "$BIN" \
   -instr-profile="$PROF" \
   --ignore-filename-regex='/Tests/' \

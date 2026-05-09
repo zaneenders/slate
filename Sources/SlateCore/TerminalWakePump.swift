@@ -82,10 +82,17 @@ private func startStdinWakeTask(bus: WakeBus) -> Task<Void, Never> {
       aggregate.reserveCapacity(chunkCapacity)
 
       gather: while true {
+        #if compiler(>=6.4)
+        let grabbed: Int =
+          scratch.withUnsafeMutableBytes { raw in
+            unsafe read(STDIN_FILENO, raw.baseAddress!, raw.count)
+          }
+        #else
         let grabbed: Int =
           unsafe scratch.withUnsafeMutableBytes { raw in
             unsafe read(STDIN_FILENO, raw.baseAddress!, raw.count)
           }
+        #endif
         if grabbed < 0 {
           if errno == EINTR {
             continue gather

@@ -3,9 +3,15 @@ import Testing
 @testable import SlateCore
 
 private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
+  #if compiler(>=6.4)
+  buffer.span.bytes.withUnsafeBytes { raw in
+    unsafe String(decoding: raw, as: UTF8.self)
+  }
+  #else
   unsafe buffer.span.bytes.withUnsafeBytes { raw in
     unsafe String(decoding: raw, as: UTF8.self)
   }
+  #endif
 }
 
 @Suite struct CSISequenceTests {

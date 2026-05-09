@@ -20,11 +20,13 @@ let package = Package(
       dependencies: [
         .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
         .product(name: "BasicContainers", package: "swift-collections"),
+        .product(name: "ContainersPreview", package: "swift-collections"),
       ],
       swiftSettings: [
         .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
+        .define("UnstableContainersPreview"),
       ]),
     .executableTarget(
       name: "SlateDemo",

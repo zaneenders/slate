@@ -82,8 +82,14 @@ internal final class AsyncFrameWriter: Sendable {
   }
 
   private static func writeAllToStdout(bytes: [UInt8]) {
+    #if compiler(>=6.4)
+    bytes.withUnsafeBufferPointer { buf in
+      unsafe ttyWriteStdoutAll(UnsafeRawBufferPointer(start: buf.baseAddress, count: buf.count))
+    }
+    #else
     unsafe bytes.withUnsafeBufferPointer { buf in
       unsafe ttyWriteStdoutAll(UnsafeRawBufferPointer(start: buf.baseAddress, count: buf.count))
     }
+    #endif
   }
 }
