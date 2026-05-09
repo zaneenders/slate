@@ -4,13 +4,17 @@ Slate uses the [swift-collections-benchmark][scb] framework for micro-benchmarks
 and [swift-profile-recorder][spr] for statistical profiling.  A committed
 baseline lets any branch diff its performance against `main` in one command.
 
+The `BenchRunner` executable (written in Swift) orchestrates everything:
+running benchmarks, comparing against the baseline, and detecting regressions
+— no shell scripting involved.
+
 [scb]: https://github.com/apple/swift-collections-benchmark
 [spr]: https://github.com/apple/swift-profile-recorder
 
 ## Quick start — check for regressions
 
 ```bash
-./Benchmarks/bench.sh
+swift run -c release BenchRunner
 ```
 
 This builds and runs all benchmarks, then compares the results against the
@@ -23,7 +27,7 @@ After a deliberate change that shifts performance (or after adding new
 benchmarks), update the baseline on `main`:
 
 ```bash
-./Benchmarks/bench.sh --save
+swift run -c release BenchRunner save
 git add Benchmarks/Baselines/main.json
 git commit -m "Update benchmark baseline"
 ```
@@ -31,7 +35,7 @@ git commit -m "Update benchmark baseline"
 ## Listing available tasks
 
 ```bash
-./Benchmarks/bench.sh --list
+swift run -c release BenchRunner list
 ```
 
 ## Running a single task
@@ -46,20 +50,22 @@ swift run -c release SlateBenchmarks run /tmp/one.json \
 ## Understanding the comparison output
 
 ```
-  Score   Sum     Improvements Regressions  Name
-  1.102   0.907   1.000(#1)    0.9074(#2)   Grid.blitText single row (*)
+  Task                                               Geomean  Per-size ratios
+  ────────────────────────────────────────────────   ───────  ──────────────
+  Grid.blit full rectangle                       ✓   0.982   1:0.960 2000:0.930 10000:0.931
+  Grid.encode 0 dirty rows (skip-all)            ✗   1.131   1:1.352 2000:1.078 10000:1.242
 ```
 
 | Column | Meaning |
 |---|---|
-| **Score** | Symmetric difference: 1.0 = identical, >1.10 = >10% change |
-| **Sum** | Raw average of all before/after ratios |
-| **Improvements** | Avg ratio where current was *faster* (with size count) |
-| **Regressions** | Avg ratio where current was *slower* (lower = worse) |
-| **(\*)** | Marked when Score > 1.10 (chart-cutoff threshold) |
+| **Task** | Benchmark name with ✓ (ok) or ✗ (regressed) |
+| **Geomean** | Geometric mean of new/baseline ratios across all sizes (1.0 = identical) |
+| **Per-size ratios** | Individual `size:ratio` ratios for diagnosing which sizes shifted |
 
-A Regressions value of `0.9074(#2)` means the current code is ~9.3% slower on
-2 of the 3 tested sizes.  A value of `1.000(#0)` means no regressions at all.
+A task is flagged (✗) when the **geometric mean** across all sizes exceeds 1.10
+(>10% slower than baseline overall). Using the geometric mean dampens single-size
+measurement noise — a task that's noisy at one size but fine at others won't
+falsely flag.
 
 ## Porting to another Swift project
 
@@ -91,8 +97,10 @@ A Regressions value of `0.9074(#2)` means the current code is ~9.3% slower on
    git add Baselines/main.json && git commit -m "Add benchmark baseline"
    ```
 
-5. **Copy `bench.sh`** (adjust the target name and sizes) to get the same
-   `./bench.sh` / `./bench.sh --save` workflow.
+5. **Add a `BenchRunner` target** (see `Benchmarks/BenchRunner/main.swift`)
+   to get the same `swift run BenchRunner` / `swift run BenchRunner save`
+   workflow. Adjust the constants at the top of the file for your target
+   name, sizes, and baseline path.
 
 ## CI integration (GitHub Actions example)
 
@@ -102,7 +110,7 @@ benchmarks:
   steps:
     - uses: actions/checkout@v4
     - name: Check for regressions
-      run: ./Benchmarks/bench.sh
+      run: swift run -c release BenchRunner
 ```
 
 Because the baseline is committed to the repo, the CI job naturally diffs the

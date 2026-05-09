@@ -61,5 +61,12 @@ let package = Package(
         .swiftLanguageMode(.v6),
         .unsafeFlags(["-O"]),
       ]),
+    .executableTarget(
+      name: "BenchRunner",
+      dependencies: [],
+      path: "Benchmarks/BenchRunner",
+      swiftSettings: [
+        .swiftLanguageMode(.v6),
+      ]),
   ]
 )
