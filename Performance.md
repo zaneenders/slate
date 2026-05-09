@@ -1,7 +1,7 @@
-# Benchmarking & Regression Detection
+# Performance
 
-Slate uses the [swift-collections-benchmark][scb] framework for micro-benchmarks
-and [swift-profile-recorder][spr] for statistical profiling.  A committed
+Slate uses [swift-collections-benchmark][scb] for micro-benchmarks and
+[swift-profile-recorder][spr] for in-process statistical profiling. A committed
 baseline lets any branch diff its performance against `main` in one command.
 
 The `BenchRunner` executable (written in Swift) orchestrates everything:
@@ -10,6 +10,8 @@ running benchmarks, comparing against the baseline, and detecting regressions
 
 [scb]: https://github.com/apple/swift-collections-benchmark
 [spr]: https://github.com/apple/swift-profile-recorder
+
+---
 
 ## Quick start — check for regressions
 
@@ -67,54 +69,62 @@ A task is flagged (✗) when the **geometric mean** across all sizes exceeds 1.1
 measurement noise — a task that's noisy at one size but fine at others won't
 falsely flag.
 
-## Porting to another Swift project
+---
 
-1. **Add the dependency** to `Package.swift`:
-   ```swift
-   .package(url: "https://github.com/apple/swift-collections-benchmark.git", from: "0.0.4"),
-   ```
+## Profiling the demo
 
-2. **Create a benchmark target** under `Benchmarks/`:
-   ```swift
-   .executableTarget(
-     name: "MyBenchmarks",
-     dependencies: [
-       "MyLib",
-       .product(name: "CollectionsBenchmark", package: "swift-collections-benchmark"),
-     ],
-     path: "Benchmarks/MyBenchmarks",
-     swiftSettings: [.unsafeFlags(["-O"])]),
-   ```
+The `SlateDemo` executable includes an in-process sampling profiler via
+[swift-profile-recorder][spr]. It runs in the background and exposes a UNIX
+domain socket that you can query with `curl` to capture CPU profiles — no
+kernel privileges or external tools needed.
 
-3. **Define benchmarks** following the pattern in
-   `Benchmarks/SlateBenchmarks/SlateBenchmarks.swift` —
-   `registerInputGenerator` + `add`/`addSimple`.
+### 1. Start the demo with profiling enabled
 
-4. **Generate and commit a baseline**:
-   ```bash
-   swift run -c release MyBenchmarks run Baselines/main.json \
-     --mode replace-all --cycles 5 --sizes 1 --sizes 1000 --sizes 10000
-   git add Baselines/main.json && git commit -m "Add benchmark baseline"
-   ```
+Set the `PROFILE_RECORDER_SERVER_URL_PATTERN` environment variable before
+launching the demo. The `{PID}` placeholder is replaced with the process ID:
 
-5. **Add a `BenchRunner` target** (see `Benchmarks/BenchRunner/main.swift`)
-   to get the same `swift run BenchRunner` / `swift run BenchRunner save`
-   workflow. Adjust the constants at the top of the file for your target
-   name, sizes, and baseline path.
-
-## CI integration (GitHub Actions example)
-
-```yaml
-benchmarks:
-  runs-on: macos-15
-  steps:
-    - uses: actions/checkout@v4
-    - name: Check for regressions
-      run: swift run -c release BenchRunner
+```bash
+PROFILE_RECORDER_SERVER_URL_PATTERN='unix:///tmp/slate-samples-{PID}.sock' \
+  swift run -c release SlateDemo
 ```
 
-Because the baseline is committed to the repo, the CI job naturally diffs the
-PR against `main`'s last committed baseline.
+The demo runs normally; the profiler is idle until you request samples.
+
+### 2. Capture a profile
+
+While the demo is running, use `curl` to request samples via the socket. The
+PID is printed at startup, or find it with `pgrep SlateDemo`:
+
+```bash
+# Capture 500 samples at 10 ms intervals (~5 seconds of profiling)
+curl -sd '{"numberOfSamples":500,"timeInterval":"10 ms"}' \
+  --unix-socket /tmp/slate-samples-<PID>.sock \
+  http://unix/sample | swift demangle --simplified > /tmp/samples.perf
+```
+
+| Parameter | Description |
+|---|---|
+| `numberOfSamples` | How many stack samples to collect |
+| `timeInterval` | Time between samples (e.g. `"10 ms"`, `"1 ms"`) |
+
+### 3. Visualize the profile
+
+Drag `/tmp/samples.perf` onto either:
+
+- [Firefox Profiler](https://profiler.firefox.com) — recommended, supports the
+  Linux `perf script` format that `swift-profile-recorder` emits
+- [Speedscope](https://speedscope.app) — lighter-weight alternative
+
+### 4. How it works
+
+`SlateDemoEntry` starts the profile recorder server on a background task at
+launch time (see `Sources/SlateDemo/SlateDemoEntry.swift`). It reads its
+configuration from the environment — if `PROFILE_RECORDER_SERVER_URL_PATTERN`
+is unset, the server exits silently and the demo runs with zero overhead.
+The profiling has no measurable impact on the demo unless you explicitly
+request samples.
+
+---
 
 ## Benchmarks reference
 
