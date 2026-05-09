@@ -12,7 +12,6 @@ enum SlateDemoEntry {
     }
 
     final class DemoState {
-      var grid: TerminalCellGrid
       var input = TerminalInputHandler()
       var transcript: [(speaker: String, text: String)] = []
       var streamingText = ""
@@ -29,19 +28,8 @@ enum SlateDemoEntry {
       var followingLiveTranscript = true
       private let maxKeyHistory = 12
 
-      init(cols: Int, rows: Int) {
-        grid = DemoFrameBuilder.makeGrid(cols: cols, rows: rows)
-      }
-
-      func resize(cols: Int, rows: Int) {
-        guard grid.cols != cols || grid.rows != rows else { return }
-        let fill = TerminalCell(
-          glyph: " ",
-          foreground: TerminalRGB(r: 195, g: 205, b: 220),
-          background: TerminalRGB(r: 14, g: 14, b: 24),
-          flags: [])
-        grid.resize(cols: cols, rows: rows, filling: fill)
-        // Wrap geometry changed; snap to live tail so the user isn't left at a stale row.
+      /// Called on resize — the grid is already resized by Slate; we just reset scroll state.
+      func didResize() {
         followingLiveTranscript = true
       }
 
@@ -54,27 +42,30 @@ enum SlateDemoEntry {
           keyHistory.removeFirst(keyHistory.count &- maxKeyHistory)
         }
       }
+    }
 
-      func enscribe(slate: inout Slate) {
+    let state = DemoState()
+
+    // Initial paint — Slate owns the grid.
+    do {
+      let cols = slate.cols
+      let rows = slate.rows
+      slate.with { grid in
         DemoFrameBuilder.render(
           into: &grid,
-          cols: slate.cols,
-          rows: slate.rows,
-          transcript: transcript,
-          streamingText: streamingText,
-          inputBuffer: input.buffer,
-          keyHistory: keyHistory,
-          keyCount: keyCount,
-          firstVisibleRow: &transcriptFirstVisibleRow,
-          followingLiveTranscript: &followingLiveTranscript)
-        slate.enscribe(grid: &grid)
+          cols: cols,
+          rows: rows,
+          transcript: state.transcript,
+          streamingText: state.streamingText,
+          inputBuffer: state.input.buffer,
+          keyHistory: state.keyHistory,
+          keyCount: state.keyCount,
+          firstVisibleRow: &state.transcriptFirstVisibleRow,
+          followingLiveTranscript: &state.followingLiveTranscript)
       }
     }
 
-    let state = DemoState(cols: slate.cols, rows: slate.rows)
-    state.enscribe(slate: &slate)
-
-    await slate.start(prepare: { wake in
+    await slate.subscribe(prepare: { wake in
       // Stream Neville's thoughts word-by-word, rotating through topics.
       Task {
         let thoughts: [String] = [
@@ -109,7 +100,7 @@ enum SlateDemoEntry {
       switch event {
       case .resize:
         slate.refreshWindowSize()
-        state.resize(cols: slate.cols, rows: slate.rows)
+        state.didResize()
 
       case .external:
         break
@@ -159,7 +150,21 @@ enum SlateDemoEntry {
         if shouldStop { return .stop }
       }
 
-      state.enscribe(slate: &slate)
+      let cols = slate.cols
+      let rows = slate.rows
+      slate.with { grid in
+        DemoFrameBuilder.render(
+          into: &grid,
+          cols: cols,
+          rows: rows,
+          transcript: state.transcript,
+          streamingText: state.streamingText,
+          inputBuffer: state.input.buffer,
+          keyHistory: state.keyHistory,
+          keyCount: state.keyCount,
+          firstVisibleRow: &state.transcriptFirstVisibleRow,
+          followingLiveTranscript: &state.followingLiveTranscript)
+      }
       return .continue
     }
   }

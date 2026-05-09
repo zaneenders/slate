@@ -1,4 +1,39 @@
 /// Interactive terminal session backed by raw mode + alternate screen (when initialized successfully).
+///
+/// ## Painting frames
+///
+/// The primary API is ``with(_:)`` — a scoped closure that receives the owned grid,
+/// lets you paint into it, then automatically diffs (dirty-row tracking) and writes
+/// the frame to the terminal:
+///
+/// ```swift
+/// var slate = try Slate()
+/// slate.with { grid in
+///     grid.reset(filling: .defaultCell)
+///     grid.blitText(column: 1, row: 1, string: "Hello", …)
+/// }
+/// ```
+///
+/// ## Event loop
+///
+/// Call ``subscribe(prepare:coalesceMaxFPS:onEvent:)`` to run the event loop.
+/// It delivers ``TerminalWakeEvent`` values (stdin, resize, external wakes) to your
+/// handler; paint inside the handler with ``with(_:)`` and return
+/// ``TerminalWakeRunOutcome/stop`` to exit.
+///
+/// ```swift
+/// await slate.subscribe(prepare: { wake in
+///     // Spawn background work that calls wake.requestRender()
+/// }) { slate, event in
+///     switch event {
+///     case .resize:       slate.refreshWindowSize()
+///     case .stdinBytes:   /* decode input, mutate model */
+///     case .external:     break
+///     }
+///     slate.with { grid in /* paint using current model state */ }
+///     return .continue
+/// }
+/// ```
 public struct Slate: ~Copyable {
   public enum InstallationError: Error {
     case notInteractiveTerminal
@@ -8,14 +43,11 @@ public struct Slate: ~Copyable {
   public private(set) var rows: Int
 
   /// The reusable cell grid owned by this terminal session.
-  /// Paint into it between ``enscribe()`` calls; dirty-region tracking
-  /// ensures only modified rows are emitted to the tty.
   ///
-  /// ```swift
-  /// slate.grid.reset(filling: .defaultCell)
-  /// // ... paint into slate.grid ...
-  /// slate.enscribe()
-  /// ```
+  /// **Prefer** ``with(_:)`` for painting — it scopes the mutation and guarantees
+  /// the frame is written. Direct grid access is available for advanced use when
+  /// you need to interleave grid reads/writes across multiple calls before
+  /// calling ``enscribe()`` or ``enscribe(grid:)``.
   public var grid: TerminalCellGrid {
     _read { yield _grid }
     _modify { yield &_grid }
@@ -67,19 +99,66 @@ public struct Slate: ~Copyable {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
+  /// Paint into the Slate-owned grid then encode + write one frame.
+  ///
+  /// The closure receives an `inout TerminalCellGrid` pre-sized to the current
+  /// ``cols`` × ``rows``. Mutations mark rows dirty; after the closure returns,
+  /// only dirty rows are encoded and written to the terminal via the
+  /// double-buffered presenter.
+  ///
+  /// This is the **primary drawing API** — it replaces the pattern of accessing
+  /// ``grid`` directly and then remembering to call ``enscribe()``:
+  ///
+  /// ```swift
+  /// // Before (still works):
+  /// slate.grid.reset(filling: .defaultCell)
+  /// // … paint into slate.grid …
+  /// slate.enscribe()
+  ///
+  /// // After (preferred):
+  /// slate.with { grid in
+  ///     grid.reset(filling: .defaultCell)
+  ///     // … paint into grid …
+  /// }
+  /// ```
+  public mutating func with(_ paint: (inout TerminalCellGrid) -> Void) {
+    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
+    paint(&_grid)
+    presenter.presentFrame { buf in _grid.encode(into: &buf) }
+  }
+
+  /// Paint into an externally-owned grid then encode + write one frame.
+  ///
+  /// Like ``with(_:)`` but receives the grid as an `inout` parameter so you can
+  /// keep the grid in an external model object:
+  ///
+  /// ```swift
+  /// slate.with(grid: &myModel.grid) { grid in
+  ///     grid.reset(filling: .defaultCell)
+  ///     // … paint into grid …
+  /// }
+  /// ```
+  public mutating func with(grid: inout TerminalCellGrid, _ paint: (inout TerminalCellGrid) -> Void) {
+    presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
+    paint(&grid)
+    presenter.presentFrame { buf in grid.encode(into: &buf) }
+  }
+
   /// Encode the Slate-owned ``grid`` and write one raw frame.
   ///
   /// Only rows modified since the last encode are emitted (dirty-region tracking).
   /// The grid's dirty flags are cleared as each row is encoded.
   ///
   /// No ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``.
+  ///
+  /// **Prefer** ``with(_:)`` — it scopes grid mutation so you can't forget to encode.
   public mutating func enscribe() {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in _grid.encode(into: &buf) }
   }
 
   /// Encode an externally-owned `grid` using cached ``cols`` / ``rows`` and write one
-  /// raw frame. Prefer ``enscribe()`` when using the Slate-owned ``grid``.
+  /// raw frame. Prefer ``with(grid:_:)`` when using an external grid.
   ///
   /// Only rows modified since the last encode are emitted (dirty-region tracking).
   /// The grid's dirty flags are cleared as each row is encoded.
@@ -119,6 +198,46 @@ public struct Slate: ~Copyable {
     // so the matching `deinit` call becomes a no-op.
     await presenter.flushAndStopWriter()
     ttyRestoreSaved()
+  }
+
+  /// Subscribe to terminal events — the primary event-loop entry point.
+  ///
+  /// Delivers ``TerminalWakeEvent`` values (stdin bytes, resize, external wakes)
+  /// to `onEvent` until the stream ends or the handler returns
+  /// ``TerminalWakeRunOutcome/stop``. Automatic teardown: flushes the final frame,
+  /// waits for the writer task, then restores the terminal.
+  ///
+  /// `prepare` runs once synchronously before the loop — use it to spawn
+  /// background work that calls ``ExternalWake/requestRender()`` (LLM stream,
+  /// URL session, etc.). External wakes are coalesced via throttle to
+  /// `coalesceMaxFPS` (default 60; pass 0 for immediate delivery).
+  ///
+  /// ```swift
+  /// await slate.subscribe(prepare: { wake in
+  ///     Task { /* stream tokens, call wake.requestRender() */ }
+  /// }) { slate, event in
+  ///     switch event {
+  ///     case .resize:     slate.refreshWindowSize()
+  ///     case .stdinBytes: /* decode input */
+  ///     case .external:   break
+  ///     }
+  ///     slate.with { grid in /* paint current model state */ }
+  ///     return .continue
+  /// }
+  /// ```
+  ///
+  /// This is the same as ``start(prepare:externalCoalesceMaxFramesPerSecond:onEvent:)``
+  /// with a more discoverable name. Both are interchangeable.
+  @MainActor
+  public mutating func subscribe(
+    prepare: (ExternalWake) -> Void = { _ in },
+    coalesceMaxFPS: Int = 60,
+    onEvent: @MainActor (inout Self, TerminalWakeEvent) async -> TerminalWakeRunOutcome
+  ) async {
+    await start(
+      prepare: prepare,
+      externalCoalesceMaxFramesPerSecond: coalesceMaxFPS,
+      onEvent: onEvent)
   }
 }
 
