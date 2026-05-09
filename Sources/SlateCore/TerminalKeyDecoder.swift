@@ -1,5 +1,5 @@
 /// A decoded terminal key press (or paste boundary) decoded from raw stdin bytes.
-enum TerminalKeyEvent: Sendable, Equatable {
+public enum TerminalKeyEvent: Sendable, Equatable {
   case character(Character)  // printable Unicode or space
   case enter
   /// Shift+Enter (CSI u kitty: `\e[13;2u`; xterm: `\e[27;2;13~`; alternate: `\e[13;2~`).
@@ -22,14 +22,14 @@ enum TerminalKeyEvent: Sendable, Equatable {
 /// sequences. Create one instance per input stream and call ``decode(_:emit:)`` for each
 /// ``TerminalWakeEvent/stdinBytes(_:)`` chunk. Call ``flush(emit:)`` on teardown to drain any
 /// buffered lone ESC.
-struct TerminalKeyDecoder: Sendable {
+public struct TerminalKeyDecoder: Sendable {
   private var overflow: ContiguousArray<UInt8> = []
   private var utf8Staging: ContiguousArray<UInt8> = []
 
-  init() {}
+  public init() {}
 
   /// Decode one stdin chunk, emitting zero or more ``TerminalKeyEvent`` values in order.
-  mutating func decode(
+  public mutating func decode(
     _ bytes: ContiguousArray<UInt8>,
     emit: (TerminalKeyEvent) -> Void
   ) {
@@ -40,7 +40,7 @@ struct TerminalKeyDecoder: Sendable {
   }
 
   /// Flush any buffered state (lone ESC, incomplete UTF-8). Call on teardown.
-  mutating func flush(emit: (TerminalKeyEvent) -> Void) {
+  public mutating func flush(emit: (TerminalKeyEvent) -> Void) {
     if overflow == [0x1B] {
       overflow.removeAll(keepingCapacity: true)
       emit(.escape)

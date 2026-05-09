@@ -162,19 +162,40 @@ import Testing
     #expect(us < 10_000)
   }
 
-  @Test func resizeAndFullEncode() {
-    let sizes: [(Int, Int)] = [(80, 24), (143, 38), (200, 60)]
+  @Test func resizeGrowToSize() {
     let fill = TerminalCell(glyph: " ", foreground: .white, background: .black, flags: [])
 
-    for (cols, rows) in sizes {
-      let us = benchmark(iterations: 100) {
-        var grid = TerminalCellGrid(cols: cols, rows: rows, filling: fill)
-        var buffer = TerminalByteBuffer(capacity: cols &* rows &* 54 &+ 640)
-        grid.encode(into: &buffer)
-      }
-      bench("resize+encode \(cols)x\(rows)", "\(f1(us))us")
-      #expect(us < 20_000)
+    // 80x24 → 143x38 (small → medium)
+    let us = benchmark(iterations: 500) {
+      var grid = TerminalCellGrid(cols: 80, rows: 24, filling: fill)
+      grid.resize(cols: 143, rows: 38, filling: fill)
     }
+    bench("resize-grow 80x24→143x38", "\(f1(us))us")
+    #expect(us < 1_000)
+  }
+
+  @Test func resizeShrinkFromLarge() {
+    let fill = TerminalCell(glyph: " ", foreground: .white, background: .black, flags: [])
+
+    // 200x60 → 80x24 (large → small)
+    let us = benchmark(iterations: 500) {
+      var grid = TerminalCellGrid(cols: 200, rows: 60, filling: fill)
+      grid.resize(cols: 80, rows: 24, filling: fill)
+    }
+    bench("resize-shrink 200x60→80x24", "\(f1(us))us")
+    #expect(us < 1_000)
+  }
+
+  @Test func resizeRegrowToLarge() {
+    let fill = TerminalCell(glyph: " ", foreground: .white, background: .black, flags: [])
+
+    // 80x24 → 200x60 (small → large, biggest gap)
+    let us = benchmark(iterations: 500) {
+      var grid = TerminalCellGrid(cols: 80, rows: 24, filling: fill)
+      grid.resize(cols: 200, rows: 60, filling: fill)
+    }
+    bench("resize-regrow 80x24→200x60", "\(f1(us))us")
+    #expect(us < 1_000)
   }
 }
 

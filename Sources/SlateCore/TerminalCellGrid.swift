@@ -1,7 +1,7 @@
 import BasicContainers
 import BitCollections
 
-typealias TerminalByteBuffer = RigidArray<UInt8>
+public typealias TerminalByteBuffer = RigidArray<UInt8>
 
 // MARK: - Pre-computed CSI encoding tables
 
@@ -310,7 +310,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   ///
   /// Skips redundant intensity / truecolor sequences when they match the previous
   /// cell (style persists in the terminal).
-  internal mutating func encode(into buf: inout TerminalByteBuffer) {
+  public mutating func encode(into buf: inout TerminalByteBuffer) {
     buf.removeAll()
     var hasPrevious = false
     var previous = EmittedGraphicStyle(bold: false, foreground: .black, background: .black)

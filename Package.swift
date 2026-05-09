@@ -51,16 +51,6 @@ let package = Package(
         .strictMemorySafety(),
       ]),
     .executableTarget(
-      name: "SlateBench",
-      dependencies: [
-        "SlateCore"
-      ],
-      path: "Benchmarks/SlateBench",
-      swiftSettings: [
-        .swiftLanguageMode(.v6),
-        .unsafeFlags(["-O"]),
-      ]),
-    .executableTarget(
       name: "SlateBenchmarks",
       dependencies: [
         "SlateCore",

@@ -125,6 +125,25 @@ extension Benchmark {
     }
 
     self.add(
+      title: "Grid.encode 1 dirty row",
+      input: TerminalSize.self
+    ) { ts in
+      let capacity = ts.encodeCapacity
+      let text = String(repeating: "x", count: ts.cols)
+      return { timer in
+        var g = makeCleanGrid(size: ts)
+        g.blitText(
+          column: 0, row: 5, string: text,
+          foreground: .white, background: .black)
+        var buf = TerminalByteBuffer(capacity: capacity)
+        timer.measure {
+          g.encode(into: &buf)
+        }
+        blackHole(buf.count)
+      }
+    }
+
+    self.add(
       title: "Grid.encode 0 dirty rows (skip-all)",
       input: TerminalSize.self
     ) { ts in
@@ -206,27 +225,49 @@ extension Benchmark {
 
     // ── Grid Resize ──────────────────────────────────────────────────
 
-    self.addSimple(
-      title: "Grid.resize 80→120 × 24→36",
-      input: Int.self
-    ) { _ in
-      var g = TerminalCellGrid(cols: 80, rows: 24, filling: .defaultCell)
-      g.resize(cols: 120, rows: 36, filling: .defaultCell)
-      blackHole(g.cols)
-    }
-
+    // Grow from a fixed small grid to the benchmark's terminal size.
+    // The cost scales with the target cell count (allocation + fill).
     self.add(
-      title: "Grid.resize + full encode",
+      title: "Grid.resize grow to size",
       input: TerminalSize.self
     ) { ts in
-      let capacity = ts.encodeCapacity
+      return { timer in
+        var g = TerminalCellGrid(cols: 80, rows: 24, filling: .defaultCell)
+        timer.measure {
+          g.resize(cols: ts.cols, rows: ts.rows, filling: .defaultCell)
+        }
+        blackHole(g.cols)
+      }
+    }
+
+    // Shrink from a fixed large grid to the benchmark's terminal size.
+    // Cost is still proportional to the *target* cell count (new allocation).
+    self.add(
+      title: "Grid.resize shrink from 200×60",
+      input: TerminalSize.self
+    ) { ts in
+      return { timer in
+        var g = TerminalCellGrid(cols: 200, rows: 60, filling: .defaultCell)
+        timer.measure {
+          g.resize(cols: ts.cols, rows: ts.rows, filling: .defaultCell)
+        }
+        blackHole(g.cols)
+      }
+    }
+
+    // Resize from one size to another within the same benchmark: create at
+    // the benchmark size, then resize to a fixed target.  Captures the cost
+    // of allocating the new grid when the old grid is already at scale.
+    self.add(
+      title: "Grid.resize regrow to 200×60",
+      input: TerminalSize.self
+    ) { ts in
       return { timer in
         var g = TerminalCellGrid(cols: ts.cols, rows: ts.rows, filling: .defaultCell)
-        var buf = TerminalByteBuffer(capacity: capacity)
         timer.measure {
-          g.encode(into: &buf)
+          g.resize(cols: 200, rows: 60, filling: .defaultCell)
         }
-        blackHole(buf.count)
+        blackHole(g.cols)
       }
     }
 
