@@ -46,18 +46,9 @@ public struct Slate: ~Copyable {
   }
 
   deinit {
-    // Best-effort terminal restore for paths where ``start()`` was never called.
-    // When ``start()`` is used it performs ordered async teardown (flush then
-    // restore) before returning, so this call is a no-op because the restore
-    // state has already been consumed.
     ttyRestoreSaved()
   }
 
-  /// Reread ``TTY/windowSize()``, update ``cols`` / ``rows``, resize the grid,
-  /// and resize encode buffers if needed.
-  ///
-  /// Call this when you receive ``TerminalWakeEvent/resize`` (or anytime dimensions
-  /// may have changed outside ``TerminalWakePump``).
   public mutating func refreshWindowSize() {
     let size = TTY.windowSize()
     guard size.cols != cols || size.rows != rows else { return }
@@ -67,41 +58,16 @@ public struct Slate: ~Copyable {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
   }
 
-  /// Encode the Slate-owned ``grid`` and write one raw frame.
-  ///
-  /// Only rows modified since the last encode are emitted (dirty-region tracking).
-  /// The grid's dirty flags are cleared as each row is encoded.
-  ///
-  /// No ``ioctl`` — dimensions come from ``init`` and ``refreshWindowSize()``.
   public mutating func enscribe() {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in _grid.encode(into: &buf) }
   }
 
-  /// Encode an externally-owned `grid` using cached ``cols`` / ``rows`` and write one
-  /// raw frame. Prefer ``enscribe()`` when using the Slate-owned ``grid``.
-  ///
-  /// Only rows modified since the last encode are emitted (dirty-region tracking).
-  /// The grid's dirty flags are cleared as each row is encoded.
   public func enscribe(grid: inout TerminalCellGrid) {
     presenter.ensureEncodedByteCapacity(for: cols, rows: rows)
     presenter.presentFrame { buf in grid.encode(into: &buf) }
   }
 
-  /// Runs stdin + periodic terminal-size polling (resize) + cross-isolation ``ExternalWake`` wakes until the stream ends or `onEvent` returns ``TerminalWakeRunOutcome/stop``.
-  ///
-  /// `prepare` runs once on the caller actor before the event loop begins — use it to spawn work that calls ``ExternalWake/requestRender()`` (LLM stream, URL session, etc.; coalesced with swift-async-algorithms throttle to ``externalCoalesceMaxFramesPerSecond`` by default).
-  ///
-  /// `onEvent` receives the active ``Slate`` as an `inout` parameter rather than capturing it from the enclosing scope — escaping closures cannot capture noncopyable values, so the inout passes a fresh borrow per call. Inside the handler, call ``refreshWindowSize()`` on ``TerminalWakeEvent/resize`` before re-encoding, and call ``enscribe(grid:)`` whenever stdin, resize, or ``TerminalWakeEvent/external`` should refresh the screen.
-  ///
-  /// Creates a ``TerminalWakePump`` for the loop; producers are stopped before this returns.
-  ///
-  /// `@MainActor` here is the **only** isolation annotation in the public API — see the type-level
-  /// docs for why. ``TerminalWakePump`` keeps unsynchronized lifecycle vars on its single owner,
-  /// and the ``onEvent`` closure typically captures app state (``DemoTranscript`` etc.) that the
-  /// caller's `@main`-isolated code mutates from spawned tasks; pinning ``start`` to the main
-  /// actor matches the realistic usage pattern without forcing every other ``Slate`` method to
-  /// be `@MainActor`.
   @MainActor
   public mutating func start(
     prepare: (ExternalWake) -> Void = { _ in },
@@ -114,18 +80,12 @@ public struct Slate: ~Copyable {
     for await event in pump.events {
       if await onEvent(&self, event) == .stop { break }
     }
-    // Ordered async teardown: flush the final frame, wait for the writer task
-    // to drain, then restore the terminal. `ttyRestoreSaved()` is idempotent,
-    // so the matching `deinit` call becomes a no-op.
     await presenter.flushAndStopWriter()
     ttyRestoreSaved()
   }
 }
 
 private func writeRedrawBootstrapCSI() {
-  // Enabling bracketed paste here (matched by ``ttyRestoreSaved`` on teardown) lets the terminal
-  // wrap pasted text with `\e[200~` / `\e[201~` so ``TerminalKeyDecoder`` can keep pasted
-  // newlines distinct from a typed Enter.
   var setup = CSI.altOn + CSI.curHide + CSI.bracketedPasteOn + CSI.clrHome
   setup.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
 }
