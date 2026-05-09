@@ -1,6 +1,7 @@
 import BasicContainers
+import BitCollections
 
-public typealias TerminalByteBuffer = RigidArray<UInt8>
+typealias TerminalByteBuffer = RigidArray<UInt8>
 
 // MARK: - Pre-computed CSI encoding tables
 
@@ -122,71 +123,6 @@ public protocol TerminalSpanProtocol {
   var flags: TerminalCellFlags { get }
 }
 
-// MARK: - Inline bitset for dirty-row tracking
-
-/// Compact bitset for up to 512 rows (8 × UInt64 = 64 bytes).
-/// 8× smaller and faster than `RigidArray<Bool>`, no extra dependency.
-private struct RowBitset: ~Copyable, Sendable {
-  private var words: [UInt64]
-
-  init(repeating value: Bool, count: Int) {
-    precondition(count >= 0 && count <= 512)
-    let wordCount = (count &+ 63) / 64
-    words = Array(repeating: value ? ~0 : 0, count: wordCount)
-  }
-
-  @inline(__always)
-  subscript(_ index: Int) -> Bool {
-    get {
-      let w = index / 64
-      let b = UInt64(index % 64)
-      return (words[w] &>> b) & 1 == 1
-    }
-    set {
-      let w = index / 64
-      let b = UInt64(index % 64)
-      if newValue {
-        words[w] |= (1 &<< b)
-      } else {
-        words[w] &= ~(1 &<< b)
-      }
-    }
-  }
-
-  /// Set all bits to `true`.
-  @inline(__always)
-  mutating func setAll() {
-    for i in words.indices { words[i] = ~0 }
-  }
-
-  /// Set all bits in the half-open range `[y0, y1)` to `true` using bulk word operations.
-  @inline(__always)
-  mutating func setAll(in y0: Int, _ y1: Int) {
-    let start = Swift.max(0, y0)
-    let end = Swift.min(words.count &* 64, y1)
-    guard start < end else { return }
-    let w0 = start / 64
-    let w1 = (end &- 1) / 64
-    if w0 == w1 {
-      // Single word: set bits from start to end
-      let mask = (UInt64.max &<< UInt64(start % 64)) & (UInt64.max &>> UInt64(63 &- ((end &- 1) % 64)))
-      words[w0] |= mask
-    } else {
-      // First partial word
-      words[w0] |= (UInt64.max &<< UInt64(start % 64))
-      // Full words in between
-      var w = w0 &+ 1
-      while w < w1 {
-        words[w] = ~0
-        w &+= 1
-      }
-      // Last partial word
-      let lastBit = (end &- 1) % 64
-      words[w1] |= (UInt64.max &>> UInt64(63 &- lastBit))
-    }
-  }
-}
-
 // MARK: - TerminalCellGrid
 
 /// Row-major `cols × rows` cell buffer: build scenes in memory, then ``encode(into:)`` once per frame.
@@ -212,7 +148,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
   /// Bit-per-row dirty tracking. Rows are marked dirty by mutating operations
   /// (`blit`, `blitSpans`, `blitText`, `reset`, subscript setter) and cleared
   /// by ``encode(into:)``.
-  private var dirtyRows: RowBitset
+  private var dirtyRows: BitArray
 
   public init(cols: Int, rows: Int, filling fill: TerminalCell) {
     precondition(cols >= 1 && rows >= 1)
@@ -220,7 +156,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     self.rows = rows
     self.cells = RigidArray(repeating: fill, count: cols &* rows)
     // All rows start dirty so the first encode emits a full frame.
-    self.dirtyRows = RowBitset(repeating: true, count: rows)
+    self.dirtyRows = BitArray(repeating: true, count: rows)
   }
 
   /// Re-create the grid for a new size. All rows are marked dirty.
@@ -229,7 +165,7 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     self.cols = newCols
     self.rows = newRows
     self.cells = RigidArray(repeating: fill, count: newCols &* newRows)
-    self.dirtyRows = RowBitset(repeating: true, count: newRows)
+    self.dirtyRows = BitArray(repeating: true, count: newRows)
   }
 
   // MARK: - Dirty-row helpers
@@ -240,10 +176,10 @@ public struct TerminalCellGrid: ~Copyable, Sendable {
     dirtyRows[y] = true
   }
 
-  /// Marks all rows in the half-open range `[y0, y1)` as dirty using bulk bit operations.
+  /// Marks all rows in the half-open range `[y0, y1)` as dirty.
   @inline(__always)
   private mutating func markDirty(rowRange y0: Int, _ y1: Int) {
-    dirtyRows.setAll(in: y0, y1)
+    dirtyRows.fill(in: max(0, y0)..<min(rows, y1), with: true)
   }
 
   // MARK: - Indexing

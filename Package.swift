@@ -22,6 +22,7 @@ let package = Package(
       dependencies: [
         .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
         .product(name: "BasicContainers", package: "swift-collections"),
+        .product(name: "BitCollections", package: "swift-collections"),
       ],
       swiftSettings: [
         .swiftLanguageMode(.v6),
