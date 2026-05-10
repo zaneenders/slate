@@ -12,6 +12,7 @@ public enum TerminalInputAction: Equatable, Sendable {
   case enter
   case ctrlC
   case ctrlD
+  case escape
   case arrowUp, arrowDown
   case pageUp, pageDown
   case home, end
@@ -48,6 +49,10 @@ public struct TerminalInputHandler: Sendable {
   public private(set) var buffer: String = ""
   private var keyDecoder = TerminalKeyDecoder()
   private var inPaste = false
+  /// When `true` (default), character, backspace, newline, and tab
+  /// actions mutate the buffer.  Set to `false` in read/navigation modes
+  /// where keystrokes should be dispatched to the host without altering text.
+  public var isEditing: Bool = true
 
   public init() {}
 
@@ -84,6 +89,8 @@ public struct TerminalInputHandler: Sendable {
         } else {
           actions.append(.enter)
         }
+      case .escape:
+        actions.append(.escape)
       case .shiftEnter:
         actions.append(.newline)
       case .tab:
@@ -121,6 +128,7 @@ public struct TerminalInputHandler: Sendable {
 
   /// Apply character insertions, backspaces, and paste-mode newlines/tabs to the buffer.
   private mutating func applyBufferMutations(_ actions: [TerminalInputAction]) {
+    guard isEditing else { return }
     for action in actions {
       switch action {
       case .character(let ch): buffer.append(ch)
