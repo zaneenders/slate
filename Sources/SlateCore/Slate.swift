@@ -204,10 +204,6 @@ public struct Slate: ~Copyable {
   }
 
   deinit {
-    // Best-effort terminal restore for paths where ``start()`` was never called.
-    // When ``start()`` is used it performs ordered async teardown (flush then
-    // restore) before returning, so this call is a no-op because the restore
-    // state has already been consumed.
     ttyRestoreSaved()
   }
 
@@ -332,8 +328,6 @@ public struct Slate: ~Copyable {
     for await event in stream {
       if await onEvent(&self, event) == .stop { break }
     }
-
-    // ── Ordered teardown ────────────────────────────────────────────────────
     await presenter.flushAndStopWriter()
     ttyRestoreSaved()
   }
@@ -342,9 +336,6 @@ public struct Slate: ~Copyable {
 // MARK: - Bootstrap helpers
 
 private func writeRedrawBootstrapCSI() {
-  // Enabling bracketed paste here (matched by ``ttyRestoreSaved`` on teardown) lets the terminal
-  // wrap pasted text with `\e[200~` / `\e[201~` so ``TerminalKeyDecoder`` can keep pasted
-  // newlines distinct from a typed Enter.
   var setup = CSI.altOn + CSI.curHide + CSI.bracketedPasteOn + CSI.clrHome
   setup.withUTF8 { unsafe ttyWriteRaw($0.span.bytes) }
 }

@@ -13,6 +13,8 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", from: "1.4.1"),
     .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.1.3"),
+    .package(url: "https://github.com/apple/swift-profile-recorder.git", .upToNextMinor(from: "0.3.13")),
+    .package(url: "https://github.com/apple/swift-collections-benchmark.git", from: "0.0.4"),
   ],
   targets: [
     .target(
@@ -30,7 +32,8 @@ let package = Package(
     .executableTarget(
       name: "SlateDemo",
       dependencies: [
-        "SlateCore"
+        "SlateCore",
+        .product(name: "ProfileRecorderServer", package: "swift-profile-recorder"),
       ],
       swiftSettings: [
         .swiftLanguageMode(.v6),
@@ -46,6 +49,24 @@ let package = Package(
         .swiftLanguageMode(.v6),
         .treatAllWarnings(as: .error),
         .strictMemorySafety(),
+      ]),
+    .executableTarget(
+      name: "SlateBenchmarks",
+      dependencies: [
+        "SlateCore",
+        .product(name: "CollectionsBenchmark", package: "swift-collections-benchmark"),
+      ],
+      path: "Benchmarks/SlateBenchmarks",
+      swiftSettings: [
+        .swiftLanguageMode(.v6),
+        .unsafeFlags(["-O"]),
+      ]),
+    .executableTarget(
+      name: "BenchRunner",
+      dependencies: [],
+      path: "Benchmarks/BenchRunner",
+      swiftSettings: [
+        .swiftLanguageMode(.v6),
       ]),
   ]
 )

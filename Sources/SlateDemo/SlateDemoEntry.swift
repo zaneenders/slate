@@ -1,8 +1,20 @@
 import SlateCore
+import ProfileRecorderServer
+import Logging
 
 @main
 enum SlateDemoEntry {
   static func main() async throws {
+    // In-process sampling profiler — activate by setting an env var:
+    //   PROFILE_RECORDER_SERVER_URL_PATTERN='unix:///tmp/slate-samples-{PID}.sock' swift run -c release SlateDemo
+    // Then collect samples:
+    //   curl -sd '{"numberOfSamples":500,"timeInterval":"10 ms"}' --unix-socket /tmp/slate-samples-PID.sock http://unix/sample | swift demangle --simplified > /tmp/samples.perf
+    // Drag /tmp/samples.perf onto https://speedscope.app or https://profiler.firefox.com
+    Task {
+      guard let server = try? await ProfileRecorderServer(configuration: .parseFromEnvironment()) else { return }
+      await server.runIgnoringFailures(logger: Logger(label: "slate-profiler"))
+    }
+
     var slate: Slate
     do {
       slate = try Slate()

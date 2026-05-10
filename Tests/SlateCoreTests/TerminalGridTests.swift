@@ -397,6 +397,130 @@ private func decoded(_ buffer: borrowing TerminalByteBuffer) -> String {
   }
 }
 
+@Suite struct DirtyRowTrackingTests {
+
+  /// Helper: returns the set of 1-based row numbers that appear in CUP sequences
+  /// (e.g. `ESC[5;1H` → row 5) after encoding the grid.
+  private func emittedRows(from grid: inout TerminalCellGrid) -> Set<Int> {
+    var buffer = TerminalByteBuffer(capacity: 4096)
+    grid.encode(into: &buffer)
+    let s = decoded(buffer)
+    var rows: Set<Int> = []
+    var i = s.startIndex
+    // Scan for CSI digit…digit ; 1 H — CUP row;col=1 (how encode() positions each row).
+    while i < s.endIndex {
+      if s[i...].hasPrefix("\u{001b}[") {
+        let start = s.index(i, offsetBy: 2)
+        var numStr = ""
+        var j = start
+        while j < s.endIndex, s[j].isNumber {
+          numStr.append(s[j])
+          j = s.index(after: j)
+        }
+        // CUP format is ESC[row;colH — encode() always uses column 1.
+        if j < s.endIndex, s[j] == ";",
+           s.index(after: j) < s.endIndex, s[s.index(after: j)] == "1",
+           s.index(s.index(after: j), offsetBy: 1) < s.endIndex,
+           s[s.index(s.index(after: j), offsetBy: 1)] == "H",
+           let row = Int(numStr)
+        {
+          rows.insert(row)
+        }
+        i = j
+      } else {
+        i = s.index(after: i)
+      }
+    }
+    return rows
+  }
+
+  /// Helper: fills an entire grid with a cell so all rows start dirty, encodes once to
+  /// clear all dirty flags, then returns a fresh grid with the same dimensions for testing.
+  private func cleanGrid(cols: Int, rows: Int) -> TerminalCellGrid {
+    var g = TerminalCellGrid(cols: cols, rows: rows, filling: .defaultCell)
+    // First encode clears all dirty flags
+    var buf = TerminalByteBuffer(capacity: 4096)
+    g.encode(into: &buf)
+    return g
+  }
+
+  @Test func blit_singleCell_marksOnlyThatRow() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blit(column: 1, row: 1, width: 1, height: 1, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows == [2])  // row 1 → CUP row 2 (1-based)
+  }
+
+  @Test func blit_fullRow_atWordBoundary() {
+    // 64 rows = 1 word in the bitset. Row 0–63 all in word 0.
+    var grid = cleanGrid(cols: 2, rows: 64)
+    // Mark rows 0..<64 dirty via a full-height blit
+    grid.blit(column: 0, row: 0, width: 1, height: 64, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.count == 64)
+    #expect(rows.contains(1))
+    #expect(rows.contains(64))
+  }
+
+  @Test func blit_crossWordBoundary_singleBitEachSide() {
+    // 64 rows = 1 word. Mark row 63 (last bit of word 0) and row 64 would be
+    // word 1 bit 0. Use 65 total rows so word 1 exists.
+    var grid = cleanGrid(cols: 2, rows: 65)
+    // Blit rows 63–64 (0-based), i.e. the last row of word 0 and first of word 1
+    grid.blit(column: 0, row: 63, width: 1, height: 2, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows == [64, 65])  // 1-based CUP rows
+  }
+
+  @Test func blit_zeroWidth_zeroHeight_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blit(column: 1, row: 1, width: 0, height: 0, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
+  @Test func blit_zeroWidth_nonZeroHeight_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blit(column: 1, row: 1, width: 0, height: 2, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
+  @Test func blit_outOfBoundsRowRange_clipsAndNoDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    // Entirely below grid
+    grid.blit(column: 0, row: 10, width: 2, height: 2, repeating: .defaultCell)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
+  @Test func blitSpans_emptySpans_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blitSpans(column: 0, row: 1, maxWidth: 4, [] as [TerminalStyledSpan])
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
+  @Test func blitSpans_emptyText_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blitSpans(
+      column: 0, row: 1, maxWidth: 4,
+      TerminalStyledSpan("", foreground: .white, background: .black, flags: []))
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+
+  @Test func blitText_emptyString_noRowsDirty() {
+    var grid = cleanGrid(cols: 4, rows: 4)
+    grid.blitText(
+      column: 0, row: 1,
+      string: "",
+      foreground: .white, background: .black)
+    let rows = emittedRows(from: &grid)
+    #expect(rows.isEmpty)
+  }
+}
+
 @Suite struct DoubleBufferedPresenterTests {
 
   @Test func presenter_callsEncodeClosurePerFrameThenStopsCleanly() async {
