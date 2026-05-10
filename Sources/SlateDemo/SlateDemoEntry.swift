@@ -14,6 +14,7 @@ enum SlateDemoEntry {
     final class DemoState {
       var input = TerminalInputHandler()
       var inputBuffer = ""
+      var inPaste = false
       var transcript: [(speaker: String, text: String)] = []
       var streamingText = ""
       var keyHistory: [String] = []
@@ -110,12 +111,22 @@ enum SlateDemoEntry {
           switch action {
           case .ctrlC, .ctrlD:
             shouldStop = true
+          case .bracketedPasteStart:
+            state.inPaste = true
+            state.recordKey(action)
+          case .bracketedPasteEnd:
+            state.inPaste = false
+            state.recordKey(action)
           case .enter:
-            let text = state.inputBuffer
-            state.inputBuffer = ""
-            if !text.isEmpty {
-              state.transcript.append((speaker: "you", text: text))
-              state.followingLiveTranscript = true
+            if state.inPaste {
+              state.inputBuffer.append("\n")
+            } else {
+              let text = state.inputBuffer
+              state.inputBuffer = ""
+              if !text.isEmpty {
+                state.transcript.append((speaker: "you", text: text))
+                state.followingLiveTranscript = true
+              }
             }
             state.recordKey(action)
           case .arrowUp:
@@ -145,9 +156,11 @@ enum SlateDemoEntry {
             state.inputBuffer.append(ch)
             state.recordKey(action)
           case .backspace:
-            if !state.inputBuffer.isEmpty { state.inputBuffer.removeLast() }
+            if !state.inPaste, !state.inputBuffer.isEmpty {
+              state.inputBuffer.removeLast()
+            }
             state.recordKey(action)
-          case .newline:
+          case .shiftEnter:
             state.inputBuffer.append("\n")
             state.recordKey(action)
           case .tab:

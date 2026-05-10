@@ -6,7 +6,7 @@ enum DemoKeyFormatting {
     switch action {
     case .character(let ch): return ch == " " ? "␠" : String(ch)
     case .enter: return "↵"
-    case .newline: return "⇧↵"
+    case .shiftEnter: return "⇧↵"
     case .backspace: return "⌫"
     case .tab: return "⇥"
     case .ctrlC: return "^C"
