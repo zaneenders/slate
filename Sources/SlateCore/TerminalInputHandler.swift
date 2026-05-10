@@ -4,36 +4,48 @@
 public enum TerminalInputAction: Equatable, Sendable {
   case character(Character)
   case backspace
-  /// Shift+Enter, or Enter pressed during bracketed paste.
-  case newline
-  /// Tab pressed during bracketed paste (expands to spaces).
+  /// Shift+Enter.
+  case shiftEnter
+  /// Tab key (or literal tab byte).
   case tab
-  /// Enter pressed outside bracketed paste (submit).
+  /// Enter (submit).
   case enter
   case ctrlC
   case ctrlD
+  case escape
   case arrowUp, arrowDown
   case pageUp, pageDown
   case home, end
+  /// Bracketed-paste boundaries — the host tracks paste state from these
+  /// and decides how to treat Enter, Backspace, etc. during paste.
+  case bracketedPasteStart, bracketedPasteEnd
 }
 
 // MARK: - TerminalInputHandler
 
-/// Owns the input buffer, paste-tracking flag, and ``TerminalKeyDecoder``.
+/// Decodes raw stdin bytes into ``TerminalInputAction`` values.
 ///
-/// Call ``handle(_:)`` with each stdin chunk from the wake pump. The returned
-/// array of ``TerminalInputAction`` values describes what happened so the host
-/// can dispatch to submit logic, viewport scrolling, etc.
+/// Pure decoder with no editing state — emits every key event as-is.
+/// The host tracks `inPaste` from `.bracketedPasteStart`/`.bracketedPasteEnd`
+/// and decides whether to treat Enter as a literal newline, suppress
+/// Backspace, etc. during paste.
 ///
 /// ```swift
 /// var input = TerminalInputHandler()
+/// var myBuffer = ""
+/// var inPaste = false
 /// for await event in pump.events {
 ///     if case .stdinBytes(let chunk) = event {
 ///         for action in input.handle(chunk) {
 ///             switch action {
+///             case .bracketedPasteStart: inPaste = true
+///             case .bracketedPasteEnd:   inPaste = false
 ///             case .enter:
-///                 let text = input.takeBuffer()
-///                 submit(text)
+///                 if inPaste { myBuffer.append("\n") }
+///                 else { submit(myBuffer); myBuffer = "" }
+///             case .character(let ch): myBuffer.append(ch)
+///             case .backspace: if !inPaste, !myBuffer.isEmpty { myBuffer.removeLast() }
+///             case .shiftEnter: myBuffer.append("\n")
 ///             case .ctrlC:  interrupt()
 ///             case .ctrlD:  return .stop
 ///             case .arrowUp: scrollUp()
@@ -45,23 +57,18 @@ public enum TerminalInputAction: Equatable, Sendable {
 /// }
 /// ```
 public struct TerminalInputHandler: Sendable {
-  public private(set) var buffer: String = ""
   private var keyDecoder = TerminalKeyDecoder()
-  private var inPaste = false
 
   public init() {}
 
   // MARK: - Decoding
 
   /// Decode one chunk of raw stdin bytes and return the resulting actions.
-  ///
-  /// The input buffer is mutated in-place for character insertions, backspace,
-  /// and paste-mode newlines/tabs.
+  /// No side effects — every key is emitted as-is.
   public mutating func handle(
     _ chunk: ContiguousArray<UInt8>
   ) -> [TerminalInputAction] {
     var actions: [TerminalInputAction] = []
-    var paste = inPaste  // Local copy for mutation inside the closure
     keyDecoder.decode(chunk) { key in
       switch key {
       case .ctrl(3):
@@ -69,25 +76,23 @@ public struct TerminalInputHandler: Sendable {
       case .ctrl(4):
         actions.append(.ctrlD)
       case .bracketedPasteStart:
-        paste = true
+        actions.append(.bracketedPasteStart)
       case .bracketedPasteEnd:
-        paste = false
+        actions.append(.bracketedPasteEnd)
       case .character(let ch):
         actions.append(.character(ch))
       case .backspace:
-        if !paste { actions.append(.backspace) }
+        actions.append(.backspace)
       case .delete:
-        break  // Not handled as a buffer mutation; host may use for other purposes
+        break  // Not handled; host may use for other purposes
       case .enter:
-        if paste {
-          actions.append(.newline)
-        } else {
-          actions.append(.enter)
-        }
+        actions.append(.enter)
+      case .escape:
+        actions.append(.escape)
       case .shiftEnter:
-        actions.append(.newline)
+        actions.append(.shiftEnter)
       case .tab:
-        if paste { actions.append(.tab) }
+        actions.append(.tab)
       case .arrowUp: actions.append(.arrowUp)
       case .arrowDown: actions.append(.arrowDown)
       case .pageUp, .ctrl(2): actions.append(.pageUp)
@@ -97,38 +102,6 @@ public struct TerminalInputHandler: Sendable {
       default: break
       }
     }
-    inPaste = paste
-    // Apply buffer mutations after decode (since closure can't mutate self)
-    applyBufferMutations(actions)
     return actions
-  }
-
-  // MARK: - Buffer management
-
-  /// Take the current buffer contents and clear it (for submission).
-  public mutating func takeBuffer() -> String {
-    let text = buffer
-    buffer = ""
-    return text
-  }
-
-  /// Replace the buffer contents (used when Ctrl+C recalls a queued message).
-  public mutating func setBuffer(_ text: String) {
-    buffer = text
-  }
-
-  // MARK: - Private
-
-  /// Apply character insertions, backspaces, and paste-mode newlines/tabs to the buffer.
-  private mutating func applyBufferMutations(_ actions: [TerminalInputAction]) {
-    for action in actions {
-      switch action {
-      case .character(let ch): buffer.append(ch)
-      case .backspace: if !buffer.isEmpty { buffer.removeLast() }
-      case .newline: buffer.append("\n")
-      case .tab: buffer.append("    ")
-      default: break
-      }
-    }
   }
 }

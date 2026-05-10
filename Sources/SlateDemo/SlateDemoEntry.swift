@@ -13,6 +13,8 @@ enum SlateDemoEntry {
 
     final class DemoState {
       var input = TerminalInputHandler()
+      var inputBuffer = ""
+      var inPaste = false
       var transcript: [(speaker: String, text: String)] = []
       var streamingText = ""
       var keyHistory: [String] = []
@@ -53,7 +55,7 @@ enum SlateDemoEntry {
           into: &grid,
           transcript: state.transcript,
           streamingText: state.streamingText,
-          inputBuffer: state.input.buffer,
+          inputBuffer: state.inputBuffer,
           keyHistory: state.keyHistory,
           keyCount: state.keyCount,
           firstVisibleRow: &state.transcriptFirstVisibleRow,
@@ -109,11 +111,22 @@ enum SlateDemoEntry {
           switch action {
           case .ctrlC, .ctrlD:
             shouldStop = true
+          case .bracketedPasteStart:
+            state.inPaste = true
+            state.recordKey(action)
+          case .bracketedPasteEnd:
+            state.inPaste = false
+            state.recordKey(action)
           case .enter:
-            let text = state.input.takeBuffer()
-            if !text.isEmpty {
-              state.transcript.append((speaker: "you", text: text))
-              state.followingLiveTranscript = true
+            if state.inPaste {
+              state.inputBuffer.append("\n")
+            } else {
+              let text = state.inputBuffer
+              state.inputBuffer = ""
+              if !text.isEmpty {
+                state.transcript.append((speaker: "you", text: text))
+                state.followingLiveTranscript = true
+              }
             }
             state.recordKey(action)
           case .arrowUp:
@@ -139,6 +152,20 @@ enum SlateDemoEntry {
           case .end:
             state.followingLiveTranscript = true
             state.recordKey(action)
+          case .character(let ch):
+            state.inputBuffer.append(ch)
+            state.recordKey(action)
+          case .backspace:
+            if !state.inPaste, !state.inputBuffer.isEmpty {
+              state.inputBuffer.removeLast()
+            }
+            state.recordKey(action)
+          case .shiftEnter:
+            state.inputBuffer.append("\n")
+            state.recordKey(action)
+          case .tab:
+            state.inputBuffer.append("    ")
+            state.recordKey(action)
           default:
             state.recordKey(action)
           }
@@ -151,7 +178,7 @@ enum SlateDemoEntry {
           into: &grid,
           transcript: state.transcript,
           streamingText: state.streamingText,
-          inputBuffer: state.input.buffer,
+          inputBuffer: state.inputBuffer,
           keyHistory: state.keyHistory,
           keyCount: state.keyCount,
           firstVisibleRow: &state.transcriptFirstVisibleRow,
