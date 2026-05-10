@@ -17,6 +17,9 @@ enum DemoKeyFormatting {
     case .pageDown: return "PgDn"
     case .home: return "Home"
     case .end: return "End"
+    case .escape: return "Esc"
+    case .bracketedPasteStart: return "Past+"
+    case .bracketedPasteEnd: return "Past-"
     }
   }
 }

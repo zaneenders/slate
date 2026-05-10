@@ -156,4 +156,92 @@ import Testing
     let ev = collect(chunks: [[0xC3, 0xA9, 0x1B, 0x5B, 0x42]])
     #expect(ev == [.character("é"), .arrowDown])
   }
+
+  // MARK: - 3-byte and 4-byte UTF-8
+
+  @Test func utf8_threeByte_char_single_chunk() {
+    // 日 U+65E5 → E6 97 A5
+    let bytes: [UInt8] = Array("日".utf8)
+    #expect(bytes == [0xE6, 0x97, 0xA5])
+    let ev = collect(chunks: [bytes])
+    #expect(ev == [.character("日")])
+  }
+
+  @Test func utf8_fourByte_char_single_chunk() {
+    // 🔥 U+1F525 → F0 9F 94 A5
+    let bytes: [UInt8] = Array("🔥".utf8)
+    #expect(bytes == [0xF0, 0x9F, 0x94, 0xA5])
+    let ev = collect(chunks: [bytes])
+    #expect(ev == [.character("🔥")])
+  }
+
+  @Test func utf8_threeByte_char_splitAcrossThreeChunks() {
+    // 日 → E6, 97, A5 arriving one byte at a time
+    let ev = collect(chunks: [[0xE6], [0x97], [0xA5]])
+    #expect(ev == [.character("日")])
+  }
+
+  @Test func utf8_fourByte_char_splitByteByByte() {
+    // 🔥 → F0, 9F, 94, A5 one byte at a time
+    let ev = collect(chunks: [[0xF0], [0x9F], [0x94], [0xA5]])
+    #expect(ev == [.character("🔥")])
+  }
+
+  @Test func utf8_mixed_multibyte_and_ascii() {
+    // "café🔥" → 63 61 66 C3 A9 F0 9F 94 A5
+    let bytes: [UInt8] = Array("café🔥".utf8)
+    let ev = collect(chunks: [bytes])
+    #expect(ev == [
+      .character("c"), .character("a"), .character("f"),
+      .character("é"), .character("🔥"),
+    ])
+  }
+
+  // MARK: - CSI edge cases
+
+  @Test func csi_tilde_twoParams_nonShiftEnter_emitsUnknown() {
+    // \e[27;1~ — not shift-enter (modifier 1 = unshifted)
+    let ev = collect(chunks: [[0x1B, 0x5B, 0x32, 0x37, 0x3B, 0x31, 0x7E]])
+    #expect(ev == [.unknown([0x1B, 0x5B, 0x32, 0x37, 0x3B, 0x31, 0x7E])])
+  }
+
+  @Test func csi_params_nonU_nonTilde_terminator_emitsUnknown() {
+    // \e[1;2R — cursor position report
+    let ev = collect(chunks: [[0x1B, 0x5B, 0x31, 0x3B, 0x32, 0x52]])
+    #expect(ev == [.unknown([0x1B, 0x5B, 0x31, 0x3B, 0x32, 0x52])])
+  }
+
+  // MARK: - Overflow + UTF-8 interaction
+
+  @Test func overflow_incompleteUTF8_thenEscape() {
+    // Chunk 1: 0xC3 (incomplete 2-byte) → buffers in utf8Staging
+    // Chunk 2: 0x1B 0x5B 0x41 (ESC [ A = arrow up)
+    // Expected: replacement char for incomplete UTF-8, then arrow up
+    let ev = collect(chunks: [[0xC3], [0x1B, 0x5B, 0x41]])
+    #expect(ev == [.character("\u{FFFD}"), .arrowUp])
+  }
+
+  @Test func overflow_utf8Staging_persists_across_empty_chunks() {
+    // 日 split: E6, then 97, then A5 — middle chunk tests state persistence
+    let ev = collect(chunks: [[0xE6], [0x97], [0xA5]])
+    #expect(ev == [.character("日")])
+  }
+
+  // MARK: - Edge cases found via coverage
+
+  @Test func utf8_invalidContinuationBytes_emitsReplacement() {
+    // 0xC2 expects a continuation byte in 0x80..0xBF; 0xC0 is not valid.
+    // String(bytes:encoding:) rejects the pair → one replacement for the
+    // lead byte; the stray 0xC0 becomes another replacement via flush.
+    let ev = collect(chunks: [[0xC2, 0xC0]], flush: true)
+    #expect(ev == [.character("\u{FFFD}"), .character("\u{FFFD}")])
+  }
+
+  @Test func csi_parseInts_trailingSemicolon_appendsZero() {
+    // \e[1;u — params "1;", parses as [1, 0].
+    // The trailing semicolon means hasDigit is false but !result.isEmpty
+    // is true at the final append in parseIntsFromBytes.
+    let ev = collect(chunks: [[0x1B, 0x5B, 0x31, 0x3B, 0x75]])
+    #expect(ev == [.unknown([0x1B, 0x5B, 0x31, 0x3B, 0x75])])
+  }
 }

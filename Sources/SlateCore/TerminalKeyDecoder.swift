@@ -148,11 +148,6 @@ struct TerminalKeyDecoder: Sendable {
 
   private mutating func flushUTF8(emit: (TerminalKeyEvent) -> Void) {
     tryDecodeUTF8(partial: false, emit: emit)
-    if !utf8Staging.isEmpty {
-      let bad = utf8Staging
-      utf8Staging.removeAll(keepingCapacity: true)
-      emit(.unknown(bad))
-    }
   }
 
   private func isCSIFinal(_ b: UInt8) -> Bool {
