@@ -3,11 +3,10 @@
 ///
 /// Encoding produces a single contiguous byte stream into a ``RigidArray<UInt8>`` reused
 /// across frames (double-buffered between A and B so two consecutive `presentFrame` calls do
-/// not stomp each other while the writer is still draining). The bytes are then **copied**
-/// out into a `[UInt8]` and submitted to the writer; this copy is a single ~`cols × rows × 54`
-/// memcpy (≈300 KB at 143×38) which finishes in well under a millisecond on modern hardware.
-/// In exchange the encoder never blocks on tty drain, so input handling stays responsive
-/// during long terminal renders.
+/// not stomp each other while the writer is still draining). The encoded bytes are then
+/// copied into a pre-allocated ``ContiguousArray<UInt8>`` that ``AsyncFrameWriter`` recycles
+/// across frames — no heap allocation occurs in steady state. In exchange the encoder never
+/// blocks on tty drain, so input handling stays responsive during long terminal renders.
 internal final class DoubleBufferedTerminalPresenter {
   private var bufferA = TerminalByteBuffer(capacity: 64)
   private var bufferB = TerminalByteBuffer(capacity: 64)
@@ -24,18 +23,21 @@ internal final class DoubleBufferedTerminalPresenter {
     bufferA = TerminalByteBuffer(capacity: cap)
     bufferB = TerminalByteBuffer(capacity: cap)
     encodeUsesA = true
+    // Pre-allocate the writer's recycled buffer so the first frame submission
+    // doesn't allocate at render time.
+    writer.reserveCapacity(cap)
   }
 
-  /// Encode into whichever buffer is "back", then submit a copy to the async writer. The tty
+  /// Encode into whichever buffer is "back", then submit to the async writer. The tty
   /// never receives a partial frame because each submission is a single self-contained byte
-  /// run.
+  /// run. No heap allocation occurs after the first call to ``ensureEncodedByteCapacity``.
   func presentFrame(encodeIntoBack: (inout TerminalByteBuffer) -> Void) {
     if encodeUsesA {
       encodeIntoBack(&bufferA)
-      writer.submit(copyContiguousBytes(bufferA))
+      writer.submit(bufferA)
     } else {
       encodeIntoBack(&bufferB)
-      writer.submit(copyContiguousBytes(bufferB))
+      writer.submit(bufferB)
     }
     encodeUsesA.toggle()
   }
@@ -48,24 +50,6 @@ internal final class DoubleBufferedTerminalPresenter {
   func flushAndStopWriter() async {
     writer.stop()
     await writer.waitForCompletion()
-  }
-
-  /// Materializes the encoded byte slice into an owned `[UInt8]` so the writer task can read
-  /// it without keeping the presenter's reusable buffer alive — keeping the copy here also
-  /// means the writer's API does not depend on slate's `RigidArray` types. The copy is a
-  /// single bulk memory copy (one allocation + `memcpy`-equivalent), not a per-byte append
-  /// loop, so a 300 KB frame finishes in well under a millisecond.
-  private func copyContiguousBytes(_ buf: borrowing TerminalByteBuffer) -> [UInt8] {
-    let raw = unsafe buf.span.bytes
-    #if compiler(>=6.4)
-    return raw.withUnsafeBytes { src in
-      unsafe Array(unsafe src.bindMemory(to: UInt8.self))
-    }
-    #else
-    return unsafe raw.withUnsafeBytes { src in
-      unsafe Array(unsafe src.bindMemory(to: UInt8.self))
-    }
-    #endif
   }
 }
 
