@@ -404,5 +404,94 @@ extension Benchmark {
         blackHole(buf.count)
       }
     }
+
+    // ── Presenter Buffer Management ──────────────────────────────────────────
+    //
+    // These benchmarks measure the write-buffer fill path in AsyncFrameWriter
+    // without touching the tty. The source is a [UInt8] of realistic frame
+    // size (encodeCapacity matches the actual bytes AsyncFrameWriter receives).
+
+    self.add(
+      title: "PresenterBuffer.fill recycled",
+      input: TerminalSize.self
+    ) { ts in
+      // Steady-state after the first frame: refill a capacity-reserved
+      // ContiguousArray in-place — removeAll(keepingCapacity:) + append
+      // — without any heap allocation.
+      let source = [UInt8](repeating: 0xAB, count: ts.encodeCapacity)
+      var recycled = ContiguousArray<UInt8>()
+      recycled.reserveCapacity(ts.encodeCapacity)
+      return { timer in
+        timer.measure {
+          recycled.removeAll(keepingCapacity: true)
+          recycled.append(contentsOf: source)
+        }
+        blackHole(recycled.count)
+      }
+    }
+
+    self.add(
+      title: "PresenterBuffer.fill first frame",
+      input: TerminalSize.self
+    ) { ts in
+      // Cold-start cost: the buffer is freshly allocated and capacity-reserved
+      // once (matching what ensureEncodedByteCapacity triggers), then filled.
+      // This path runs at most once per session / per resize.
+      let source = [UInt8](repeating: 0xAB, count: ts.encodeCapacity)
+      return { timer in
+        var buf = ContiguousArray<UInt8>()
+        timer.measure {
+          buf.reserveCapacity(ts.encodeCapacity)
+          buf.removeAll(keepingCapacity: true)
+          buf.append(contentsOf: source)
+        }
+        blackHole(buf.count)
+      }
+    }
+
+    // ── Key Decoder: UTF-8 multibyte ─────────────────────────────────────────
+    //
+    // The existing ASCII burst and CSI-mix benchmarks leave the tryDecodeUTF8
+    // path unexercised. This benchmark drives it with 3-byte CJK sequences.
+
+    self.add(
+      title: "KeyDecoder UTF-8 multibyte burst",
+      input: Int.self
+    ) { size in
+      // "你好" = 2 CJK characters, 6 UTF-8 bytes each repetition.
+      let count = Swift.min(size, 1024)
+      let reps = max(1, count / 6)
+      let bytes = ContiguousArray(String(repeating: "你好", count: reps).utf8.prefix(count))
+      return { timer in
+        var d = TerminalKeyDecoder()
+        timer.measure {
+          d.decode(bytes) { _ in }
+        }
+      }
+    }
+
+    // ── Grid: wider span coverage ─────────────────────────────────────────────
+    //
+    // blitSpans with 3 spans is benchmarked above; this covers a richer row
+    // (10 spans) closer to what a real status bar or chat UI produces.
+
+    self.add(
+      title: "Grid.blitSpans 10-span row",
+      input: TerminalSize.self
+    ) { ts in
+      let spans: [TerminalStyledSpan] = (0..<10).map { i in
+        TerminalStyledSpan(
+          "seg\(i) ",
+          foreground: TerminalRGB(r: UInt8(i &* 25), g: 180, b: 120),
+          background: .black,
+          flags: i % 3 == 0 ? .bold : [])
+      }
+      return { timer in
+        var g = makeSingleRowGrid(size: ts)
+        timer.measure {
+          g.blitSpans(column: 0, row: 0, maxWidth: ts.cols, spans)
+        }
+      }
+    }
   }
 }
