@@ -12,6 +12,7 @@ public import SlateUI
 /// Startup, first-use Swift runtime metadata, and caller-created String storage
 /// are outside the steady-state allocation guarantee. Blocking output latency
 /// depends on the caller's descriptor; no tasks or additional retries are added.
+// TODO: Do we need this, maybe this should be revisisted or defined as a better layer for full screen and avoid having to redererers?
 public struct ScreenRegion: ~Copyable {
   public var maximumSize: TerminalSize { surface.maximumSize }
   public var nodeCapacity: Int { surface.nodeCapacity }

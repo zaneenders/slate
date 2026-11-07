@@ -20,6 +20,7 @@ struct ScreenRunner: ~Copyable {
   private var input = TerminalInput()
   private var previousActualSize: TerminalSize?
   private var needsRedraw = true
+  // TODO: Why do we have a Clipboard and a PasteBuffer
   private var paste = PasteBuffer()
   private var clipboard = Clipboard()
   private var handlesSuspension = false

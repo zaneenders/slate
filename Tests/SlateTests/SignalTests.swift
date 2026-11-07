@@ -12,30 +12,129 @@ import Musl
 import Glibc
 #endif
 
-@Test func signalOwnerRejectsOverlapAndRestoresAfterScopeExit() throws {
-  do {
-    let owner = try SignalSession(.managed)
-    let enabled = owner.enabled
-    #expect(enabled)
-    #expect(throws: ScreenApplicationError.signalSetup(errno: EBUSY)) { _ = try SignalSession(.managed) }
+@Suite(.serialized)
+struct SignalOwnershipTests {
+  @Test func signalOwnerRejectsOverlapAndRestoresAfterScopeExit() throws {
+    do {
+      let owner = try SignalSession(.managed)
+      let enabled = owner.enabled
+      #expect(enabled)
+      #expect(throws: ScreenApplicationError.signalSetup(errno: EBUSY)) { _ = try SignalSession(.managed) }
+    }
+    do {
+      let next = try SignalSession(.managed)
+      #expect(next.termination() == 0)
+    }
+    // A termination signal delivered in the quit callback must not become a
+    // successful exit. Parent-process signal ownership is serialized by this suite.
+    let pty = try PseudoTerminal()
+    let saved = try attributes(of: pty.slave)
+    var size = winsize(ws_row: 1, ws_col: 1, ws_xpixel: 0, ws_ypixel: 0)
+    try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
+    let output = try Output(fileDescriptor: pty.master)
+    try output.writeAll("q".utf8Span.span)
+    var application = SignalDuringQuitApplication()
+    #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
+      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
+    }
+    expectEqual(try attributes(of: pty.slave), saved)
   }
-  do {
-    let next = try SignalSession(.managed)
-    #expect(next.termination() == 0)
+
+  // Serialize parent-process signal changes; the other tests use child processes.
+  @Test func signalStateCoalescesBurstsAndRestoresDispositions() throws {
+    var originalContinue = try readSignalAction(SIGCONT)
+    defer { _ = unsafe sigaction(SIGCONT, &originalContinue, nil) }
+    var ignoredContinue = sigaction()
+    #if canImport(Darwin)
+    unsafe ignoredContinue.__sigaction_u.__sa_handler = SIG_IGN
+    #elseif canImport(Musl)
+    unsafe ignoredContinue.__sa_handler.sa_handler = SIG_IGN
+    #else
+    unsafe ignoredContinue.__sigaction_handler.sa_handler = SIG_IGN
+    #endif
+    ignoredContinue.sa_flags = SA_RESTART
+    try #require(unsafe sigemptyset(&ignoredContinue.sa_mask) == 0)
+    try #require(unsafe sigaddset(&ignoredContinue.sa_mask, SIGUSR1) == 0)
+    try #require(unsafe sigaction(SIGCONT, &ignoredContinue, nil) == 0)
+
+    let numbers: InlineArray<6, Int32> = [SIGINT, SIGTERM, SIGHUP, SIGTSTP, SIGCONT, SIGPIPE]
+    var saved = InlineArray<6, sigaction>(repeating: sigaction())
+    for index in numbers.indices { saved[index] = try readSignalAction(numbers[index]) }
+    do {
+      let owner = try SignalSession(.managed)
+      let unchanged = try SignalSession(.unchanged)
+      #expect(unchanged.enabled == false)
+      expectSignalAction(try readSignalAction(SIGPIPE), saved[5])
+      #expect(throws: ScreenApplicationError.signalSetup(errno: EBUSY)) { _ = try SignalSession(.managed) }
+
+      // Call the installed callback synchronously to make coalescing
+      // deterministic. Child-process tests cover kernel delivery.
+      let installed = try readSignalAction(SIGTERM)
+      #if canImport(Darwin)
+      let handler = try #require(unsafe installed.__sigaction_u.__sa_handler)
+      #elseif canImport(Musl)
+      let handler = try #require(unsafe installed.__sa_handler.sa_handler)
+      #else
+      let handler = try #require(unsafe installed.__sigaction_handler.sa_handler)
+      #endif
+
+      // More signals than a buffered design could retain still occupy one flag.
+      for _ in 0..<4_096 { handler(SIGTSTP) }
+      #expect(unchanged.shouldSuspend() == false)
+      #expect(owner.shouldSuspend() == true)
+      #expect(owner.shouldSuspend() == false)
+      handler(SIGTSTP)
+      handler(SIGCONT)
+      #expect(owner.shouldSuspend() == false)
+      for number in [SIGINT, SIGTERM, SIGHUP] {
+        handler(number)
+        #expect(owner.termination() == number)
+        #expect(unchanged.termination() == 0)
+      }
+      #expect(owner.shouldSuspend() == false)
+      #expect(owner.termination() == SIGHUP)
+      // A latched termination must prevent an actual stop.
+      try owner.suspend()
+    }
+    for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
+    do {
+      let next = try SignalSession(.managed)
+      #expect(next.termination() == 0)
+      #expect(next.shouldSuspend() == false)
+    }
+    do {
+      let owner = try SignalSession(.managed)
+      #expect(owner.enabled == true)
+      throw ScreenApplicationError.disconnected
+    } catch ScreenApplicationError.disconnected {}
+    for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
   }
-  // A termination signal delivered in the quit callback must not become a
-  // successful exit. Keep all parent-process signal ownership in this one test.
-  let pty = try PseudoTerminal()
-  let saved = try attributes(of: pty.slave)
-  var size = winsize(ws_row: 1, ws_col: 1, ws_xpixel: 0, ws_ypixel: 0)
-  try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
-  let output = try Output(fileDescriptor: pty.master)
-  try output.writeAll("q".utf8Span.span)
-  var application = SignalDuringQuitApplication()
-  #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
+}
+
+private func readSignalAction(_ number: Int32) throws -> sigaction {
+  var result = sigaction()
+  try #require(unsafe sigaction(number, nil, &result) == 0)
+  return result
+}
+
+private func expectSignalAction(_ actual: sigaction, _ expected: sigaction) {
+  #if canImport(Darwin)
+  let actualHandler = unsafe actual.__sigaction_u.__sa_handler
+  let expectedHandler = unsafe expected.__sigaction_u.__sa_handler
+  #elseif canImport(Musl)
+  let actualHandler = unsafe actual.__sa_handler.sa_handler
+  let expectedHandler = unsafe expected.__sa_handler.sa_handler
+  #else
+  let actualHandler = unsafe actual.__sigaction_handler.sa_handler
+  let expectedHandler = unsafe expected.__sigaction_handler.sa_handler
+  #endif
+  #expect(unsafe unsafeBitCast(actualHandler, to: UInt.self) == unsafeBitCast(expectedHandler, to: UInt.self))
+  #expect(actual.sa_flags == expected.sa_flags)
+  var actualMask = actual.sa_mask
+  var expectedMask = expected.sa_mask
+  for number in 1..<NSIG {
+    #expect(unsafe sigismember(&actualMask, number) == sigismember(&expectedMask, number))
   }
-  expectEqual(try attributes(of: pty.slave), saved)
 }
 
 private struct SignalDuringQuitApplication: ScreenApplication {

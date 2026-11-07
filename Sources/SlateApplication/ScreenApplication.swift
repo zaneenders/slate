@@ -85,7 +85,10 @@ extension ScreenApplication where Self: ~Copyable {
   /// Convenience executable entry point. Ignores SIGPIPE process-wide so a
   /// broken output can unwind the terminal scopes before reporting an error.
   public static func main() {
-    _ = signal(SIGPIPE, SIG_IGN)  //TODO: can this not be set when raw mode is setup https://viewsourcecode.org/snaptoken/kilo/02.enteringRawMode.html
+    // Raw mode disables terminal-generated signals, not SIGPIPE from writes to
+    // closed pipes or sockets. Keep this process-wide policy at the entry point;
+    // it must also cover diagnostics written after terminal scopes unwind.
+    _ = signal(SIGPIPE, SIG_IGN)
     do throws(ScreenApplicationError) {
       var application = Self()
       try application.run(signalHandling: .managed)
