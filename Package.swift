@@ -56,6 +56,7 @@ let package = Package(
       dependencies: [
         .product(name: "BasicContainers", package: "swift-collections")
       ],
+      exclude: ["UnicodeWidth/Unicode-LICENSE.txt"],
       swiftSettings: swiftSettings
     ),
     .target(
