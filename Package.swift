@@ -56,8 +56,7 @@ let package = Package(
       dependencies: [
         .product(name: "BasicContainers", package: "swift-collections")
       ],
-      swiftSettings: swiftSettings,
-      plugins: [.plugin(name: "UnicodeWidthPlugin")]
+      swiftSettings: swiftSettings
     ),
     .target(
       name: "SlateUI",
@@ -85,18 +84,6 @@ let package = Package(
       swiftSettings: swiftSettings
     ),
 
-    // Build tools
-    .executableTarget(
-      name: "UnicodeWidthGenerator",
-      path: "Tools/UnicodeWidthGenerator",
-      swiftSettings: swiftSettings
-    ),
-    .plugin(
-      name: "UnicodeWidthPlugin",
-      capability: .buildTool(),
-      dependencies: ["UnicodeWidthGenerator"]
-    ),
-
     // Test support
     .executableTarget(
       name: "SlateSignalFixture",
@@ -109,10 +96,6 @@ let package = Package(
     ),
 
     // Tests
-    .testTarget(
-      name: "UnicodeWidthGeneratorTests",
-      dependencies: ["UnicodeWidthGenerator"]
-    ),
     .testTarget(
       name: "SlateDocumentDemoTests",
       dependencies: ["SlateDocumentDemo", "Slate"],
