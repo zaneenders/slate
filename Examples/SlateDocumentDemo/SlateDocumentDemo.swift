@@ -43,6 +43,7 @@ struct SlateDocumentDemo: ScreenApplication {
     [ ] jump disk pages; C clears Slate's cache; I toggles the inspector; ? helps; Q quits.
     Drag the scrollbar to seek; click its track to jump; the mouse wheel scrolls rows.
     Drag file text to select within its pane; y / Ctrl-C copies; Escape clears selection.
+    / searches literal, case-sensitive UTF-8; Enter / n finds next and wraps; Tab switches focus; Escape closes.
     Indexing progress appears in the UI; Q / Escape / Ctrl-C cancels. Bytes stay on disk.
     """
 
@@ -108,36 +109,19 @@ struct SlateDocumentDemo: ScreenApplication {
   }
 
   static var configuration: ScreenApplicationConfiguration {
-    .init(maximumSize: TerminalSize(columns: 160, rows: 60), nodeCapacity: 8, mouseTracking: true)
+    .init(maximumSize: TerminalSize(columns: 160, rows: 60), nodeCapacity: 32, mouseTracking: true)
   }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    if case .file(let viewer) = mode { return viewer.event(event, copyBuffer: &copyBuffer) }
     switch event {
-    case .key(let key, let modifiers): return handle(key, modifiers: modifiers, copyBuffer: &copyBuffer)
-    case .mouse(let mouse):
-      if case .file(let viewer) = mode { return viewer.mouse(mouse) }
-      return .none
-    case .paste, .pasteRejected: return .none
-    }
-  }
-
-  private mutating func handle(
-    _ key: InputKey, modifiers: KeyModifiers, copyBuffer: inout CopyBuffer
-  ) -> ScreenUpdate {
-    switch mode {
-    case .file(let viewer):
-      let copy =
-        key == .control(.c) || (modifiers == .control && key == .character("c"))
-        || (modifiers.isEmpty && key == .character("y"))
-      if copy && !viewer.helpVisible && viewer.selectionRange != nil { return viewer.copySelection(to: &copyBuffer) }
-      return viewer.handle(key, modifiers: modifiers)
-    case .indexing:
-      if Self.isQuitKey(key, modifiers: modifiers) {
+    case .key(let key, let modifiers):
+      guard Self.isQuitKey(key, modifiers: modifiers) else { return .none }
+      if case .indexing = mode {
         mode = .cancelled  // Release the file and partial index immediately.
-        return .quit
       }
-      return .none
-    case .failure, .cancelled: return Self.isQuitKey(key, modifiers: modifiers) ? .quit : .none
+      return .quit
+    default: return .none
     }
   }
 
@@ -147,8 +131,7 @@ struct SlateDocumentDemo: ScreenApplication {
   }
 
   func render(in size: TerminalSize) -> some Block {
-    if case .file(let viewer) = mode { viewer.prepare(in: size) }
-    return Column {}
+    if case .file(let viewer) = mode { viewer.render(in: size) } else { Column {} }
   }
 
   func paint(in frame: inout Frame) {

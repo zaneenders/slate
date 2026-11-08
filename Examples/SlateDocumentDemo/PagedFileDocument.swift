@@ -186,16 +186,19 @@ struct PagedFileDocument: TextDocumentSource, ~Copyable, ~Sendable {
   }
 
   /// Copies raw file bytes, including malformed UTF-8, into caller-owned storage.
-  /// Like readUTF8, each call touches at most one cached disk page.
+  /// Copies at most maximumCount bytes, stopping at buffer or page boundaries
+  /// and leaving unused buffer contents unchanged. A negative limit throws
+  /// invalidRange; zero returns without cache access. Like readUTF8, each call
+  /// touches at most one cached disk page.
   mutating func readBytes(
-    from byteOffset: Int, into buffer: consuming MutableSpan<UInt8>
+    from byteOffset: Int, maximumCount: Int = .max, into buffer: consuming MutableSpan<UInt8>
   ) throws(FileDocumentError) -> Int {
-    guard (0...byteCount).contains(byteOffset) else { throw .invalidRange }
-    guard byteOffset < byteCount && !buffer.isEmpty else { return 0 }
+    guard (0...byteCount).contains(byteOffset), maximumCount >= 0 else { throw .invalidRange }
+    guard byteOffset < byteCount && maximumCount > 0 && !buffer.isEmpty else { return 0 }
     let page = index.page(atByteOffset: byteOffset)
     let slot = try load(page)
     let local = byteOffset - page.fileOffset
-    let count = min(buffer.count, page.byteCount - local)
+    let count = min(maximumCount, min(buffer.count, page.byteCount - local))
     var buffer = consume buffer
     let base = slot * configuration.pageBytes + local
     for offset in 0..<count { buffer[offset] = bytes[base + offset] }

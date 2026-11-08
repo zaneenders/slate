@@ -103,13 +103,12 @@ extension ScreenApplication where Self: ~Copyable {
       try application.run(signalHandling: .managed)
     } catch {
       if case .interrupted(let number) = error { exit(128 + number) }
-      var message = "\(Self.self): \(error)\n"
+      let message = "\(Self.self): \(error)\n"
       if let diagnostics = try? Output(fileDescriptor: STDERR_FILENO) {
-        try? message.withUTF8 { buffer throws(IOError) in
-          try diagnostics.writeAll(unsafe Span(_unsafeElements: buffer))
-        }
+        try? diagnostics.writeAll(message.utf8Span.span)
       }
-      exit(EXIT_FAILURE)  // TODO: Can we have main throw and do swifts error handleing for return not zero?
+      // Uncaught errors from a throwing main trap; expected failures exit normally.
+      exit(EXIT_FAILURE)
     }
   }
 

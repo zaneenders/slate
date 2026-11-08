@@ -401,7 +401,8 @@ struct FileByteViewport: ~Copyable, ~Sendable {
   borrowing func paint(
     in area: Rect, frame: inout Frame, pageBytes: Int,
     previousRange: Range<Int>, style: Style, revealedStyle: Style, boundaryStyle: Style,
-    selection: Range<Int>? = nil, selectionStyle: Style = Style(foreground: .white, background: .blue)
+    selection: Range<Int>? = nil, selectionStyle: Style = Style(foreground: .white, background: .blue),
+    match: Range<Int>? = nil, matchStyle: Style = Style(foreground: .black, background: .yellow)
   ) {
     precondition(pageBytes > 0)
     let clipped = area.intersection(frame.area)
@@ -421,6 +422,10 @@ struct FileByteViewport: ~Copyable, ~Sendable {
           cellStyle.foreground = boundaryStyle.foreground
           cellStyle.underlined = true
           cellStyle.bold = true
+        }
+        if match?.overlaps(range) == true {
+          cellStyle.foreground = matchStyle.foreground
+          cellStyle.background = matchStyle.background
         }
         if selection?.overlaps(range) == true {
           cellStyle.foreground = selectionStyle.foreground

@@ -167,11 +167,14 @@ import Testing
   for offscreen in [false, true] {
     _ = viewer.handle(.home, modifiers: [])
     viewer.prepare(in: size)
+    try finishUnicodePreparation(viewer)
+    try #require(viewer.firstByte == 0)
     _ = viewer.mouse(.init(action: .press, button: .left, column: layout.text.x, row: layout.text.y))
     _ = viewer.mouse(.init(action: .move, button: .left, column: 65_534, row: layout.text.bottom - 1))
     if offscreen {
       _ = viewer.performPendingWork(at: ContinuousClock().now.advanced(by: .seconds(1)))
       viewer.prepare(in: size)
+      try finishUnicodePreparation(viewer)
     }
     _ = viewer.mouse(.init(action: .release, button: .left, column: 65_534, row: layout.text.bottom - 1))
     let range = try #require(viewer.selectionRange)

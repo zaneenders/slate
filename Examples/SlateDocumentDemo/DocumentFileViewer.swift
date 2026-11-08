@@ -15,6 +15,7 @@ import Slate
 /// reopen, so subsequent help/resize/failure redraws never retry or allocate.
 final class DocumentFileViewer: ~Sendable {
   private var source: PagedFileDocument
+  private var search = DocumentSearch()
   private var viewport = try! FileByteViewport()
   private let displayName: String
   private var cachedPages = InlineArray<64, Int>(repeating: -1)
@@ -71,11 +72,15 @@ final class DocumentFileViewer: ~Sendable {
   var isPreparingViewport: Bool { viewport.hasPendingWork }
   var selectionRange: Range<Int>? { textSelection?.range }
   var statistics: FilePageStatistics { source.statistics }
+  var searchMatch: Range<Int>? { search.match }
+  var searchState: DocumentSearch.State { search.state }
+  var searchVisible: Bool { search.isVisible }
+  var searchFocused: Bool { search.isFocused }
   var storageBudgetBytes: Int {
-    source.cacheStorageBudgetBytes + viewport.storageBudgetBytes + selectionCopyBytes.capacity
+    source.cacheStorageBudgetBytes + viewport.storageBudgetBytes + selectionCopyBytes.capacity + search.storagePayloadBytes
   }
   var hasPendingWork: Bool {
-    if viewport.hasPendingWork { return true }
+    if viewport.hasPendingWork || search.hasPendingWork { return true }
     guard case .selection(let drag) = mouseCapture,
       let deadline = drag.scrollDeadline, selectionScrollDirection(at: drag) != 0
     else { return false }
@@ -92,6 +97,8 @@ final class DocumentFileViewer: ~Sendable {
     "Mouse           Drag scrollbar / click track; wheel scrolls rows",
     "Drag text       Select file bytes; y / Ctrl-C copies; Escape clears",
     "Hold at edge    Scroll while selecting across file bytes",
+    "/              Search literal UTF-8; type to find; Enter / n next",
+    "Tab / Escape   Switch search focus / close and cancel search",
     "",
     "WATCH THE READER",
     "Gutter          Zero-based byte offset of each row",
@@ -119,6 +126,58 @@ final class DocumentFileViewer: ~Sendable {
     } else {
       displayName = path
     }
+  }
+
+  func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    switch event {
+    case .key(let key, let modifiers):
+      if !helpVisible && !preparationFailed,
+        let update = search.handle(
+          key, modifiers: modifiers, copyBuffer: &copyBuffer, firstByte: firstByte, byteCount: source.byteCount)
+      {
+        clearSelection()
+        return update
+      }
+      let copy = key == .control(.c) || (modifiers == .control && key == .character("c"))
+        || (modifiers.isEmpty && key == .character("y"))
+      if copy && !helpVisible && selectionRange != nil { return copySelection(to: &copyBuffer) }
+      return handle(key, modifiers: modifiers)
+    case .mouse(let event):
+      if search.isVisible && event.action == .press && event.button == .left {
+        if let size = preparedSize, event.row >= size.rows {
+          search.focus(from: firstByte)
+          clearSelection()
+          return .redraw
+        }
+        let wasFocused = search.isFocused
+        search.blur()
+        let update = mouse(event)
+        return wasFocused && update == .none ? .redraw : update
+      }
+      return mouse(event)
+    case .paste(let text): return search.paste(text, byteCount: source.byteCount)
+    case .pasteRejected: return .none
+    }
+  }
+
+  /// Blocks own the search strip; custom drawing owns only the rows above it.
+  func render(in size: TerminalSize) -> some Block {
+    prepare(in: documentSize(in: size))
+    return Column {
+      Row {}.frame(width: .fill, height: .fill)
+      if search.isVisible {
+        Row(gap: 1) {
+          Text("/", style: ViewerPalette.accent)
+          InputBox(search.input, focused: search.isFocused, placeholder: "Find literal UTF-8", style: ViewerPalette.body)
+        }.frame(width: .fill, height: .fixed(1))
+        Row { Text(search.statusMessage, style: ViewerPalette.muted) }
+          .frame(width: .fill, height: .fixed(1))
+      }
+    }.frame(width: .fill, height: .fill, alignment: .topLeading)
+  }
+
+  private func documentSize(in size: TerminalSize) -> TerminalSize {
+    TerminalSize(columns: size.columns, rows: max(0, size.rows - (search.isVisible ? 2 : 0)))
   }
 
   func handle(_ key: InputKey, modifiers: KeyModifiers) -> ScreenUpdate {
@@ -301,6 +360,14 @@ final class DocumentFileViewer: ~Sendable {
   /// false from hasPendingWork until due lets the runner sleep between ticks.
   func performPendingWork(at now: ContinuousClock.Instant = ContinuousClock().now) -> ScreenUpdate {
     if viewport.hasPendingWork { return advanceViewport() }
+    if search.hasPendingWork {
+      if let match = search.advance(from: &source) {
+        clearSelection()
+        firstByte = match.lowerBound
+        backwardRows = 0
+      }
+      return search.hasPendingWork ? .none : .redraw
+    }
     guard case .selection(var drag) = mouseCapture,
       let deadline = drag.scrollDeadline, now >= deadline
     else { return .none }
@@ -569,26 +636,28 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   func paint(in frame: inout Frame) {
-    frame.fill(frame.area, with: Cell(style: ViewerPalette.body))
-    guard frame.area.height >= 7 && frame.area.width >= 16 else {
-      frame.text("Resize to 16 x 7; Q quits", in: frame.area, style: ViewerPalette.muted)
+    let size = documentSize(in: TerminalSize(columns: frame.area.width, rows: frame.area.height))
+    let area = Rect(width: size.columns, height: size.rows)
+    frame.fill(area, with: Cell(style: ViewerPalette.body))
+    guard area.height >= 7 && area.width >= 16 else {
+      frame.text("Resize to 16 x 7; Q quits", in: area, style: ViewerPalette.muted)
       return
     }
     let layout = DocumentViewerLayout(
-      size: TerminalSize(columns: frame.area.width, rows: frame.area.height),
-      byteCount: source.byteCount, showInspector: showInspector)
+      size: size, byteCount: source.byteCount, showInspector: showInspector)
     paintHeader(layout: layout, frame: &frame)
     if layout.rich { frame.border(layout.document, title: " FILE BYTES ", style: ViewerPalette.border) }
     viewport.paint(
       in: layout.text, frame: &frame, pageBytes: source.configuration.pageBytes,
       previousRange: previousRange, style: ViewerPalette.body,
       revealedStyle: ViewerPalette.revealed, boundaryStyle: ViewerPalette.accent,
-      selection: selectionRange, selectionStyle: ViewerPalette.selection)
+      selection: selectionRange, selectionStyle: ViewerPalette.selection,
+      match: search.match, matchStyle: ViewerPalette.match)
     paintRows(layout: layout, frame: &frame)
     paintScrollbar(layout: layout, frame: &frame)
     if let inspector = layout.inspector { paintInspector(in: inspector, frame: &frame) }
-    paintFooter(layout: layout, frame: &frame)
-    if helpVisible { paintHelp(frame: &frame) }
+    paintFooter(layout: layout, height: area.height, frame: &frame)
+    if helpVisible { paintHelp(height: area.height, frame: &frame) }
   }
 
   private func paintHeader(layout: DocumentViewerLayout, frame: inout Frame) {
@@ -680,8 +749,8 @@ final class DocumentFileViewer: ~Sendable {
     number(source.configuration.cachePages, x: area.right - 4, y: area.bottom - 2, width: 2, frame: &frame)
   }
 
-  private func paintFooter(layout: DocumentViewerLayout, frame: inout Frame) {
-    let y = frame.area.height - (layout.rich ? 4 : 3)
+  private func paintFooter(layout: DocumentViewerLayout, height: Int, frame: inout Frame) {
+    let y = height - (layout.rich ? 4 : 3)
     let width = frame.area.width
     if preparationFailed {
       label(notice, x: 1, y: y, width: width - 2, style: ViewerPalette.error, frame: &frame)
@@ -725,11 +794,11 @@ final class DocumentFileViewer: ~Sendable {
       lastPageLoads > 0 ? "LOAD +" : "CACHED", x: 9 + buckets, y: mapY, width: 8,
       style: lastPageLoads > 0 ? ViewerPalette.fresh : ViewerPalette.accent, frame: &frame)
     if lastPageLoads > 0 { counter(lastPageLoads, x: 17 + buckets, y: mapY, width: 4, frame: &frame) }
-    let helpY = frame.area.height - 1
+    let helpY = height - 1
     label(
       selectionRange != nil
         ? "y / Ctrl-C copy  Esc clear selection"
-        : layout.rich ? "j/k row  PgUp/Dn screen  0-9 jump  [ ] page  C clear  drag bar" : "j/k row  0-9 jump  C clear",
+        : layout.rich ? "/ search  j/k row  PgUp/Dn screen  0-9 jump  C clear" : "/ search  j/k row  0-9 jump",
       x: 1, y: helpY, width: width - 17, style: ViewerPalette.muted, frame: &frame)
     label("? help  Q quit", x: max(1, width - 15), y: helpY, width: 14, style: ViewerPalette.muted, frame: &frame)
     if layout.rich {
@@ -750,18 +819,18 @@ final class DocumentFileViewer: ~Sendable {
     }
   }
 
-  private func paintHelp(frame: inout Frame) {
+  private func paintHelp(height availableHeight: Int, frame: inout Frame) {
     let width = min(76, frame.area.width - 2)
-    let height = min(helpLines.count + 3, frame.area.height - 2)
+    let height = min(helpLines.count + 3, availableHeight - 2)
     guard width > 4 && height > 3 else { return }
     let area = Rect(
-      x: (frame.area.width - width) / 2, y: (frame.area.height - height) / 2, width: width, height: height)
+      x: (frame.area.width - width) / 2, y: (availableHeight - height) / 2, width: width, height: height)
     frame.fill(area, with: Cell(style: ViewerPalette.body))
     frame.border(area, title: " FILE READER / HELP ", style: ViewerPalette.accent)
     for row in 0..<min(helpLines.count, height - 2) {
       label(
         helpLines[row], x: area.x + 2, y: area.y + 1 + row, width: area.width - 4,
-        style: row == 0 || row == 10 ? ViewerPalette.title : ViewerPalette.muted, frame: &frame)
+        style: row == 0 || helpLines[row] == "WATCH THE READER" ? ViewerPalette.title : ViewerPalette.muted, frame: &frame)
     }
   }
 
@@ -806,6 +875,7 @@ final class DocumentFileViewer: ~Sendable {
 }
 
 enum ViewerPalette {
+  static var match: Style { Style(foreground: .black, background: .indexed(220)) }
   static var selection: Style { Style(foreground: .white, background: .indexed(60)) }
   static var body: Style { Style(foreground: .indexed(252), background: .indexed(234)) }
   static var revealed: Style { Style(foreground: .indexed(252), background: .indexed(236)) }

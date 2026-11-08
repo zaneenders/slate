@@ -182,6 +182,53 @@ import Testing
   }
 }
 
+@Test func pagedFileByteReadLimitsPreserveTheTailAndRespectPageBufferAndFileBoundaries() throws {
+  let bytes: [UInt8] = Array(0..<10)
+  let fixture = try PagedFileFixture(bytes)
+  var source = try PagedFileDocument.open(fixture.path, configuration: .init(pageBytes: 4, cachePages: 1))
+  let budget = source.cacheStorageBudgetBytes
+  var output = InlineArray<8, UInt8>(repeating: 0xa5)
+  for (offset, limit, expected) in [(0, 0, 0), (0, 2, 2), (3, 8, 1), (4, 3, 3), (8, 8, 2), (0, Int.max, 4), (10, 8, 0)] {
+    output = InlineArray(repeating: 0xa5)
+    let before = source.statistics
+    let count = try source.readBytes(from: offset, maximumCount: limit, into: output.mutableSpan)
+    #expect(count == expected)
+    for index in 0..<output.count {
+      #expect(output[index] == (index < expected ? bytes[offset + index] : 0xa5))
+    }
+    if expected == 0 { #expect(source.statistics == before) }
+    #expect(source.cacheStorageBudgetBytes == budget)
+  }
+  var small = InlineArray<2, UInt8>(repeating: 0xa5)
+  #expect(try source.readBytes(from: 0, maximumCount: 8, into: small.mutableSpan) == 2)
+  #expect(small[0] == 0 && small[1] == 1)
+  var empty = InlineArray<0, UInt8>(repeating: 0xa5)
+  let before = source.statistics
+  #expect(try source.readBytes(from: 0, maximumCount: 8, into: empty.mutableSpan) == 0)
+  #expect(source.statistics == before)
+}
+
+@Test func pagedFileByteReadRejectsInvalidLimitsAndOffsetsBeforeCacheAccessOrWrites() throws {
+  let fixture = try PagedFileFixture(Array("abcdefgh".utf8))
+  var source = try PagedFileDocument.open(fixture.path, configuration: .init(pageBytes: 4, cachePages: 1))
+  var output = InlineArray<8, UInt8>(repeating: 0xa5)
+  let before = source.statistics
+  for offset in [0, 8] {
+    for limit in [-1, Int.min] {
+      #expect(throws: FileDocumentError.invalidRange) {
+        try source.readBytes(from: offset, maximumCount: limit, into: output.mutableSpan)
+      }
+    }
+  }
+  for offset in [-1, 9] {
+    #expect(throws: FileDocumentError.invalidRange) {
+      try source.readBytes(from: offset, maximumCount: 0, into: output.mutableSpan)
+    }
+  }
+  for index in 0..<output.count { #expect(output[index] == 0xa5) }
+  #expect(source.statistics == before && source.residentPageCount == 0)
+}
+
 @Test func pagedFileRejectsIndexExhaustionInvalidConfigurationsAndNonFiles() throws {
   let fixture = try PagedFileFixture(Array("12345".utf8))
   #expect(throws: FileDocumentError.indexCapacityExceeded) {
