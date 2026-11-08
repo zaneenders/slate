@@ -40,11 +40,10 @@ let package = Package(
       path: "Examples/SlateDocumentDemo",
       swiftSettings: swiftSettings
     ),
-    // Libraries
+    // Libraries: application lifecycle -> terminal backend -> UI composition and drawing.
     .target(
       name: "Slate",
       dependencies: [
-        "SlateComposition",
         "SlateUI",
         "SlateTerminal",
         "SlateApplication"
@@ -52,19 +51,11 @@ let package = Package(
       swiftSettings: swiftSettings
     ),
     .target(
-      name: "SlateComposition",
-      dependencies: [
-        .product(name: "BasicContainers", package: "swift-collections")
-      ],
-      exclude: ["UnicodeWidth/Unicode-LICENSE.txt"],
-      swiftSettings: swiftSettings
-    ),
-    .target(
       name: "SlateUI",
       dependencies: [
-        "SlateComposition",
         .product(name: "BasicContainers", package: "swift-collections")
       ],
+      exclude: ["Unicode/Unicode-LICENSE.txt"],
       swiftSettings: swiftSettings
     ),
     .target(
@@ -93,7 +84,21 @@ let package = Package(
     ),
     .target(
       name: "CIOTestSupport",
-      path: "Tests/CIOTestSupport"
+      path: "Tests/CIOTestSupport",
+      linkerSettings: [
+        .unsafeFlags(
+          [
+            "-Xlinker", "--wrap=read",
+            "-Xlinker", "--wrap=write",
+            "-Xlinker", "--wrap=poll"
+          ],
+          .when(platforms: [.linux])
+        )
+      ]
+    ),
+    .target(
+      name: "SlateTestSupport",
+      path: "Tests/SlateTestSupport"
     ),
 
     // Tests
@@ -107,26 +112,25 @@ let package = Package(
       dependencies: ["SlateUI"]
     ),
     .testTarget(
-      name: "SlateTests",
+      name: "SlateTerminalTests",
       dependencies: [
-        "Slate",
-        "SlateComposition",
-        "SlateUI",
         "SlateTerminal",
+        "SlateTestSupport",
+        "CIOTestSupport"
+      ]
+    ),
+    .testTarget(
+      name: "SlateApplicationTests",
+      dependencies: [
         "SlateApplication",
+        "SlateTestSupport",
         "CIOTestSupport",
         "SlateSignalFixture"
-      ],
-      linkerSettings: [
-        .unsafeFlags(
-          [
-            "-Xlinker", "--wrap=read",
-            "-Xlinker", "--wrap=write",
-            "-Xlinker", "--wrap=poll"
-          ],
-          .when(platforms: [.linux])
-        )
       ]
+    ),
+    .testTarget(
+      name: "SlateTests",
+      dependencies: ["Slate", "SlateTestSupport"]
     )
   ],
   swiftLanguageModes: [.v6]

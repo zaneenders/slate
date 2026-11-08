@@ -1,5 +1,5 @@
-import SlateComposition
-import SlateTerminal
+import Slate
+import SlateTestSupport
 import Testing
 
 @Test func publicBlockListsRenderSlicesAndBoundEvenEmptyChildren() throws {

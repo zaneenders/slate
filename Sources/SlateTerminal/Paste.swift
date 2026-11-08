@@ -5,8 +5,3 @@ public enum PasteEvent: Equatable, Sendable {
   case end
   case cancelled
 }
-
-public enum PasteError: Error, Equatable, Sendable {
-  case invalidUTF8
-  case incomplete
-}

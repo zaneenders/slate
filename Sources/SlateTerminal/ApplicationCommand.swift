@@ -16,7 +16,7 @@ public struct ApplicationCommand: Equatable, Sendable {
 
   public var bytes: Span<UInt8> { storage.span.extracting(first: count) }
 
-  package mutating func append(_ byte: UInt8) {
+  mutating func append(_ byte: UInt8) {
     if count < storage.count {
       storage[count] = byte
       count += 1

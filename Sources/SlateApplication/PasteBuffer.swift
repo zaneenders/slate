@@ -1,5 +1,4 @@
 import BasicContainers
-import SlateTerminal
 
 /// Reserves 65,536 bytes at startup and grows with incoming paste bytes.
 /// Capacity is retained across resets. A truncated paste is cancelled at EOF,
