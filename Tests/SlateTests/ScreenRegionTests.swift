@@ -34,6 +34,23 @@ import Glibc
   #expect(try capture.take().isEmpty)
 }
 
+@Test func regionClipsEveryRowUsingUnclippedStrideAndPreservesStyles() throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 4, rows: 3))
+  let region = Rect(x: 3, y: 1, width: 4, height: 3)
+  let viewport = TerminalSize(columns: 5, rows: 3)
+  let expected = "\u{1b}7\u{1b}[0m\u{1b}[2;4H\u{1b}[0;38;5;6mAB\u{1b}[3;4HEF\u{1b}[0m\u{1b}8"
+  for _ in 0..<2 {
+    let painted = try surface.draw(in: region, clippedTo: viewport, to: output) {
+      Text("ABCD\nEFGH\nIJKL", style: Style(foreground: .cyan)).frame(width: .fill, alignment: .topLeading)
+    }
+    #expect(try capture.take() == Array(expected.utf8))
+    #expect(painted == FrameStatistics(changedCells: 4, outputBytes: expected.utf8.count))
+    #expect(surface.paintedRegion == Rect(x: 3, y: 1, width: 2, height: 2))
+  }
+}
+
 @Test func regionClipsCellsWithoutChangingLayoutAndClearsThePreviousOrigin() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)

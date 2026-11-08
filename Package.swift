@@ -6,7 +6,14 @@ let swiftSettings: [SwiftSetting] = [
   .strictMemorySafety(),
   .treatAllWarnings(as: .error),
   .enableExperimentalFeature("Lifetimes"),
-  .treatWarning("EmbeddedRestrictions", as: .error)
+  .enableUpcomingFeature("MemberImportVisibility"),
+  .enableUpcomingFeature("InternalImportsByDefault"),
+  .enableUpcomingFeature("ExistentialAny"),
+  .enableUpcomingFeature("ApproachableConcurrency"),
+  .treatWarning("EmbeddedRestrictions", as: .error),
+  .treatWarning("ExplicitSendable", as: .error),
+  .treatWarning("PerformanceHints", as: .warning),
+  .treatWarning("UntypedThrows", as: .error)  // Must succeed PerformanceHints
 ]
 
 let package = Package(
@@ -14,21 +21,23 @@ let package = Package(
   platforms: [.macOS(.v27)],
   products: [
     .library(name: "Slate", targets: ["Slate"]),
-    .library(name: "SlateComposition", targets: ["SlateComposition"]),
-    .library(name: "SlateUI", targets: ["SlateUI"]),
-    .library(name: "SlateTerminal", targets: ["SlateTerminal"]),
-    .library(name: "SlateApplication", targets: ["SlateApplication"]),
-    .executable(name: "slate-demo", targets: ["SlateDemo"])
+    .executable(name: "slate-document-demo", targets: ["SlateDocumentDemo"])
   ],
   dependencies: [
-    .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5")
+    .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5"),
+    .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.0")
   ],
   targets: [
     // Demo
     .executableTarget(
-      name: "SlateDemo",
-      dependencies: ["Slate"],
-      path: "Examples/SlateDemo",
+      name: "SlateDocumentDemo",
+      dependencies: [
+        "Slate",
+        .product(name: "BasicContainers", package: "swift-collections"),
+        .product(name: "_RopeModule", package: "swift-collections"),
+        .product(name: "SystemPackage", package: "swift-system")
+      ],
+      path: "Examples/SlateDocumentDemo",
       swiftSettings: swiftSettings
     ),
     // Libraries
@@ -47,7 +56,8 @@ let package = Package(
       dependencies: [
         .product(name: "BasicContainers", package: "swift-collections")
       ],
-      swiftSettings: swiftSettings
+      swiftSettings: swiftSettings,
+      plugins: [.plugin(name: "UnicodeWidthPlugin")]
     ),
     .target(
       name: "SlateUI",
@@ -61,7 +71,8 @@ let package = Package(
       name: "SlateTerminal",
       dependencies: [
         "SlateUI",
-        .product(name: "BasicContainers", package: "swift-collections")
+        .product(name: "BasicContainers", package: "swift-collections"),
+        .product(name: "SystemPackage", package: "swift-system")
       ],
       swiftSettings: swiftSettings
     ),
@@ -72,6 +83,18 @@ let package = Package(
         .product(name: "BasicContainers", package: "swift-collections")
       ],
       swiftSettings: swiftSettings
+    ),
+
+    // Build tools
+    .executableTarget(
+      name: "UnicodeWidthGenerator",
+      path: "Tools/UnicodeWidthGenerator",
+      swiftSettings: swiftSettings
+    ),
+    .plugin(
+      name: "UnicodeWidthPlugin",
+      capability: .buildTool(),
+      dependencies: ["UnicodeWidthGenerator"]
     ),
 
     // Test support
@@ -86,6 +109,15 @@ let package = Package(
     ),
 
     // Tests
+    .testTarget(
+      name: "UnicodeWidthGeneratorTests",
+      dependencies: ["UnicodeWidthGenerator"]
+    ),
+    .testTarget(
+      name: "SlateDocumentDemoTests",
+      dependencies: ["SlateDocumentDemo", "Slate"],
+      swiftSettings: [.enableExperimentalFeature("Lifetimes")]
+    ),
     .testTarget(
       name: "SlateUITests",
       dependencies: ["SlateUI"]

@@ -2,7 +2,7 @@ import BasicContainers
 
 /// Experimental renderer boundary. Layout storage stays private to composition;
 /// optional renderers receive resolved, read-only paint elements.
-@_spi(Rendering) public struct _BlockScene: ~Copyable {
+@_spi(Rendering) public struct _BlockScene: ~Copyable, ~Sendable {
   private var layout: LayoutTree
   private let nodeCapacity: Int
 
@@ -21,16 +21,7 @@ import BasicContainers
   public mutating func build<Content: Block>(
     in area: Rect, @BlockBuilder content: () -> Content
   ) throws(LayoutError) {
-    precondition(layout.count == 1)
-    var builder = _BlockLayout(nodes: layout.nodes.mutableSpan, inputs: layout.inputs.mutableSpan)
-    do throws(LayoutError) {
-      try content()._build(into: &builder)
-    } catch {
-      layout.count = builder.count
-      throw error
-    }
-    layout.count = builder.count
-    layout.resolve(in: area)
+    try layout.build(in: area, content: content)
   }
 
   public mutating func reset() { layout.reset() }
@@ -54,8 +45,8 @@ import BasicContainers
 
 /// Value snapshot of one resolved element. Retained snapshots are caller-owned;
 /// renderers normally consume each synchronously before resetting their scene.
-@_spi(Rendering) public struct _PaintElement {
-  public enum Kind { case none, text, input, border, background }
+@_spi(Rendering) public struct _PaintElement: Sendable {
+  public enum Kind: Sendable { case none, text, input, border, background }
   public let kind: Kind
   public let region: Rect
   public let text: String

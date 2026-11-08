@@ -30,6 +30,32 @@ import Glibc
   #expect(try capture.take() == Array("\u{1b}[2;2H\u{1b}[0mx\u{1b}[0m".utf8))
 }
 
+@Test func screenDiffPositionsSparseChangesAndRestartsRunsAtRowBoundaries() throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  let size = TerminalSize(columns: 4, rows: 2)
+  var screen = try Screen(maximumSize: size)
+  try screen.draw(size: size, to: output) { frame in frame.text("abcd\nefgh", in: frame.area) }
+  _ = try capture.take()
+  let cyan = Style(foreground: .cyan)
+  func paint(_ frame: inout Frame) {
+    frame.text("abcd\nefgh", in: frame.area)
+    frame[1, 0] = Cell(Glyph("B")!, style: cyan)
+    frame[2, 0] = Cell(Glyph("─")!, style: cyan)
+    frame[3, 0] = Cell(Glyph("D")!, style: cyan)
+    frame[0, 1] = Cell(Glyph("E")!, style: cyan)
+    frame[2, 1] = Cell(Glyph("G")!, style: Style(background: .blue))
+  }
+  let changed = try screen.draw(size: size, to: output, render: paint)
+  let expected = "\u{1b}[1;2H\u{1b}[0;38;5;6mB─D\u{1b}[2;1HE\u{1b}[2;3H\u{1b}[39;48;5;4mG\u{1b}[0m"
+  #expect(try capture.take() == Array(expected.utf8))
+  #expect(changed == FrameStatistics(changedCells: 5, outputBytes: expected.utf8.count))
+  #expect(row(screen, y: 0, columns: 4) == "aB─D")
+  #expect(row(screen, y: 1, columns: 4) == "EfGh")
+  #expect(try screen.draw(size: size, to: output, render: paint).outputBytes == 0)
+  #expect(try capture.take().isEmpty)
+}
+
 @Test func screenClearsRemovedTextAndRedrawsOnResizeOrInvalidation() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)

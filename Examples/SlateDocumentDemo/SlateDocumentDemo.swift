@@ -1,0 +1,167 @@
+import Slate
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#else
+import Musl
+#endif
+
+/// A visual debugger for the paged file reader. Indexing runs cooperatively
+/// after the first terminal frame. The document is never modified.
+@main
+struct SlateDocumentDemo: ScreenApplication {
+  private enum Mode {
+    case indexing(DocumentFileOpening)
+    case file(DocumentFileViewer)
+    case failure(String)
+    case cancelled
+  }
+  private var mode: Mode
+  private var lastIndexRedraw: ContinuousClock.Instant?
+
+  var hasPendingWork: Bool {
+    if case .indexing = mode { return true }
+    if case .file(let viewer) = mode { return viewer.hasPendingWork }
+    return false
+  }
+
+  var indexingProgress: FileIndexingProgress? {
+    if case .indexing(let opening) = mode { return opening.progress }
+    return nil
+  }
+
+  private static let usage = """
+    Usage: slate-document-demo [--] path/to/file
+
+    Example: swift run -c release slate-document-demo pi_hex_1b.txt
+
+    Read-only byte view of any regular file, including binary, with live page-cache diagnostics.
+    Printable UTF-8 is shown with Unicode column widths; controls and malformed bytes appear as dots.
+    Up/Down scroll rows; PgUp/PgDn page; 0-9 jump by file bytes; g/G start/end.
+    [ ] jump disk pages; C clears Slate's cache; I toggles the inspector; ? helps; Q quits.
+    Drag the scrollbar to seek; click its track to jump; the mouse wheel scrolls rows.
+    Drag file text to select within its pane; y / Ctrl-C copies; Escape clears selection.
+    Indexing progress appears in the UI; Q / Escape / Ctrl-C cancels. Bytes stay on disk.
+    """
+
+  static func main() {
+    if CommandLine.arguments.count == 1 || (CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--help") {
+      print(usage)
+      return
+    }
+    _ = signal(SIGPIPE, SIG_IGN)
+    var application = Self()
+    if case .failure(let message) = application.mode { fail(message) }
+    do throws(ScreenApplicationError) { try application.run(signalHandling: .managed) } catch {
+      if case .interrupted(let number) = error { exit(128 + number) }
+      fail("slate-document-demo: \(error)")
+    }
+    if case .failure(let message) = application.mode { fail(message) }
+  }
+
+  private static func fail(_ message: String) -> Never {
+    let diagnostic = message + "\n"
+    if let output = try? Output(fileDescriptor: STDERR_FILENO) {
+      try? output.writeAll(diagnostic.utf8Span.span)
+    }
+    exit(EXIT_FAILURE)
+  }
+
+  init() {
+    let arguments = CommandLine.arguments
+    if arguments.count == 2 || (arguments.count == 3 && arguments[1] == "--") {
+      self.init(path: arguments[arguments.count - 1])
+    } else {
+      self.init(mode: .failure(Self.usage))
+    }
+  }
+
+  private init(mode: Mode) { self.mode = mode }
+
+  init(path: String, configuration: FileDocumentConfiguration = .init()) {
+    do {
+      mode = .indexing(try DocumentFileOpening(path, configuration: configuration))
+    } catch {
+      mode = .failure(DocumentFileViewer.message(for: error) + " (\(error))")
+    }
+  }
+
+  mutating func performPendingWork() -> ScreenUpdate {
+    if case .file(let viewer) = mode { return viewer.performPendingWork() }
+    guard case .indexing(let opening) = mode else { return .none }
+    do throws(FileDocumentError) { try opening.advance() } catch {
+      mode = .failure(DocumentFileViewer.message(for: error) + " (\(error))")
+      return .redraw
+    }
+    if opening.isComplete {
+      mode = .file(opening.finish())
+      lastIndexRedraw = nil
+      return .redraw
+    }
+    // Work can proceed every loop; terminal progress is limited to ~30 Hz.
+    let now = ContinuousClock().now
+    if let lastIndexRedraw, lastIndexRedraw.duration(to: now) < .milliseconds(33) { return .none }
+    lastIndexRedraw = now
+    return .redraw
+  }
+
+  static var configuration: ScreenApplicationConfiguration {
+    .init(maximumSize: TerminalSize(columns: 160, rows: 60), nodeCapacity: 8, mouseTracking: true)
+  }
+
+  mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    switch event {
+    case .key(let key, let modifiers): return handle(key, modifiers: modifiers, copyBuffer: &copyBuffer)
+    case .mouse(let mouse):
+      if case .file(let viewer) = mode { return viewer.mouse(mouse) }
+      return .none
+    case .paste, .pasteRejected: return .none
+    }
+  }
+
+  private mutating func handle(
+    _ key: InputKey, modifiers: KeyModifiers, copyBuffer: inout CopyBuffer
+  ) -> ScreenUpdate {
+    switch mode {
+    case .file(let viewer):
+      let copy =
+        key == .control(.c) || (modifiers == .control && key == .character("c"))
+        || (modifiers.isEmpty && key == .character("y"))
+      if copy && !viewer.helpVisible && viewer.selectionRange != nil { return viewer.copySelection(to: &copyBuffer) }
+      return viewer.handle(key, modifiers: modifiers)
+    case .indexing:
+      if Self.isQuitKey(key, modifiers: modifiers) {
+        mode = .cancelled  // Release the file and partial index immediately.
+        return .quit
+      }
+      return .none
+    case .failure, .cancelled: return Self.isQuitKey(key, modifiers: modifiers) ? .quit : .none
+    }
+  }
+
+  private static func isQuitKey(_ key: InputKey, modifiers: KeyModifiers) -> Bool {
+    key == .escape || key == .character("q") || key == .control(.q) || key == .control(.c)
+      || (modifiers == .control && key == .character("c"))
+  }
+
+  func render(in size: TerminalSize) -> some Block {
+    if case .file(let viewer) = mode { viewer.prepare(in: size) }
+    return Column {}
+  }
+
+  func paint(in frame: inout Frame) {
+    switch mode {
+    case .indexing(let opening): opening.paint(in: &frame)
+    case .file(let viewer): viewer.paint(in: &frame)
+    case .failure(let message):
+      frame.fill(frame.area, with: Cell(style: ViewerPalette.body))
+      frame.text(message, in: frame.area, style: Style(foreground: .red))
+      if frame.area.height > 2 {
+        frame.text("Q / Escape: quit", in: Rect(y: 2, width: frame.area.width, height: 1))
+      }
+    case .cancelled: break
+    }
+  }
+}

@@ -15,7 +15,7 @@ public enum TextInputAction: Equatable, Sendable {
 /// owner is deliberately not Sendable. Do not mutate it while a borrowed view
 /// of its text is live. Both buffers are allocated at initialization (2*capacity
 /// bytes); editing, selection, and drawing never grow them.
-public final class TextInput {
+public final class TextInput: ~Sendable {
   public static let maximumCapacity = 65_536
   public let capacity: Int
   private var bytes: RigidArray<UInt8>
@@ -112,17 +112,17 @@ public final class TextInput {
   }
 
   public func handle(
-    _ key: InputKey, modifiers: KeyModifiers = [], clipboard: inout Clipboard
+    _ key: InputKey, modifiers: KeyModifiers = [], copyBuffer: inout CopyBuffer
   ) -> TextInputAction {
     var key = key
     var modifiers = modifiers
     if case .control(let control) = key,
       (ControlKey.a.rawValue...ControlKey.z.rawValue).contains(control.rawValue)
     {
-      key = .scalar(Unicode.Scalar(control.rawValue + 96))
+      key = .character(Unicode.Scalar(control.rawValue + 96))
       modifiers.insert(.control)
     }
-    if modifiers == .control, case .scalar(let scalar) = key {
+    if modifiers == .control, case .character(let scalar) = key {
       switch scalar {
       case "a":
         selectAll()
@@ -130,12 +130,9 @@ public final class TextInput {
       case "c", "x":
         let range = selection
         guard !range.isEmpty else { return .ignored }
-        // Selection is bounded by field capacity, which fits the clipboard.
-        do {
-          try withText { (text: UTF8Span) throws(ClipboardError) in
-            try clipboard.copy(unsafe UTF8Span(unchecked: text.span.extracting(range)))
-          }
-        } catch { return .rejected(.capacityExceeded) }
+        withText { text in
+          copyBuffer.copy(unsafe UTF8Span(unchecked: text.span.extracting(range)))
+        }
         if scalar == "x" { replace(range, with: 0) }
         return .changed
       case "u":
@@ -185,7 +182,7 @@ public final class TextInput {
       guard !range.isEmpty else { return .ignored }
       replace(range, with: 0)
     case .enter: return .submit
-    case .scalar(let scalar):
+    case .character(let scalar):
       var encoded = InlineArray<4, UInt8>(repeating: 0)
       var count = 0
       UTF8.encode(scalar) {

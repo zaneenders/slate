@@ -12,17 +12,18 @@ import Musl
 /// tasks. Each poll handles at most 64 bytes, reusing 16 event slots until that
 /// batch is consumed. Decoder work is bounded by supplied bytes and event slots;
 /// paste framing can retain five delimiter bytes across input batches.
-/// Screen, paste, and clipboard storage is allocated at startup. Other storage
-/// is inline; no application borrows survive callbacks or a suspend/resume cycle.
+/// Screen storage is allocated at startup. Paste and copy storage grows with
+/// incoming pastes and explicit copy requests, retaining capacity for reuse.
+/// Other storage is inline; no application borrows survive callbacks or a
+/// suspend/resume cycle.
 struct ScreenRunner: ~Copyable {
   private var screen: Screen
   private let overflow: ScreenApplicationConfiguration.ViewportOverflow
   private var input = TerminalInput()
   private var previousActualSize: TerminalSize?
   private var needsRedraw = true
-  // TODO: Why do we have a Clipboard and a PasteBuffer
   private var paste = PasteBuffer()
-  private var clipboard = Clipboard()
+  private var copyBuffer = CopyBuffer()
   private var handlesSuspension = false
   private var requestedSuspend = false
 
@@ -65,7 +66,10 @@ struct ScreenRunner: ~Copyable {
       needsRedraw = true
     }
     guard needsRedraw else { return }
-    try screen.draw(size: size, to: output) { application.render(in: size) }
+    try screen.draw(
+      size: size, to: output,
+      content: { application.render(in: size) },
+      paint: { application.paint(in: &$0) })
     previousActualSize = actualSize
     needsRedraw = false
   }
@@ -79,12 +83,14 @@ struct ScreenRunner: ~Copyable {
     var inputBytes = InlineArray<64, UInt8>(repeating: 0)
     var retries = SystemCallRetryBudget()
     // This loop intentionally lasts for the application session. Work between
-    // polls is bounded by one input batch and one capacity-limited frame.
+    // polls is bounded by one input batch, one application-bounded work step,
+    // and one capacity-limited frame. Pending work uses nonblocking polls;
+    // idle applications retain the 50 ms input/resize deadline.
     while true {
       let number = signals.termination()
       if number != 0 { return .interrupted(number) }
       if signals.shouldSuspend() { return .suspend }
-      do throws(IOError) { try clipboard.flush(to: output) } catch { throw .io(error) }
+      do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
       guard expireEscape(at: clock.now, application: &application) else { break }
       let actualSize: TerminalSize
       do throws(TerminalError) {
@@ -93,32 +99,53 @@ struct ScreenRunner: ~Copyable {
       do throws(ScreenError) {
         try draw(application: &application, actualSize: actualSize, to: output)
       } catch { throw .screen(error) }
-      var readiness = pollfd(fd: input.descriptor, events: Int16(POLLIN), revents: 0)
-      let ready = unsafe poll(&readiness, 1, 50)
+      var readiness = pollfd(fd: input.rawDescriptor, events: Int16(POLLIN), revents: 0)
+      let ready = unsafe poll(&readiness, 1, application.hasPendingWork ? 0 : 50)
       if ready < 0 {
         let error = errno
         if retries.retry(after: error) { continue }
         throw ScreenApplicationError.poll(errno: error)
       }
-      retries = SystemCallRetryBudget()
       // Deliver an expired Escape before decoding bytes arriving after it.
       guard expireEscape(at: clock.now, application: &application) else { break }
-      if ready == 0 { continue }
       if readiness.revents & Int16(POLLERR | POLLNVAL) != 0 { throw ScreenApplicationError.disconnected }
       if readiness.revents & Int16(POLLIN | POLLHUP) != 0 {
         let count: Int
         do throws(IOError) {
           count = try input.read(into: inputBytes.mutableSpan)
-        } catch { throw .io(error) }
+        } catch {
+          // Return to the signal checks and poll instead of repeating a blocking
+          // read. Poll/read interruptions share one budget until an iteration
+          // completes, so successful polls cannot mask repeated read failures.
+          if case .read(let number) = error, retries.retry(after: number) { continue }
+          throw .io(error)
+        }
         if count == 0 {
           if let event = self.input.flush() { _ = deliver(event, application: &application) }
           break
         }
         guard receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else { break }
       }
+      retries = SystemCallRetryBudget()
+      guard performPendingWork(application: &application) else { break }
     }
-    do throws(IOError) { try clipboard.flush(to: output) } catch { throw .io(error) }
+    do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
     return requestedSuspend ? .suspend : .quit
+  }
+
+  mutating func performPendingWork<Application: ScreenApplication & ~Copyable>(
+    application: inout Application
+  ) -> Bool {
+    guard application.hasPendingWork else { return true }
+    switch application.performPendingWork() {
+    case .none: return true
+    case .redraw:
+      needsRedraw = true
+      return true
+    case .quit:
+      requestedSuspend = false
+      return false
+    }
   }
 
   mutating func receive<Application: ScreenApplication & ~Copyable>(
@@ -148,9 +175,10 @@ struct ScreenRunner: ~Copyable {
     case .key(.control(.z)) where handlesSuspension:
       requestedSuspend = true
       return true
-    case .key(let key): update = application.handle(key, modifiers: [], clipboard: &clipboard)
+    case .key(let key): update = application.event(.key(key), copyBuffer: &copyBuffer)
     case .modifiedKey(let key, let modifiers):
-      update = application.handle(key, modifiers: modifiers, clipboard: &clipboard)
+      update = application.event(.key(key, modifiers: modifiers), copyBuffer: &copyBuffer)
+    case .mouse(let event): update = application.event(.mouse(event), copyBuffer: &copyBuffer)
     case .paste(.begin):
       paste.reset()
       return true
@@ -159,10 +187,12 @@ struct ScreenRunner: ~Copyable {
       return true
     case .paste(.cancelled):
       paste.reset()
-      update = application.pasteRejected(.incomplete)
+      update = application.event(.pasteRejected(.incomplete), copyBuffer: &copyBuffer)
     case .paste(.end):
-      do throws(PasteError) { update = application.paste(try paste.text()) } catch {
-        update = application.pasteRejected(error)
+      do throws(PasteError) {
+        update = application.event(.paste(try paste.text()), copyBuffer: &copyBuffer)
+      } catch {
+        update = application.event(.pasteRejected(error), copyBuffer: &copyBuffer)
       }
       paste.reset()
     default: return true

@@ -23,7 +23,11 @@ public struct FrameStatistics: Equatable, Sendable {
 
 /// Presents a UI surface with ANSI diffing. Owns two fixed-capacity cell grids,
 /// bounded layout storage, and a 4 KiB writer. Rendering and output are synchronous.
-public struct Screen: ~Copyable {
+/// Shares cell presentation with ScreenRegion; this owner clears the terminal
+/// on invalidation and retains the last successful grid for diffing.
+/// Compound Unicode requires grapheme-aware terminal widths. ScreenApplication
+/// manages mode 2027; manual presenters can borrow output.graphemeClustering().
+public struct Screen: ~Copyable, ~Sendable {
   public static let maximumColumns = Surface.maximumColumns
   public static let maximumRows = Surface.maximumRows
   public var maximumSize: TerminalSize { surface.maximumSize }
@@ -67,6 +71,18 @@ public struct Screen: ~Copyable {
     return try present(size, to: output)
   }
 
+  /// Uses the managed layout and presenter with a synchronous custom paint pass.
+  @discardableResult
+  public mutating func draw<Content: Block>(
+    size: TerminalSize, to output: borrowing Output,
+    @BlockBuilder content: () -> Content, paint: (inout Frame) -> Void
+  ) throws(ScreenError) -> FrameStatistics {
+    do throws(SurfaceError) {
+      try surface.render(size: size, content: content, paint: paint)
+    } catch { throw ScreenError(error) }
+    return try present(size, to: output)
+  }
+
   @discardableResult
   public mutating func draw(
     size: TerminalSize, to output: borrowing Output,
@@ -84,25 +100,13 @@ public struct Screen: ~Copyable {
     valid = false
     writer.reset()
     var changed = 0
-    var lastIndex = -2
-    var lastStyle: Style?
     do throws(IOError) {
       let current = surface.renderedCells()
       if redraw { try writer.literal("\u{1b}[0m\u{1b}[2J", to: output) }
-      for index in 0..<current.count {
-        let cell = current[index]
-        if !redraw && cell == previous[index] { continue }
-        if index != lastIndex + 1 || index.isMultiple(of: size.columns) {
-          try writer.cursor(x: index % size.columns, y: index / size.columns, to: output)
-        }
-        if cell.style != lastStyle {
-          try writer.style(cell.style, to: output)
-          lastStyle = cell.style
-        }
-        try writer.glyph(cell.glyph, to: output)
-        lastIndex = index
-        changed += 1
-      }
+      let comparison = previous.span.extracting(first: redraw ? 0 : current.count)
+      changed = try writer.cells(
+        current, size: size, in: Rect(width: size.columns, height: size.rows),
+        previous: comparison, to: output)
       if changed > 0 { try writer.literal("\u{1b}[0m", to: output) }
       try writer.flush(to: output)
     } catch {

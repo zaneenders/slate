@@ -11,46 +11,46 @@ import Glibc
 #endif
 
 @Test func textInputEditsWholeSwiftGraphemesAndPreservesUnicode() throws {
-  var clipboard = Clipboard()
+  var copyBuffer = CopyBuffer()
   for grapheme in ["e\u{301}", "🇺🇸", "👨‍👩‍👧‍👦", "क्‍ष", "x" + String(repeating: "\u{301}", count: 64)] {
     let input = try TextInput("A" + grapheme + "Z")
-    #expect(input.handle(.left, clipboard: &clipboard) == .changed)
-    #expect(input.handle(.backspace, clipboard: &clipboard) == .changed)
+    #expect(input.handle(.left, copyBuffer: &copyBuffer) == .changed)
+    #expect(input.handle(.backspace, copyBuffer: &copyBuffer) == .changed)
     #expect(input.snapshot() == "AZ")
     #expect(input.cursorByteOffset == 1)
     try input.insert(grapheme.utf8Span)
     #expect(input.snapshot() == "A" + grapheme + "Z")
-    #expect(input.handle(.left, clipboard: &clipboard) == .changed)
-    #expect(input.handle(.delete, clipboard: &clipboard) == .changed)
+    #expect(input.handle(.left, copyBuffer: &copyBuffer) == .changed)
+    #expect(input.handle(.delete, copyBuffer: &copyBuffer) == .changed)
     #expect(input.snapshot() == "AZ")
   }
   let input = try TextInput("e")
   try input.insert("\u{301}".utf8Span)
-  #expect(input.handle(.backspace, clipboard: &clipboard) == .changed)
+  #expect(input.handle(.backspace, copyBuffer: &copyBuffer) == .changed)
   #expect(input.snapshot().isEmpty)
 }
 
 @Test func textInputSelectionCopyCutAndCapacityRejectionAreAtomic() throws {
   let input = try TextInput("café", capacity: 5)
-  var clipboard = Clipboard()
-  #expect(input.handle(.home, clipboard: &clipboard) == .changed)
-  #expect(input.handle(.right, modifiers: .shift, clipboard: &clipboard) == .changed)
+  var copyBuffer = CopyBuffer()
+  #expect(input.handle(.home, copyBuffer: &copyBuffer) == .changed)
+  #expect(input.handle(.right, modifiers: .shift, copyBuffer: &copyBuffer) == .changed)
   #expect(input.selection == 0..<1)
   #expect(throws: TextInputError.capacityExceeded) { try input.insert("xx".utf8Span) }
   #expect(input.snapshot() == "café" && input.selection == 0..<1)
   #expect(throws: TextInputError.invalidControl) { try input.insert("\u{1b}".utf8Span) }
   #expect(input.snapshot() == "café" && input.selection == 0..<1)
-  #expect(input.handle(.control(.a), clipboard: &clipboard) == .changed)
-  #expect(input.handle(.control(.c), clipboard: &clipboard) == .changed)
+  #expect(input.handle(.control(.a), copyBuffer: &copyBuffer) == .changed)
+  #expect(input.handle(.control(.c), copyBuffer: &copyBuffer) == .changed)
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  try clipboard.flush(to: output)
+  try copyBuffer.flush(to: output)
   #expect(try capture.take() == Array("\u{1b}]52;c;Y2Fmw6k=\u{1b}\\".utf8))
-  #expect(input.handle(.control(.x), clipboard: &clipboard) == .changed)
+  #expect(input.handle(.control(.x), copyBuffer: &copyBuffer) == .changed)
   #expect(input.snapshot().isEmpty)
   try input.insert("q\r\n\t".utf8Span)
   #expect(input.snapshot() == "q   ")
-  #expect(input.handle(.enter, clipboard: &clipboard) == .submit)
+  #expect(input.handle(.enter, copyBuffer: &copyBuffer) == .submit)
   for capacity in [0, -1, 65_537] {
     #expect(throws: TextInputError.invalidCapacity) { _ = try TextInput(capacity: capacity) }
   }
@@ -64,24 +64,24 @@ import Glibc
   for (control, letter) in shortcuts {
     let named = try TextInput("abcd")
     let modified = try TextInput("abcd")
-    var namedClipboard = Clipboard()
-    var modifiedClipboard = Clipboard()
+    var namedCopyBuffer = CopyBuffer()
+    var modifiedCopyBuffer = CopyBuffer()
     for input in [named, modified] {
-      var clipboard = Clipboard()
-      _ = input.handle(.left, clipboard: &clipboard)
-      _ = input.handle(.left, modifiers: .shift, clipboard: &clipboard)
+      var copyBuffer = CopyBuffer()
+      _ = input.handle(.left, copyBuffer: &copyBuffer)
+      _ = input.handle(.left, modifiers: .shift, copyBuffer: &copyBuffer)
     }
     #expect(
-      named.handle(.control(control), clipboard: &namedClipboard)
-        == modified.handle(.scalar(letter), modifiers: .control, clipboard: &modifiedClipboard))
+      named.handle(.control(control), copyBuffer: &namedCopyBuffer)
+        == modified.handle(.character(letter), modifiers: .control, copyBuffer: &modifiedCopyBuffer))
     #expect(named.snapshot() == modified.snapshot())
     #expect(named.cursorByteOffset == modified.cursorByteOffset)
     #expect(named.selection == modified.selection)
   }
   let input = try TextInput("unchanged")
-  var clipboard = Clipboard()
+  var copyBuffer = CopyBuffer()
   for control in [ControlKey.space, .leftBracket, .backslash, .rightBracket, .caret, .underscore] {
-    #expect(input.handle(.control(control), clipboard: &clipboard) == .ignored)
+    #expect(input.handle(.control(control), copyBuffer: &copyBuffer) == .ignored)
     #expect(input.snapshot() == "unchanged")
   }
 }

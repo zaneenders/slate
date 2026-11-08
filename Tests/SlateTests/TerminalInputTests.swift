@@ -9,7 +9,7 @@ import Testing
     var offset = 0
     var count = 0
     while let event = input.next(in: bytes.span, offset: &offset, at: now) {
-      #expect(event == .key(.scalar("a")))
+      #expect(event == .key(.character("a")))
       count += 1
     }
     #expect(count == 64 && offset == 64)
@@ -17,7 +17,7 @@ import Testing
   bytes[0] = 0xc2
   var offset = 0
   #expect(input.next(in: bytes.span.extracting(first: 2), offset: &offset, at: now) == .invalid(.invalidUTF8))
-  #expect(input.next(in: bytes.span.extracting(first: 2), offset: &offset, at: now) == .key(.scalar("a")))
+  #expect(input.next(in: bytes.span.extracting(first: 2), offset: &offset, at: now) == .key(.character("a")))
   #expect(input.next(in: bytes.span.extracting(first: 2), offset: &offset, at: now) == nil)
 }
 
@@ -46,7 +46,7 @@ import Testing
   #expect(input.expire(at: now.advanced(by: .milliseconds(250))) == nil)
   let text: InlineArray<1, UInt8> = [0x61]
   offset = 0
-  #expect(input.next(in: text.span, offset: &offset, at: now.advanced(by: .milliseconds(251))) == .key(.scalar("a")))
+  #expect(input.next(in: text.span, offset: &offset, at: now.advanced(by: .milliseconds(251))) == .key(.character("a")))
 }
 
 @Test func terminalInputPreservesEachCommandWhenSeveralArriveInOneBatch() {
@@ -62,6 +62,6 @@ import Testing
       commands.append(command.bytes.withUnsafeBufferPointer { unsafe String(decoding: $0, as: UTF8.self) })
     }
   }
-  #expect(keys == [.scalar("a"), .scalar("b"), .scalar("c")])
+  #expect(keys == [.character("a"), .character("b"), .character("c")])
   #expect(commands == ["first", "second"])
 }

@@ -1,7 +1,7 @@
 /// Shared input batching and deadlines. Storage is inline: sixteen events, no
 /// retained input view, queue growth, allocation, or callbacks. Each supplied
 /// batch is at most 64 bytes and must be drained before supplying another.
-public struct TerminalInput: ~Copyable {
+public struct TerminalInput: ~Copyable, Sendable {
   private var decoder = InputDecoder()
   private var events = InlineArray<16, InputEvent>(repeating: .key(.escape))
   private var eventIndex = 0

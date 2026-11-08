@@ -1,3 +1,5 @@
+import SystemPackage
+
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -20,19 +22,19 @@ public enum TerminalError: Error, Equatable, Sendable {
 /// are shared by all descriptors for the same terminal; avoid changing them
 /// through another owner while a raw-mode guard is active.
 /// The private duplicate uses a descriptor >= 3, preserving closed standard streams.
-public struct Terminal: ~Copyable {
-  fileprivate let descriptor: Int32
+public struct Terminal: ~Copyable, ~Sendable {
+  fileprivate let descriptor: FileDescriptor
 
   public init(fileDescriptor: Int32 = 0) throws(TerminalError) {
-    let duplicate = duplicateDescriptor(fileDescriptor)
-    guard duplicate != -1 else {
-      throw .duplicateDescriptor(errno: errno)
+    let duplicate: FileDescriptor
+    do { duplicate = try duplicateDescriptor(fileDescriptor) } catch {
+      throw .duplicateDescriptor(errno: error.rawValue)
     }
 
     var attributes = termios()
-    let error = readAttributes(duplicate, into: &attributes)
+    let error = readAttributes(duplicate.rawValue, into: &attributes)
     guard error == 0 else {
-      _ = close(duplicate)
+      try? duplicate.close()
       throw .readAttributes(errno: error)
     }
     descriptor = duplicate
@@ -53,15 +55,16 @@ public struct Terminal: ~Copyable {
 
   deinit {
     // Do not retry close after EINTR: the descriptor may already be closed.
-    _ = close(descriptor)
+    try? descriptor.close()
   }
 }
 
 /// Destruction restores the saved attributes on a best-effort basis, including
 /// during error unwinding. Call `restore()` to observe restoration errors.
-public struct RawMode: ~Copyable, ~Escapable {
+public struct RawMode: ~Copyable, ~Escapable, ~Sendable {
   // The screen runner polls this same owned duplicate that read(into:) uses.
-  package let descriptor: Int32
+  private let descriptor: FileDescriptor
+  package var rawDescriptor: Int32 { descriptor.rawValue }
   private let savedAttributes: termios
   private var needsRestore = true
 
@@ -69,7 +72,7 @@ public struct RawMode: ~Copyable, ~Escapable {
   fileprivate init(terminal: inout Terminal) throws(TerminalError) {
     let descriptor = terminal.descriptor
     var saved = termios()
-    let readError = readAttributes(descriptor, into: &saved)
+    let readError = readAttributes(descriptor.rawValue, into: &saved)
     guard readError == 0 else {
       throw .readAttributes(errno: readError)
     }
@@ -82,10 +85,10 @@ public struct RawMode: ~Copyable, ~Escapable {
       unsafe characters[Int(VTIME)] = 0
     }
 
-    let setError = applyAttributes(descriptor, from: &raw)
+    let setError = applyAttributes(descriptor.rawValue, from: &raw)
     guard setError == 0 else {
       // A failed tcsetattr may have changed a subset of the attributes.
-      _ = applyAttributes(descriptor, from: &saved)
+      _ = applyAttributes(descriptor.rawValue, from: &saved)
       throw .enableRawMode(errno: setError)
     }
     self.descriptor = descriptor
@@ -101,7 +104,7 @@ public struct RawMode: ~Copyable, ~Escapable {
   /// If restoration fails, destruction makes one further best-effort attempt.
   public consuming func restore() throws(TerminalError) {
     var saved = savedAttributes
-    let error = applyAttributes(descriptor, from: &saved)
+    let error = applyAttributes(descriptor.rawValue, from: &saved)
     guard error == 0 else {
       throw .restoreAttributes(errno: error)
     }
@@ -111,18 +114,13 @@ public struct RawMode: ~Copyable, ~Escapable {
   deinit {
     if needsRestore {
       var saved = savedAttributes
-      _ = applyAttributes(descriptor, from: &saved)
+      _ = applyAttributes(descriptor.rawValue, from: &saved)
     }
   }
 }
 
 private func readAttributes(_ descriptor: Int32, into attributes: inout termios) -> Int32 {
-  var retries = SystemCallRetryBudget()
-  while unsafe tcgetattr(descriptor, &attributes) == -1 {
-    let error = errno
-    if !retries.retry(after: error) { return error }
-  }
-  return 0
+  unsafe tcgetattr(descriptor, &attributes) == 0 ? 0 : errno
 }
 
 private func applyAttributes(_ descriptor: Int32, from attributes: inout termios) -> Int32 {

@@ -7,7 +7,21 @@ struct SlateSignalFixture: ScreenApplication {
   private let field = try! TextInput(capacity: 1_024)
   private var focused = false
 
-  mutating func handle(_ key: InputKey, modifiers: KeyModifiers, clipboard: inout Clipboard) -> ScreenUpdate {
+  mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    switch event {
+    case .key(let key, let modifiers): return handle(key, modifiers: modifiers, copyBuffer: &copyBuffer)
+    case .paste(let text):
+      guard focused else { return .none }
+      do { try field.insert(text) } catch { return .quit }
+      return .redraw
+    case .pasteRejected: return .quit
+    case .mouse: return .none
+    }
+  }
+
+  private mutating func handle(
+    _ key: InputKey, modifiers: KeyModifiers, copyBuffer: inout CopyBuffer
+  ) -> ScreenUpdate {
     if key == .tab, modifiers.isEmpty {
       focused.toggle()
       return .redraw
@@ -17,23 +31,14 @@ struct SlateSignalFixture: ScreenApplication {
       return .redraw
     }
     if focused {
-      switch field.handle(key, modifiers: modifiers, clipboard: &clipboard) {
+      switch field.handle(key, modifiers: modifiers, copyBuffer: &copyBuffer) {
       case .changed, .submit: return .redraw
       case .rejected: return .quit
       case .ignored: return key == .control(.c) ? .quit : .none
       }
     }
-    return modifiers.isEmpty && (key == .scalar("q") || key == .control(.c)) ? .quit : .none
+    return modifiers.isEmpty && (key == .character("q") || key == .control(.c)) ? .quit : .none
   }
-
-  mutating func paste(_ text: UTF8Span) -> ScreenUpdate {
-    guard focused else { return .none }
-    // Rejection ends the fixture; the parent detects missing expected output.
-    do { try field.insert(text) } catch { return .quit }
-    return .redraw
-  }
-
-  mutating func pasteRejected(_ error: PasteError) -> ScreenUpdate { .quit }
 
   func render(in size: TerminalSize) -> some Block {
     InputBox(field, focused: focused)

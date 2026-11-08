@@ -1,4 +1,4 @@
-import BasicContainers
+package import BasicContainers
 
 package struct LayoutNode {
   package enum Kind { case root, row, column, frame, padding, border, background, text, input }
@@ -27,7 +27,7 @@ package struct LayoutNode {
 /// Compiler support for block rendering. Custom blocks compose through `body`.
 /// Public only because it appears in the protocol's underscored rendering hook;
 /// storage and mutation remain package-internal and frame-scoped.
-public struct _BlockLayout: ~Copyable, ~Escapable {
+public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
   private var nodes: MutableSpan<LayoutNode>
   private var inputs: MutableSpan<TextInput?>
   private var inputCount = 0
@@ -92,15 +92,27 @@ public struct _BlockLayout: ~Copyable, ~Escapable {
     var maximumWidth = 0
     var height = 1
     var count = 0
+    var clusters = UnicodeGraphemeBuffer()
     for scalar in text.unicodeScalars {
       guard count < LayoutLimits.maximumTextScalars else { throw .textTooLong }
       count += 1
-      if scalar == "\n" {
+      if let cluster = clusters.append(scalar, at: count) {
+        if cluster.firstScalar == "\n" || cluster.firstScalar == "\r" {
+          maximumWidth = max(maximumWidth, width)
+          width = 0
+          height += 1
+        } else {
+          width += cluster.glyph.columnWidth
+        }
+      }
+    }
+    if let cluster = clusters.take() {
+      if cluster.firstScalar == "\n" || cluster.firstScalar == "\r" {
         maximumWidth = max(maximumWidth, width)
         width = 0
         height += 1
       } else {
-        width += 1
+        width += cluster.glyph.columnWidth
       }
     }
     _ = try append(
@@ -118,6 +130,20 @@ package struct LayoutTree: ~Copyable {
   package init(capacity: Int) {
     nodes = RigidArray(repeating: LayoutNode(), count: capacity)
     inputs = RigidArray(repeating: nil, count: capacity)
+  }
+
+  /// Shared by cell surfaces and optional renderers. The owner resets after
+  /// painting or failure; this records every initialized node even on a throw.
+  package mutating func build<Content: Block>(
+    in area: Rect, @BlockBuilder content: () -> Content
+  ) throws(LayoutError) {
+    precondition(count == 1)
+    do {
+      var builder = _BlockLayout(nodes: nodes.mutableSpan, inputs: inputs.mutableSpan)
+      defer { count = builder.count }
+      try content()._build(into: &builder)
+    }
+    resolve(in: area)
   }
 
   package mutating func reset() {

@@ -46,7 +46,14 @@ func expectEqual(_ actual: termios, _ expected: termios) {
   #expect(actual.c_iflag == expected.c_iflag)
   #expect(actual.c_oflag == expected.c_oflag)
   #expect(actual.c_cflag == expected.c_cflag)
+  #if canImport(Darwin)
+  // Restoring canonical mode sets this kernel state bit even when the supplied
+  // attributes omit it. Compare configuration without requiring pending-input
+  // state to survive a mode transition unchanged.
+  #expect(actual.c_lflag & ~tcflag_t(PENDIN) == expected.c_lflag & ~tcflag_t(PENDIN))
+  #else
   #expect(actual.c_lflag == expected.c_lflag)
+  #endif
   let actualInputSpeed = unsafe cfgetispeed(&actual)
   let expectedInputSpeed = unsafe cfgetispeed(&expected)
   let actualOutputSpeed = unsafe cfgetospeed(&actual)

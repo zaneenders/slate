@@ -8,7 +8,7 @@ import Glibc
 import Musl
 #endif
 
-/// The result of handling a key. Several redraw requests in one input batch
+/// The result of handling an event. Several redraw requests in one input batch
 /// produce one frame; quitting stops delivery of the rest of that batch.
 public enum ScreenUpdate: Equatable, Sendable {
   case none
@@ -29,15 +29,19 @@ public struct ScreenApplicationConfiguration: Sendable {
   public let maximumSize: TerminalSize
   public let nodeCapacity: Int
   public let viewportOverflow: ViewportOverflow
+  /// Own scoped SGR mouse tracking for each active session, including resume.
+  public let mouseTracking: Bool
 
   public init(
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
     nodeCapacity: Int = LayoutLimits.maximumNodes,
-    viewportOverflow: ViewportOverflow = .clip
+    viewportOverflow: ViewportOverflow = .clip,
+    mouseTracking: Bool = false
   ) {
     self.maximumSize = maximumSize
     self.nodeCapacity = nodeCapacity
     self.viewportOverflow = viewportOverflow
+    self.mouseTracking = mouseTracking
   }
 }
 
@@ -55,32 +59,37 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
 /// terminal resources and reusable buffers belong to its scoped runner.
 ///
 /// The first frame and physical resizes render automatically. Invalid input
-/// sequences are ignored; decoded keys, including Ctrl-C, belong to `handle`.
-/// Managed sessions reserve unpasted Ctrl-Z for suspension. Paste has its own callback.
-/// Neither callback may retain frame borrows or start another terminal reader.
+/// sequences are ignored; decoded input, including Ctrl-C, belongs to `event`.
+/// Managed sessions reserve unpasted Ctrl-Z for suspension. Event callbacks may
+/// not retain frame/paste borrows or start another terminal reader.
 public protocol ScreenApplication: ~Copyable {
   associatedtype Content: Block
   init()
   static var configuration: ScreenApplicationConfiguration { get }
-  // TODO: Why two handle functions?
-  mutating func handle(_ key: InputKey) -> ScreenUpdate
-  /// Default forwards unmodified keys to `handle(_:)`. Clipboard requests are
-  /// prepared synchronously and written after this input batch.
-  mutating func handle(_ key: InputKey, modifiers: KeyModifiers, clipboard: inout Clipboard) -> ScreenUpdate
-  /// Complete, valid UTF-8, at most 64 KiB. Borrow ends with this callback.
-  mutating func paste(_ text: UTF8Span) -> ScreenUpdate
-  mutating func pasteRejected(_ error: PasteError) -> ScreenUpdate
+  /// Whether another bounded work step can run without waiting for input.
+  /// Default is false. The runner presents the first frame before doing work.
+  var hasPendingWork: Bool { get }
+  /// Performs one synchronous, application-bounded batch after checking input.
+  /// Return `.redraw` when progress should be presented or `.quit` to stop.
+  /// Do not retain frame borrows or start another terminal reader here.
+  mutating func performPendingWork() -> ScreenUpdate
+  /// Receives keys, mouse input, complete pastes, and paste failures. Default returns `.none`.
+  /// Copy requests are prepared synchronously and written after this input batch.
+  mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate
   @BlockBuilder borrowing func render(in size: TerminalSize) -> Content
+  /// Draws after block layout, before presentation. The frame cannot escape.
+  /// Use this for application-owned editors, charts, or other custom views.
+  borrowing func paint(in frame: inout Frame)
 }
 
 extension ScreenApplication where Self: ~Copyable {
   public static var configuration: ScreenApplicationConfiguration { .init() }
-  public mutating func handle(_ key: InputKey) -> ScreenUpdate { .none }
-  public mutating func handle(_ key: InputKey, modifiers: KeyModifiers, clipboard: inout Clipboard) -> ScreenUpdate {
-    modifiers.isEmpty ? handle(key) : .none
+  public var hasPendingWork: Bool { false }
+  public mutating func performPendingWork() -> ScreenUpdate { .none }
+  public mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    .none
   }
-  public mutating func paste(_ text: UTF8Span) -> ScreenUpdate { .none }
-  public mutating func pasteRejected(_ error: PasteError) -> ScreenUpdate { .none }
+  public borrowing func paint(in frame: inout Frame) {}
 
   /// Convenience executable entry point. Ignores SIGPIPE process-wide so a
   /// broken output can unwind the terminal scopes before reporting an error.
@@ -183,8 +192,10 @@ extension ScreenApplication where Self: ~Copyable {
     } catch { throw .io(error) }
     let paste: BracketedPaste
     do throws(IOError) { paste = try output.bracketedPaste() } catch { throw .io(error) }
-    let result = try runner.run(
-      application: &self, input: raw, output: output, signals: signals)
+    let graphemes: GraphemeClustering
+    do throws(IOError) { graphemes = try output.graphemeClustering() } catch { throw .io(error) }
+    let result = try runTrackedSession(runner: &runner, input: raw, output: output, signals: signals)
+    do throws(IOError) { try graphemes.restore() } catch { throw .io(error) }
     do throws(IOError) { try paste.restore() } catch { throw .io(error) }
     do throws(IOError) {
       try alternate.restore()
@@ -192,6 +203,20 @@ extension ScreenApplication where Self: ~Copyable {
     do throws(TerminalError) {
       try raw.restore()
     } catch { throw .terminal(error) }
+    return result
+  }
+
+  private mutating func runTrackedSession(
+    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
+    signals: borrowing SignalSession
+  ) throws(ScreenApplicationError) -> ScreenRunResult {
+    guard Self.configuration.mouseTracking else {
+      return try runner.run(application: &self, input: input, output: output, signals: signals)
+    }
+    let mouse: MouseTracking
+    do throws(IOError) { mouse = try output.mouseTracking() } catch { throw .io(error) }
+    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
+    do throws(IOError) { try mouse.restore() } catch { throw .io(error) }
     return result
   }
 }

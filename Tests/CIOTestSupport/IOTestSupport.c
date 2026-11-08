@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -16,6 +17,7 @@ typedef struct {
 static _Thread_local Script reads;
 static _Thread_local Script writes;
 static _Thread_local Script polls;
+static _Thread_local int readSignal;
 
 static void configure(Script *script, const int *steps, size_t count) {
   assert(count <= 16);
@@ -28,6 +30,8 @@ void cli_test_read_script(const int *steps, size_t count) {
   configure(&reads, steps, count);
 }
 
+void cli_test_read_signal(int number) { readSignal = number; }
+
 void cli_test_write_script(const int *steps, size_t count) {
   configure(&writes, steps, count);
 }
@@ -36,6 +40,7 @@ void cli_test_reset_io(void) {
   reads = (Script){0};
   writes = (Script){0};
   polls = (Script){0};
+  readSignal = 0;
 }
 
 void cli_test_poll_script(const int *steps, size_t count) {
@@ -59,6 +64,13 @@ int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout) {
 }
 
 ssize_t __wrap_read(int fd, void *buffer, size_t count) {
+  if (readSignal != 0) {
+    int number = readSignal;
+    readSignal = 0;
+    raise(number);
+    errno = EINTR;
+    return -1;
+  }
   if (reads.index < reads.count) {
     int step = reads.steps[reads.index++];
     if (step < 0) { errno = -step; return -1; }

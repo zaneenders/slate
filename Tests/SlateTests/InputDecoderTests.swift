@@ -15,7 +15,7 @@ import Testing
   #expect(keys.count == 32)
   for (byte, key) in keys.enumerated() {
     expectEverySplit([UInt8(byte)], events: [.key(key)])
-    expectEverySplit([UInt8(byte), 0x71], events: [.key(key), .key(.scalar("q"))])
+    expectEverySplit([UInt8(byte), 0x71], events: [.key(key), .key(.character("q"))])
   }
   expectEverySplit([0x7f], events: [.key(.backspace)])
 }
@@ -30,6 +30,62 @@ import Testing
   #expect(ControlKey.j.rawValue == 0x0a)
   #expect(ControlKey.m.rawValue == 0x0d)
   #expect(ControlKey.leftBracket.rawValue == 0x1b)
+}
+
+@Test func decoderReportsCharacterScalarsAtEverySplit() {
+  let text = "qé中😀e\u{301}"
+  expectEverySplit(Array(text.utf8), events: text.unicodeScalars.map { .key(.character($0)) })
+}
+
+@Test func functionKeysCoverOnlyDocumentedNumbers() {
+  let keys: [FunctionKey] = [
+    .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12,
+    .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20, .f21, .f22, .f23, .f24,
+    .f25, .f26, .f27, .f28, .f29, .f30, .f31, .f32, .f33, .f34, .f35
+  ]
+  for (index, key) in keys.enumerated() {
+    #expect(key.rawValue == UInt8(index + 1))
+    #expect(FunctionKey(rawValue: UInt8(index + 1)) == key)
+  }
+  for byte in UInt8.min...UInt8.max {
+    #expect((FunctionKey(rawValue: byte) != nil) == (1...35).contains(byte))
+  }
+}
+
+@Test func decoderRecognizesNamedFunctionKeysAndModifiersAtEverySplit() {
+  let keys: [(FunctionKey, Int)] = [
+    (.f1, 11), (.f2, 12), (.f3, 13), (.f4, 14), (.f5, 15), (.f6, 17),
+    (.f7, 18), (.f8, 19), (.f9, 20), (.f10, 21), (.f11, 23), (.f12, 24)
+  ]
+  for (key, parameter) in keys {
+    for modifier in 1...8 {
+      let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
+      let event: InputEvent = modifiers.isEmpty ? .key(.function(key)) : .modifiedKey(.function(key), modifiers)
+      expectEverySplit(Array("\u{1b}[\(parameter);\(modifier)~q".utf8), events: [event, .key(.character("q"))])
+      if modifier == 1 {
+        expectEverySplit(Array("\u{1b}[\(parameter)~".utf8), events: [event])
+      }
+    }
+  }
+  for (key, final) in [(FunctionKey.f1, "P"), (.f2, "Q"), (.f3, "R"), (.f4, "S")] {
+    expectEverySplit(Array("\u{1b}O\(final)".utf8), events: [.key(.function(key))])
+    expectEverySplit(Array("\u{1b}[\(final)".utf8), events: [.key(.function(key))])
+    for modifier in 1...8 {
+      let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
+      let event: InputEvent = modifiers.isEmpty ? .key(.function(key)) : .modifiedKey(.function(key), modifiers)
+      expectEverySplit(Array("\u{1b}[1;\(modifier)\(final)".utf8), events: [event])
+    }
+  }
+}
+
+@Test func decoderRejectsUnsupportedFunctionSequencesAndRecoversAtEverySplit() {
+  for sequence in [
+    "\u{1b}[0~", "\u{1b}[10~", "\u{1b}[16~", "\u{1b}[22~", "\u{1b}[25~", "\u{1b}[255~",
+    "\u{1b}[57376u", "\u{1b}[57398u", "\u{1b}[57399u",
+    "\u{1b}[11;0~", "\u{1b}[24;9~", "\u{1b}[1;0P", "\u{1b}[1;9S", "\u{1b}[2P"
+  ] {
+    expectEverySplit(Array((sequence + "q").utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
+  }
 }
 
 @Test func decoderRecognizesMouseButtonsMotionWheelAndModifiersAtEverySplit() {
@@ -59,7 +115,7 @@ import Testing
     expectEverySplit(
       Array("\u{1b}[<\(code);2;3Mq".utf8),
       events: [
-        .mouse(MouseEvent(action: action, column: 1, row: 2)), .key(.scalar("q"))
+        .mouse(MouseEvent(action: action, column: 1, row: 2)), .key(.character("q"))
       ])
   }
 }
@@ -72,15 +128,15 @@ import Testing
   ] {
     expectEverySplit(
       Array("\u{1b}[<\(body)Mq".utf8),
-      events: [.invalid(.unknownSequence), .key(.scalar("q"))])
+      events: [.invalid(.unknownSequence), .key(.character("q"))])
   }
   for sequence in ["\u{1b}[<64;1;1m", "\u{1b}[<32;1;1m", "\u{1b}[<96;1;1M", "\u{1b}[<0;1;1A"] {
-    expectEverySplit(Array((sequence + "q").utf8), events: [.invalid(.unknownSequence), .key(.scalar("q"))])
+    expectEverySplit(Array((sequence + "q").utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
   }
   expectEverySplit(Array("\u{1b}[<0;12;".utf8), events: [.invalid(.incompleteSequence)])
   expectEverySplit(
     Array(("\u{1b}[<0;" + String(repeating: "1", count: 40) + ";1Mq").utf8),
-    events: [.invalid(.sequenceTooLong), .key(.scalar("q"))])
+    events: [.invalid(.sequenceTooLong), .key(.character("q"))])
 }
 
 @Test func decoderFramesApplicationCommandsWithoutInterpretingOrTypingTheirContents() {
@@ -97,13 +153,13 @@ import Testing
     #expect(command.truncated == (bytes.count > ApplicationCommand.maximumBytes))
     expectEverySplit(
       Array(("\u{1b}_" + body + "\u{1b}\\\u{1b}[?1;2cq").utf8),
-      events: [.terminalReply(.applicationCommand), .terminalReply(.primaryAttributes), .key(.scalar("q"))],
+      events: [.terminalReply(.applicationCommand), .terminalReply(.primaryAttributes), .key(.character("q"))],
       commands: [command])
   }
   expectEverySplit(Array("\u{1b}_unfinished".utf8), events: [.invalid(.incompleteSequence)])
-  expectEverySplit(Array("\u{1b}_\u{1b}\\q".utf8), events: [.invalid(.unknownSequence), .key(.scalar("q"))])
+  expectEverySplit(Array("\u{1b}_\u{1b}\\q".utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
   expectEverySplit(
-    Array("\u{1b}_bad\tresponse\u{1b}\\q".utf8), events: [.invalid(.unknownSequence), .key(.scalar("q"))])
+    Array("\u{1b}_bad\tresponse\u{1b}\\q".utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
 }
 
 private func expectEverySplit(_ bytes: [UInt8], events: [InputEvent], commands: [ApplicationCommand] = []) {
@@ -121,7 +177,7 @@ private func expectEverySplit(_ bytes: [UInt8], events: [InputEvent], commands: 
   for body in ["", "q\r\n\t\u{3}\u{1a}", "café 👨‍👩‍👧‍👦", "\u{1b}[A\u{1b}[200~\u{1b}[201x\u{1b}\u{1b}["] {
     expectEverySplit(
       Array(("\u{1b}[200~" + body + "\u{1b}[201~j").utf8),
-      events: [.paste(.begin)] + body.utf8.map { .paste(.byte($0)) } + [.paste(.end), .key(.scalar("j"))])
+      events: [.paste(.begin)] + body.utf8.map { .paste(.byte($0)) } + [.paste(.end), .key(.character("j"))])
   }
   expectEverySplit(
     Array("\u{1b}[200~q\u{1b}[201".utf8),

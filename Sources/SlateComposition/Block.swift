@@ -33,7 +33,7 @@ public enum Alignment: Sendable {
   }
 }
 
-public enum LayoutLimits {
+public enum LayoutLimits: Sendable {
   public static let maximumNodes = 512
   public static let maximumDepth = 32
   public static let maximumTextScalars = 4_096
@@ -95,7 +95,7 @@ extension Never: Block {
 }
 
 @resultBuilder
-public enum BlockBuilder {
+public enum BlockBuilder: Sendable {
   @inlinable public static func buildBlock() -> some Block { EmptyBlock() }
   public static func buildExpression<B: Block>(_ block: B) -> B { block }
   public static func buildPartialBlock<B: Block>(first: B) -> B { first }
@@ -107,13 +107,13 @@ public enum BlockBuilder {
   @inlinable public static func buildOptional<B: Block>(_ block: B?) -> some Block { OptionalBlock(content: block) }
 }
 
-@usableFromInline struct EmptyBlock: Block {
+@usableFromInline struct EmptyBlock: Block, Sendable {
   @usableFromInline typealias Body = Never
   @usableFromInline init() {}
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {}
 }
 
-@usableFromInline struct BlockPair<A: Block, B: Block>: Block {
+@usableFromInline struct BlockPair<A: Block, B: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let first: A
   let next: B
@@ -130,7 +130,7 @@ public enum BlockBuilder {
 /// Compiler support for `if`/`else` in `BlockBuilder`; use conditional syntax.
 /// Both builder overloads must return the same named generic type so Swift can
 /// infer the opposite branch. Its constructors and storage stay internal.
-public struct _ConditionalBlock<A: Block, B: Block>: Block {
+public struct _ConditionalBlock<A: Block, B: Block>: Block, ~Sendable {
   public typealias Body = Never
   private enum Storage {
     case first(A)
@@ -150,7 +150,7 @@ public struct _ConditionalBlock<A: Block, B: Block>: Block {
   }
 }
 
-@usableFromInline struct OptionalBlock<Content: Block>: Block {
+@usableFromInline struct OptionalBlock<Content: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let content: Content?
   @usableFromInline init(content: Content?) { self.content = content }
@@ -159,7 +159,7 @@ public struct _ConditionalBlock<A: Block, B: Block>: Block {
   }
 }
 
-public struct Text: Block {
+public struct Text: Block, Sendable {
   public typealias Body = Never
   let content: String
   let style: Style
@@ -172,7 +172,7 @@ public struct Text: Block {
   }
 }
 
-public struct Row<Content: Block>: Block {
+public struct Row<Content: Block>: Block, ~Sendable {
   public typealias Body = Never
   let gap: Int
   let alignment: Alignment
@@ -190,7 +190,7 @@ public struct Row<Content: Block>: Block {
   }
 }
 
-public struct Column<Content: Block>: Block {
+public struct Column<Content: Block>: Block, ~Sendable {
   public typealias Body = Never
   let gap: Int
   let alignment: Alignment
@@ -208,7 +208,7 @@ public struct Column<Content: Block>: Block {
   }
 }
 
-@usableFromInline struct Framed<Content: Block>: Block {
+@usableFromInline struct Framed<Content: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let content: Content
   let width: LayoutSize
@@ -231,7 +231,7 @@ public struct Column<Content: Block>: Block {
   }
 }
 
-@usableFromInline struct Padded<Content: Block>: Block {
+@usableFromInline struct Padded<Content: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let content: Content
   let horizontal: Int
@@ -248,7 +248,7 @@ public struct Column<Content: Block>: Block {
   }
 }
 
-@usableFromInline struct Bordered<Content: Block>: Block {
+@usableFromInline struct Bordered<Content: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let content: Content
   let title: String
@@ -269,7 +269,7 @@ public struct Column<Content: Block>: Block {
   }
 }
 
-@usableFromInline struct Background<Content: Block>: Block {
+@usableFromInline struct Background<Content: Block>: Block, ~Sendable {
   @usableFromInline typealias Body = Never
   let content: Content
   let color: Color

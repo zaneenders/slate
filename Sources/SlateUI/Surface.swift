@@ -1,4 +1,4 @@
-import BasicContainers
+package import BasicContainers
 @_exported public import SlateComposition
 
 public enum SurfaceError: Error, Equatable, Sendable {
@@ -12,7 +12,7 @@ public enum SurfaceError: Error, Equatable, Sendable {
 /// Rendering reuses that storage; capacity/layout rejection preserves the last
 /// frame. Caller-created Strings and first-use runtime metadata are outside the
 /// steady-state allocation guarantee. Frame views must end before the next render.
-public struct Surface: ~Copyable {
+public struct Surface: ~Copyable, ~Sendable {
   public static let maximumColumns = 512
   public static let maximumRows = 256
   public let maximumSize: TerminalSize
@@ -59,22 +59,25 @@ public struct Surface: ~Copyable {
   public mutating func render<Content: Block>(
     size: TerminalSize, @BlockBuilder content: () -> Content
   ) throws(SurfaceError) {
+    try render(size: size, content: content, paint: { _ in })
+  }
+
+  /// Composes blocks, then lends the same frame to synchronous custom drawing.
+  /// The paint callback is not called when layout or viewport validation fails.
+  public mutating func render<Content: Block>(
+    size: TerminalSize, @BlockBuilder content: () -> Content, paint: (inout Frame) -> Void
+  ) throws(SurfaceError) {
     try validate(size)
     defer { layout.reset() }
     do throws(LayoutError) {
-      var builder = _BlockLayout(nodes: layout.nodes.mutableSpan, inputs: layout.inputs.mutableSpan)
-      do throws(LayoutError) { try content()._build(into: &builder) } catch {
-        layout.count = builder.count
-        throw error
-      }
-      layout.count = builder.count
+      try layout.build(in: Rect(width: size.columns, height: size.rows), content: content)
     } catch { throw .layout(error) }
-    layout.resolve(in: Rect(width: size.columns, height: size.rows))
     clear(size)
     do {
       var storage = cells.mutableSpan
       var frame = Frame(cells: storage._mutatingExtracting(first: size.columns * size.rows), size: size)
       layout.paint(into: &frame)
+      paint(&frame)
     }
     self.size = size
   }

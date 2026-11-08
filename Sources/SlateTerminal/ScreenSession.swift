@@ -1,4 +1,5 @@
 public import SlateUI
+import SystemPackage
 
 #if canImport(Darwin)
 import Darwin
@@ -12,10 +13,8 @@ extension Output {
   /// Queries the output terminal, independently of the input terminal.
   public borrowing func terminalSize() throws(TerminalError) -> TerminalSize {
     var size = winsize()
-    var retries = SystemCallRetryBudget()
-    while unsafe ioctl(descriptor, UInt(TIOCGWINSZ), &size) == -1 {
-      let error = errno
-      if !retries.retry(after: error) { throw .readSize(errno: error) }
+    guard unsafe ioctl(descriptor.rawValue, UInt(TIOCGWINSZ), &size) == 0 else {
+      throw .readSize(errno: errno)
     }
     return TerminalSize(columns: Int(size.ws_col), rows: Int(size.ws_row))
   }
@@ -34,104 +33,118 @@ extension Output {
   public borrowing func mouseTracking() throws(IOError) -> MouseTracking {
     try MouseTracking(output: self)
   }
+
+  @_lifetime(borrow self)
+  public borrowing func graphemeClustering() throws(IOError) -> GraphemeClustering {
+    try GraphemeClustering(output: self)
+  }
+}
+
+/// Uses Unicode grapheme widths (DEC mode 2027) on supporting terminals. Saves
+/// and restores the previous mode with XTSAVE/XTRESTORE; unsupported terminals
+/// ignore the sequences. Do not nest owners of this mode on the same terminal.
+/// ScreenApplication owns this scope, including suspend/resume and error exits.
+public struct GraphemeClustering: ~Copyable, ~Escapable, ~Sendable {
+  private var session: TerminalModeSession
+
+  @_lifetime(borrow output)
+  init(output: borrowing Output) throws(IOError) {
+    session = try TerminalModeSession(output: output, mode: .grapheme)
+  }
+
+  public consuming func restore() throws(IOError) { try session.restore() }
 }
 
 /// Scoped all-motion tracking (1003) with SGR cell coordinates (1006).
 /// Do not nest mouse-mode owners on the same terminal. Destruction disables
 /// both modes, including on throwing exits and partially written setup.
-public struct MouseTracking: ~Copyable, ~Escapable {
-  private let descriptor: Int32
-  private var needsRestore = true
+public struct MouseTracking: ~Copyable, ~Escapable, ~Sendable {
+  private var session: TerminalModeSession
 
   @_lifetime(borrow output)
   init(output: borrowing Output) throws(IOError) {
-    do throws(IOError) { try writeStatic("\u{1b}[?1006h\u{1b}[?1003h", to: output.descriptor) } catch {
-      try? writeStatic("\u{1b}[?1003l\u{1b}[?1006l", to: output.descriptor)
-      throw error
-    }
-    descriptor = output.descriptor
+    session = try TerminalModeSession(output: output, mode: .mouse)
   }
 
-  public consuming func restore() throws(IOError) {
-    do throws(IOError) { try writeStatic("\u{1b}[?1003l\u{1b}[?1006l", to: descriptor) } catch {
-      try? writeStatic("\u{1b}[?1003l\u{1b}[?1006l", to: descriptor)
-      needsRestore = false
-      throw error
-    }
-    needsRestore = false
-  }
-
-  deinit {
-    if needsRestore { try? writeStatic("\u{1b}[?1003l\u{1b}[?1006l", to: descriptor) }
-  }
+  /// On failure, retries restoration once and rethrows the original error.
+  public consuming func restore() throws(IOError) { try session.restore() }
 }
 
 /// Scoped paste framing. Do not nest mode owners on the same terminal.
-public struct BracketedPaste: ~Copyable, ~Escapable {
-  private let descriptor: Int32
-  private var needsRestore = true
+public struct BracketedPaste: ~Copyable, ~Escapable, ~Sendable {
+  private var session: TerminalModeSession
 
   @_lifetime(borrow output)
   init(output: borrowing Output) throws(IOError) {
-    do throws(IOError) { try writeStatic("\u{1b}[?2004h", to: output.descriptor) } catch {
-      try? writeStatic("\u{1b}[?2004l", to: output.descriptor)
-      throw error
-    }
-    descriptor = output.descriptor
+    session = try TerminalModeSession(output: output, mode: .paste)
   }
 
-  /// On failure, makes one best-effort fallback and rethrows the original error.
-  public consuming func restore() throws(IOError) {
-    do throws(IOError) {
-      try writeStatic("\u{1b}[?2004l", to: descriptor)
-    } catch {
-      // Complete cleanup before rethrowing from this consuming operation,
-      // including when the first write stopped partway through the sequence.
-      try? writeStatic("\u{1b}[?2004l", to: descriptor)
-      needsRestore = false
-      throw error
-    }
-    needsRestore = false
-  }
-
-  deinit {
-    if needsRestore { try? writeStatic("\u{1b}[?2004l", to: descriptor) }
-  }
+  /// On failure, retries restoration once and rethrows the original error.
+  public consuming func restore() throws(IOError) { try session.restore() }
 }
 
 /// Enters the alternate screen and hides the cursor. Exit resets style, shows
 /// the cursor, and returns to the main screen. Coordinate other output owners.
 /// Scope exit and Swift error unwinding perform best-effort cleanup.
-public struct AlternateScreen: ~Copyable, ~Escapable {
-  private let descriptor: Int32
-  private var needsRestore = true
+public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
+  private var session: TerminalModeSession
 
   @_lifetime(borrow output)
   init(output: borrowing Output) throws(IOError) {
-    do throws(IOError) {
-      try writeStatic("\u{1b}[?1049h\u{1b}[?25l\u{1b}[0m", to: output.descriptor)
-    } catch {
-      // A failed write may have already enabled either mode.
-      try? writeStatic("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l", to: output.descriptor)
+    session = try TerminalModeSession(output: output, mode: .alternate)
+  }
+
+  /// On failure, retries restoration once and rethrows the original error.
+  public consuming func restore() throws(IOError) { try session.restore() }
+}
+
+// ABI visibility forces Swift 6.4.2 to emit metadata referenced by optimized
+// destruction of the public noncopyable guards from other targets. Module
+// visibility alone works in testable builds but omits it in production builds.
+@usableFromInline enum TerminalMode: Sendable {
+  case mouse, paste, alternate, grapheme
+
+  var sequences: (enable: StaticString, restore: StaticString) {
+    switch self {
+    case .mouse: ("\u{1b}[?1006h\u{1b}[?1003h", "\u{1b}[?1003l\u{1b}[?1006l")
+    case .paste: ("\u{1b}[?2004h", "\u{1b}[?2004l")
+    case .alternate: ("\u{1b}[?1049h\u{1b}[?25l\u{1b}[0m", "\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l")
+    case .grapheme: ("\u{1b}[?2027s\u{1b}[?2027h", "\u{1b}[?2027r")
+    }
+  }
+}
+
+/// One inline owner per mode, borrowing the output descriptor. Setup failure
+/// rolls back once; explicit restoration failure retries once and preserves the
+/// first error. Each write uses the existing bounded syscall retry budget.
+@usableFromInline struct TerminalModeSession: ~Copyable, ~Escapable, ~Sendable {
+  private let descriptor: FileDescriptor
+  private let mode: TerminalMode
+  private var needsRestore = true
+
+  @_lifetime(borrow output)
+  init(output: borrowing Output, mode: TerminalMode) throws(IOError) {
+    let sequences = mode.sequences
+    do throws(IOError) { try writeStatic(sequences.enable, to: output.descriptor) } catch {
+      try? writeStatic(sequences.restore, to: output.descriptor)
       throw error
     }
     descriptor = output.descriptor
+    self.mode = mode
   }
 
-  public consuming func restore() throws(IOError) {
-    do throws(IOError) {
-      try writeStatic("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l", to: descriptor)
-    } catch {
-      // Complete the consuming operation's one best-effort fallback explicitly,
-      // including when the first write stopped partway through an escape code.
-      try? writeStatic("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l", to: descriptor)
-      needsRestore = false
+  consuming func restore() throws(IOError) {
+    let sequence = mode.sequences.restore
+    // Finish the consuming operation's cleanup explicitly, including partial
+    // escape writes. Destruction must not add a third restoration attempt.
+    needsRestore = false
+    do throws(IOError) { try writeStatic(sequence, to: descriptor) } catch {
+      try? writeStatic(sequence, to: descriptor)
       throw error
     }
-    needsRestore = false
   }
 
   deinit {
-    if needsRestore { try? writeStatic("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l", to: descriptor) }
+    if needsRestore { try? writeStatic(mode.sequences.restore, to: descriptor) }
   }
 }

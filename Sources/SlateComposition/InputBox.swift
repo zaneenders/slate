@@ -1,6 +1,6 @@
 /// One-line editable field view. The application owns focus and routes keys and
 /// paste to its TextInput. Rendering borrows that state synchronously.
-public struct InputBox: Block {
+public struct InputBox: Block, ~Sendable {
   public typealias Body = Never
   private let input: TextInput
   private let focused: Bool

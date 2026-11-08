@@ -55,7 +55,41 @@ struct ANSIWriter: ~Copyable {
     try byte(0x48, to: output)
   }
 
-  mutating func style(_ style: Style, to output: borrowing Output) throws(IOError) {
+  mutating func style(
+    _ style: Style, previous: Style? = nil, to output: borrowing Output
+  ) throws(IOError) {
+    // Color-only transitions preserve active text attributes. A full reset
+    // handles unknown previous state and changes to text attributes.
+    // Uses the existing buffer; at most two palette parameters replace a reset
+    // plus all attributes and both colors. Default colors use SGR 39 and 49.
+    if let previous,
+      style.bold == previous.bold && style.dim == previous.dim
+        && style.underlined == previous.underlined && style.inverse == previous.inverse
+    {
+      let foregroundChanged = style.foreground != previous.foreground
+      let backgroundChanged = style.background != previous.background
+      guard foregroundChanged || backgroundChanged else { return }
+      try literal("\u{1b}[", to: output)
+      if foregroundChanged {
+        if case .indexed(let value) = style.foreground {
+          try literal("38;5;", to: output)
+          try number(Int(value), to: output)
+        } else {
+          try literal("39", to: output)
+        }
+      }
+      if backgroundChanged {
+        if foregroundChanged { try byte(0x3b, to: output) }
+        if case .indexed(let value) = style.background {
+          try literal("48;5;", to: output)
+          try number(Int(value), to: output)
+        } else {
+          try literal("49", to: output)
+        }
+      }
+      try byte(0x6d, to: output)
+      return
+    }
     try literal("\u{1b}[0", to: output)
     if style.bold { try literal(";1", to: output) }
     if style.dim { try literal(";2", to: output) }
@@ -73,15 +107,8 @@ struct ANSIWriter: ~Copyable {
   }
 
   mutating func glyph(_ glyph: Glyph, to output: borrowing Output) throws(IOError) {
-    let value = glyph.scalar.value
-    if value < 0x80 {
-      try byte(UInt8(value), to: output)
-    } else {
-      // The only non-ASCII glyphs admitted by Glyph are three-byte box drawing.
-      try byte(0xe0 | UInt8(value >> 12), to: output)
-      try byte(0x80 | UInt8((value >> 6) & 0x3f), to: output)
-      try byte(0x80 | UInt8(value & 0x3f), to: output)
-    }
+    let source = glyph.utf8().span
+    for index in 0..<source.count { try byte(source[index], to: output) }
   }
 
   mutating func base64(_ source: Span<UInt8>, to output: borrowing Output) throws(IOError) {

@@ -49,7 +49,7 @@ public struct InputDecoder: ~Copyable, Sendable {
 
   private var sequence = InlineArray<32, UInt8>(repeating: 0)
   private var sequenceByteCount = 0
-  private var utf8 = UTF8Decoder()
+  private var utf8 = IncrementalUTF8Decoder()
   /// Payload for the latest command event; valid until the next decode call.
   /// Only command consumers copy this snapshot, keeping ordinary key events small.
   public private(set) var applicationCommand = ApplicationCommand()
@@ -89,7 +89,7 @@ public struct InputDecoder: ~Copyable, Sendable {
       // Ordinary terminal text needs no protocol/framing result. Keep command
       // boundaries off this common path; paste and partial sequences still use next.
       if state == .ground && (0x20...0x7e).contains(byte) {
-        events[eventsWritten] = .key(.scalar(Unicode.Scalar(byte)))
+        events[eventsWritten] = .key(.character(Unicode.Scalar(byte)))
         bytesConsumed += 1
         eventsWritten += 1
         continue
@@ -151,7 +151,7 @@ public struct InputDecoder: ~Copyable, Sendable {
         return Step()
       case .scalar(let scalar):
         reset()
-        return Step(.key(.scalar(scalar)))
+        return Step(.key(.character(scalar)))
       case .invalid:
         // Report the maximal valid prefix, then reconsider the offending byte.
         reset()
@@ -230,9 +230,9 @@ public struct InputDecoder: ~Copyable, Sendable {
         preconditionFailure("Missing C0 control key")
       }
       return Step(.key(.control(control)))
-    case 0x20...0x7e: return Step(.key(.scalar(Unicode.Scalar(byte))))
+    case 0x20...0x7e: return Step(.key(.character(Unicode.Scalar(byte))))
     default:
-      guard utf8.start(byte) else { return Step(.invalid(.invalidUTF8)) }
+      guard case .pending = utf8.append(byte) else { return Step(.invalid(.invalidUTF8)) }
       state = .utf8
       return Step()
     }
@@ -313,7 +313,10 @@ public struct InputDecoder: ~Copyable, Sendable {
       case 0x44: key = .left
       case 0x48: key = .home
       case 0x46: key = .end
-      case 0x50...0x53: key = .function(final - 0x50 + 1)
+      case 0x50: key = .function(.f1)
+      case 0x51: key = .function(.f2)
+      case 0x52: key = .function(.f3)
+      case 0x53: key = .function(.f4)
       case 0x5a where state == .csi:
         key = .tab
         modifiers.insert(.shift)
@@ -329,9 +332,18 @@ public struct InputDecoder: ~Copyable, Sendable {
       case 4, 8: key = .end
       case 5: key = .pageUp
       case 6: key = .pageDown
-      case 11...15: key = .function(UInt8(first - 10))
-      case 17...21: key = .function(UInt8(first - 11))
-      case 23, 24: key = .function(UInt8(first - 12))
+      case 11: key = .function(.f1)
+      case 12: key = .function(.f2)
+      case 13: key = .function(.f3)
+      case 14: key = .function(.f4)
+      case 15: key = .function(.f5)
+      case 17: key = .function(.f6)
+      case 18: key = .function(.f7)
+      case 19: key = .function(.f8)
+      case 20: key = .function(.f9)
+      case 21: key = .function(.f10)
+      case 23: key = .function(.f11)
+      case 24: key = .function(.f12)
       default: return nil
       }
     }
@@ -425,61 +437,4 @@ public struct InputDecoder: ~Copyable, Sendable {
     pasteLiteralCount = 0
   }
 
-}
-
-/// Owns one partial scalar inline. A rejected continuation belongs to the caller
-/// and must be reconsidered as fresh terminal input after reporting the error.
-private struct UTF8Decoder: ~Copyable, Sendable {
-  enum Progress {
-    case pending
-    case scalar(Unicode.Scalar)
-    case invalid
-  }
-
-  private var scalarValue: UInt32 = 0
-  // UTF-8 has at most three continuation bytes; the whole helper fits in 8 bytes.
-  private var continuationsRemaining: UInt8 = 0
-  private var nextMinimum: UInt8 = 0x80
-  private var nextMaximum: UInt8 = 0xbf
-
-  mutating func start(_ byte: UInt8) -> Bool {
-    assert(continuationsRemaining == 0)
-    switch byte {
-    case 0xc2...0xdf:
-      scalarValue = UInt32(byte & 0x1f)
-      continuationsRemaining = 1
-    case 0xe0...0xef:
-      scalarValue = UInt32(byte & 0x0f)
-      continuationsRemaining = 2
-    case 0xf0...0xf4:
-      scalarValue = UInt32(byte & 0x07)
-      continuationsRemaining = 3
-    default:
-      return false
-    }
-    // Restrict the first continuation to exclude overlong encodings, surrogate
-    // code points, and values above U+10FFFF before accumulating the scalar.
-    nextMinimum = byte == 0xe0 ? 0xa0 : byte == 0xf0 ? 0x90 : 0x80
-    nextMaximum = byte == 0xed ? 0x9f : byte == 0xf4 ? 0x8f : 0xbf
-    return true
-  }
-
-  mutating func append(_ byte: UInt8) -> Progress {
-    assert(continuationsRemaining > 0 && continuationsRemaining <= 3)
-    guard byte >= nextMinimum && byte <= nextMaximum else {
-      reset()
-      return .invalid
-    }
-    scalarValue = (scalarValue << 6) | UInt32(byte & 0x3f)
-    continuationsRemaining -= 1
-    nextMinimum = 0x80
-    nextMaximum = 0xbf
-    guard continuationsRemaining == 0 else { return .pending }
-    // The lead/continuation bounds establish the Unicode scalar invariant.
-    return .scalar(Unicode.Scalar(scalarValue)!)
-  }
-
-  mutating func reset() {
-    continuationsRemaining = 0
-  }
 }

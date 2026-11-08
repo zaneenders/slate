@@ -7,7 +7,6 @@ public enum PasteEvent: Equatable, Sendable {
 }
 
 public enum PasteError: Error, Equatable, Sendable {
-  case capacityExceeded
   case invalidUTF8
   case incomplete
 }

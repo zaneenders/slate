@@ -14,6 +14,35 @@ import Glibc
 
 @Suite(.serialized)
 struct SignalOwnershipTests {
+  #if os(Linux)
+  @Test func readInterruptionChecksTerminationBeforePollingOrDeliveringInput() throws {
+    let pty = try PseudoTerminal()
+    var size = winsize(ws_row: 1, ws_col: 1, ws_xpixel: 0, ws_ypixel: 0)
+    try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
+    let output = try Output(fileDescriptor: pty.master)
+    try output.writeAll("q".utf8Span.span)
+    var set = sigset_t()
+    var saved = sigset_t()
+    try #require(unsafe sigemptyset(&set) == 0)
+    try #require(unsafe sigaddset(&set, SIGTERM) == 0)
+    try #require(unsafe pthread_sigmask(SIG_UNBLOCK, &set, &saved) == 0)
+    defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &saved, nil) }
+    let polls: InlineArray<2, Int32> = [1, -EIO]
+    polls.span.withUnsafeBufferPointer { unsafe cli_test_poll_script($0.baseAddress, $0.count) }
+    cli_test_read_signal(SIGTERM)
+    defer { cli_test_reset_io() }
+    var application = SignalDuringQuitApplication()
+    #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
+      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
+    }
+    #expect(application.handledKeys == 0)
+    // The second scripted poll must still be pending after termination.
+    var readiness = pollfd(fd: pty.slave, events: Int16(POLLIN), revents: 0)
+    #expect(unsafe poll(&readiness, 1, 0) == -1)
+    #expect(errno == EIO)
+  }
+  #endif
+
   @Test func signalOwnerRejectsOverlapAndRestoresAfterScopeExit() throws {
     do {
       let owner = try SignalSession(.managed)
@@ -37,6 +66,7 @@ struct SignalOwnershipTests {
     #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
       try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
     }
+    #expect(application.handledKeys == 1)
     expectEqual(try attributes(of: pty.slave), saved)
   }
 
@@ -138,16 +168,29 @@ private func expectSignalAction(_ actual: sigaction, _ expected: sigaction) {
 }
 
 private struct SignalDuringQuitApplication: ScreenApplication {
-  mutating func handle(_ key: InputKey) -> ScreenUpdate {
-    // Swift Testing's worker can inherit a blocked SIGTERM. Deliver synchronously
-    // to this thread while the managed owner is installed, then restore its mask.
-    var set = sigset_t()
-    var saved = sigset_t()
-    precondition(unsafe sigemptyset(&set) == 0)
-    precondition(unsafe sigaddset(&set, SIGTERM) == 0)
-    precondition(unsafe pthread_sigmask(SIG_UNBLOCK, &set, &saved) == 0)
-    defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &saved, nil) }
-    precondition(raise(SIGTERM) == 0)
+  private(set) var handledKeys = 0
+  mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    switch event {
+    case .key(_, let modifiers): return handle(modifiers: modifiers)
+    default: return .none
+    }
+  }
+
+  private mutating func handle(modifiers: KeyModifiers) -> ScreenUpdate {
+    handledKeys += 1
+    guard modifiers.isEmpty else { return .none }
+    // Make the quit-callback latch deterministic on Swift Testing workers.
+    // Child-process tests below cover actual kernel signal delivery.
+    var action = sigaction()
+    precondition(unsafe sigaction(SIGTERM, nil, &action) == 0)
+    #if canImport(Darwin)
+    let handler = unsafe action.__sigaction_u.__sa_handler
+    #elseif canImport(Musl)
+    let handler = unsafe action.__sa_handler.sa_handler
+    #else
+    let handler = unsafe action.__sigaction_handler.sa_handler
+    #endif
+    handler!(SIGTERM)
     return .quit
   }
   func render(in size: TerminalSize) -> some Block { Text("x") }
@@ -156,20 +199,21 @@ private struct SignalDuringQuitApplication: ScreenApplication {
 @Test(arguments: [SIGINT, SIGTERM, SIGHUP])
 func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2004h")
+  try child.awaitOutput("\u{1b}[?2027h")
   #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
   try #require(kill(child.pid, number) == 0)
   let (kind, value) = try child.awaitState()
   #expect(kind == 2 && value == 128 + number)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[?2004l")
+  #expect(child.output.contains("\u{1b}[?2027r"))
   #expect(child.output.contains("\u{1b}[?25h\u{1b}[?1049l"))
 }
 
 @Test(arguments: [false, true])
 func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Bool) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2004h")
+  try child.awaitOutput("\u{1b}[?2027h")
   try child.send("\tHello")
   // End a partial paste after resume: its q must remain text.
   try child.send("\u{1b}[200~q")
@@ -183,9 +227,10 @@ func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Bool) th
   #expect(kind == 1 && signal == SIGTSTP)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[?2004l")
+  #expect(child.output.contains("\u{1b}[?2027r"))
   child.output = ""
   try #require(kill(child.pid, SIGCONT) == 0)
-  try child.awaitOutput("\u{1b}[?2004h")
+  try child.awaitOutput("\u{1b}[?2027h")
   #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
   if !keyboard { try child.send("\u{1b}[201~") }
   try child.send("\u{1}\u{3}")

@@ -1,6 +1,7 @@
-/// Text is reported as Unicode scalars, not grapheme clusters or display cells.
 public enum InputKey: Equatable, Sendable {
-  case scalar(Unicode.Scalar)
+  /// A character reported as one Unicode scalar, not a Swift Character grapheme.
+  /// A grapheme cluster may arrive as several keys.
+  case character(Unicode.Scalar)
   /// A C0 control key, such as `.control(.c)` for Ctrl-C.
   /// Decoders prefer dedicated cases for Backspace, Tab, Enter and Escape.
   case control(ControlKey)
@@ -18,8 +19,49 @@ public enum InputKey: Equatable, Sendable {
   case delete
   case pageUp
   case pageDown
-  /// F1...F12. Decoders never emit a value outside this range.
-  case function(UInt8)
+  /// A named function key. The terminal decoder currently recognizes F1...F12.
+  case function(FunctionKey)
+}
+
+/// Function keys F1...F35 from the Kitty keyboard protocol's functional key table.
+/// Raw values are key numbers, not terminal escape sequence parameters.
+/// https://sw.kovidgoyal.net/kitty/keyboard-protocol/#functional-key-definitions
+public enum FunctionKey: UInt8, Equatable, Sendable {
+  case f1 = 1
+  case f2 = 2
+  case f3 = 3
+  case f4 = 4
+  case f5 = 5
+  case f6 = 6
+  case f7 = 7
+  case f8 = 8
+  case f9 = 9
+  case f10 = 10
+  case f11 = 11
+  case f12 = 12
+  case f13 = 13
+  case f14 = 14
+  case f15 = 15
+  case f16 = 16
+  case f17 = 17
+  case f18 = 18
+  case f19 = 19
+  case f20 = 20
+  case f21 = 21
+  case f22 = 22
+  case f23 = 23
+  case f24 = 24
+  case f25 = 25
+  case f26 = 26
+  case f27 = 27
+  case f28 = 28
+  case f29 = 29
+  case f30 = 30
+  case f31 = 31
+  case f32 = 32
+  case f33 = 33
+  case f34 = 34
+  case f35 = 35
 }
 
 /// Named C0 control bytes shared by macOS and Linux terminals. These describe

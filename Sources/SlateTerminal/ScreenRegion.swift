@@ -1,10 +1,15 @@
 public import SlateUI
 
 /// A single rectangular layer sharing a terminal with other writers.
+/// Uses the same surface rendering and ANSI cell presentation as Screen. This
+/// owner preserves the cursor and repaints every visible cell because another
+/// writer may invalidate the rectangle between draws, so no diff grid is retained.
 /// Owns one fixed cell grid, bounded layout storage, and a 4 KiB writer. Each
 /// draw repaints at most the configured cell capacity; moving first clears the
 /// previous rectangle. Clearing uses default-background spaces.
 /// It never clears the terminal or another region.
+/// For compound Unicode, coordinate an output.graphemeClustering() scope with
+/// other writers. ScreenApplication already manages this terminal mode.
 ///
 /// Layout uses local coordinates and the requested size; output clips to the
 /// current viewport. Cells outside that viewport are abandoned on clear/resize.
@@ -12,8 +17,7 @@ public import SlateUI
 /// Startup, first-use Swift runtime metadata, and caller-created String storage
 /// are outside the steady-state allocation guarantee. Blocking output latency
 /// depends on the caller's descriptor; no tasks or additional retries are added.
-// TODO: Do we need this, maybe this should be revisisted or defined as a better layer for full screen and avoid having to redererers?
-public struct ScreenRegion: ~Copyable {
+public struct ScreenRegion: ~Copyable, ~Sendable {
   public var maximumSize: TerminalSize { surface.maximumSize }
   public var nodeCapacity: Int { surface.nodeCapacity }
   /// Includes a partially painted region after an output error, so clear or a
@@ -56,18 +60,7 @@ public struct ScreenRegion: ~Copyable {
     do throws(IOError) {
       let cells = surface.renderedCells()
       try writer.literal("\u{1b}7\u{1b}[0m", to: output)
-      var previousStyle: Style?
-      for row in 0..<clipped.height {
-        try writer.cursor(x: clipped.x, y: clipped.y + row, to: output)
-        for column in 0..<clipped.width {
-          let cell = cells[row * region.width + column]
-          if previousStyle != cell.style {
-            try writer.style(cell.style, to: output)
-            previousStyle = cell.style
-          }
-          try writer.glyph(cell.glyph, to: output)
-        }
-      }
+      _ = try writer.cells(cells, size: size, in: clipped, to: output)
       try writer.literal("\u{1b}[0m\u{1b}8", to: output)
       try writer.flush(to: output)
     } catch {
