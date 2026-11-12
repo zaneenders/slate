@@ -1,6 +1,6 @@
 import Slate
 
-/// Literal, case-sensitive UTF-8 search over the original file bytes. Owns one
+/// Literal, case-sensitive UTF-8 search over the current logical bytes. Owns one
 /// query and one result; no result queue or tasks. Startup payload is 256 query
 /// bytes + 256 Int prefix lengths + 4 KiB scratch + TextInput's two 256-byte
 /// buffers (6,912 bytes on 64-bit hosts), plus scalar state and input metadata.
@@ -28,6 +28,7 @@ struct DocumentSearch: ~Copyable, ~Sendable {
   private var editOrigin = 0
   private var endByte = 0
   private var fileBytes = 0
+  private var sourceSnapshot: FileByteSnapshot?
   private var wrapped = false
   private(set) var nextByte = 0
   private(set) var state = State.idle
@@ -157,6 +158,7 @@ struct DocumentSearch: ~Copyable, ~Sendable {
     nextByte = offset
     endByte = byteCount
     fileBytes = byteCount
+    sourceSnapshot = nil
     matchedBytes = 0
     wrapped = false
     match = nil
@@ -165,12 +167,17 @@ struct DocumentSearch: ~Copyable, ~Sendable {
   }
 
   /// Returns only a newly verified match. Failure latches until another request.
-  mutating func advance(from source: inout PagedFileDocument) -> Range<Int>? {
+  mutating func advance<Source: FileByteSource & ~Copyable>(from source: inout Source) -> Range<Int>? {
     guard hasPendingWork else { return nil }
     precondition((1...Self.maximumQueryBytes).contains(queryCount))
     precondition(nextByte <= endByte && endByte <= fileBytes)
-    precondition(source.byteCount == fileBytes)
     do throws(FileDocumentError) {
+      // An edit between cooperative batches cancels the obsolete search rather
+      // than letting its old byte coordinates trap or produce a stale match.
+      guard source.byteCount == fileBytes else { throw .fileChanged }
+      let snapshot = FileByteSnapshot(file: source.snapshotIdentity, editRevision: source.editRevision)
+      if let sourceSnapshot, sourceSnapshot != snapshot { throw .fileChanged }
+      sourceSnapshot = snapshot
       try source.verifyUnchanged()
       if nextByte == endByte {
         guard !wrapped && origin > 0 else {

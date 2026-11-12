@@ -121,7 +121,9 @@ struct FileUnicodeCursor: ~Copyable {
 
   init(offset: Int) { self.offset = offset }
 
-  mutating func next(from source: inout PagedFileDocument) throws(FileDocumentError) -> FileUnicodeScalar? {
+  mutating func next<Source: FileByteSource & ~Copyable>(
+    from source: inout Source
+  ) throws(FileDocumentError) -> FileUnicodeScalar? {
     guard offset < source.byteCount else { return nil }
     let start = offset
     var decoder = IncrementalUTF8Decoder()
@@ -145,7 +147,9 @@ struct FileUnicodeCursor: ~Copyable {
     return .init(scalar: "\0", range: start..<offset, raw: raw)
   }
 
-  private mutating func nextByte(from source: inout PagedFileDocument) throws(FileDocumentError) -> UInt8 {
+  private mutating func nextByte<Source: FileByteSource & ~Copyable>(
+    from source: inout Source
+  ) throws(FileDocumentError) -> UInt8 {
     if offset < bufferOffset || offset >= bufferOffset + bufferCount {
       bufferOffset = offset
       bufferCount = try source.readBytes(from: offset, into: buffer.mutableSpan)

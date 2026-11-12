@@ -27,8 +27,8 @@ struct FileByteViewport: ~Copyable, ~Sendable {
   private var rows: RigidArray<Int>
   private var scratchRows: RigidArray<Int>
   private var preparation: FileUnicodePreparation?
-  private var sourceIdentity: DocumentFileIdentity?
-  private var publishedIdentity: DocumentFileIdentity?
+  private var sourceIdentity: FileByteSnapshot?
+  private var publishedIdentity: FileByteSnapshot?
   private var rowCheckpoints = InlineArray<61, FileUnicodeCheckpoint>(repeating: .init())
   private var scratchRowCheckpoints = InlineArray<61, FileUnicodeCheckpoint>(repeating: .init())
   private var history = InlineArray<128, FileRowAnchor>(repeating: .init())
@@ -125,25 +125,26 @@ struct FileByteViewport: ~Copyable, ~Sendable {
 
   /// Blocking convenience for tests/non-UI callers. The viewer drives batches
   /// separately and publishes only complete snapshots between UI turns.
-  mutating func prepare(
-    from source: inout PagedFileDocument, firstByte: Int, size: TerminalSize
+  mutating func prepare<Source: FileByteSource & ~Copyable>(
+    from source: inout Source, firstByte: Int, size: TerminalSize
   ) throws(FileDocumentError) {
     try begin(from: &source, firstByte: firstByte, size: size)
     while hasPendingWork { _ = try advance(from: &source) }
   }
 
-  mutating func begin(
-    from source: inout PagedFileDocument, firstByte: Int, size: TerminalSize, backwardRows: Int = 0
+  mutating func begin<Source: FileByteSource & ~Copyable>(
+    from source: inout Source, firstByte: Int, size: TerminalSize, backwardRows: Int = 0
   ) throws(FileDocumentError) {
     guard size.columns <= maximumSize.columns, size.rows <= maximumSize.rows,
       (0...source.byteCount).contains(firstByte), (0...60).contains(backwardRows)
     else { throw .invalidRange }
     try source.verifyUnchanged()
     preparation = nil
-    if sourceIdentity != source.snapshotIdentity || self.size.columns != size.columns {
+    let identity = FileByteSnapshot(file: source.snapshotIdentity, editRevision: source.editRevision)
+    if sourceIdentity != identity || self.size.columns != size.columns {
       for index in 0..<history.count { history[index] = .init() }
       historyCursor = 0
-      sourceIdentity = source.snapshotIdentity
+      sourceIdentity = identity
     }
     if size.columns == 0 || size.rows == 0 {
       for row in 0...size.rows { scratchRows[row] = firstByte }
@@ -162,10 +163,12 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     }
     let lookback = min(size.columns * 60 * Glyph.maximumUTF8Bytes, max(4_096, bytesPerRow * 61))
     let start = locating ? max(0, firstByte - lookback) : firstByte
-    let checkpoint =
-      !locating
-      ? cachedCheckpoint(at: firstByte) ?? source.unicodeCheckpoint(before: start)
-      : source.unicodeCheckpoint(before: start)
+    let checkpoint: FileUnicodeCheckpoint
+    if !locating, let cached = cachedCheckpoint(at: firstByte) {
+      checkpoint = cached
+    } else {
+      checkpoint = try source.unicodeCheckpoint(before: start)
+    }
     preparation = FileUnicodePreparation(
       checkpoint: checkpoint, target: firstByte, size: size,
       locating: locating, backwardRows: firstByte == source.byteCount ? size.rows : backwardRows,
@@ -174,12 +177,15 @@ struct FileByteViewport: ~Copyable, ~Sendable {
 
   /// Returns true when a complete snapshot was published. No source/span
   /// borrow survives the return to the event loop.
-  mutating func advance(
-    from source: inout PagedFileDocument, maximumScalars: Int = 16_384
+  mutating func advance<Source: FileByteSource & ~Copyable>(
+    from source: inout Source, maximumScalars: Int = 16_384
   ) throws(FileDocumentError) -> Bool {
     guard (1...16_384).contains(maximumScalars) else { throw .invalidConfiguration }
     guard var state = preparation.take() else { return false }
     try source.verifyUnchanged()
+    guard sourceIdentity == FileByteSnapshot(file: source.snapshotIdentity, editRevision: source.editRevision) else {
+      throw .fileChanged
+    }
     let deadline = ContinuousClock().now.advanced(by: .milliseconds(4))
     var scannedBytes = 0
     var scalars = 0
@@ -193,7 +199,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
         {
           let checkpoint = FileUnicodeCheckpoint(
             offset: complete.byteRange.lowerBound, recognizer: initial.recognizer, fragmented: initial.fragmented)
-          let action = consume(complete, checkpoint: checkpoint, state: &state, source: &source)
+          let action = try consume(complete, checkpoint: checkpoint, state: &state, source: &source)
           state.rawCount = 0
           if action == .complete {
             try source.verifyUnchanged()
@@ -211,12 +217,12 @@ struct FileByteViewport: ~Copyable, ~Sendable {
         if let complete = state.clusters.take() {
           let checkpoint = FileUnicodeCheckpoint(
             offset: complete.byteRange.lowerBound, recognizer: initial.recognizer, fragmented: initial.fragmented)
-          let action = consume(complete, checkpoint: checkpoint, state: &state, source: &source)
+          let action = try consume(complete, checkpoint: checkpoint, state: &state, source: &source)
           state.rawCount = 0
           if action == .restarted { continue }
         }
         if state.locating {
-          restartDisplay(state: &state, source: &source)
+          try restartDisplay(state: &state, source: &source)
           continue
         }
         try source.verifyUnchanged()
@@ -233,14 +239,14 @@ struct FileByteViewport: ~Copyable, ~Sendable {
 
   private enum ConsumeAction { case more, restarted, complete }
 
-  private mutating func consume(
+  private mutating func consume<Source: FileByteSource & ~Copyable>(
     _ cluster: UnicodeGrapheme, checkpoint: FileUnicodeCheckpoint,
-    state: inout FileUnicodePreparation, source: inout PagedFileDocument
-  ) -> ConsumeAction {
+    state: inout FileUnicodePreparation, source: inout Source
+  ) throws(FileDocumentError) -> ConsumeAction {
     assert(cluster.byteRange.count == state.rawCount)
     if state.locating {
       if cluster.byteRange.lowerBound >= state.target {
-        restartDisplay(state: &state, source: &source)
+        try restartDisplay(state: &state, source: &source)
         return .restarted
       }
       let width = min(state.size.columns, cluster.glyph.columnWidth)
@@ -285,14 +291,16 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     return .more
   }
 
-  private func restartDisplay(state: inout FileUnicodePreparation, source: inout PagedFileDocument) {
+  private func restartDisplay<Source: FileByteSource & ~Copyable>(
+    state: inout FileUnicodePreparation, source: inout Source
+  ) throws(FileDocumentError) {
     let maximumLookback = state.size.columns * 60 * Glyph.maximumUTF8Bytes
     if state.anchorCount < max(1, state.backwardRows) && state.replayStart > 0
       && state.lookbackBytes < maximumLookback && state.replayAttempts < 8
     {
       state.lookbackBytes = min(maximumLookback, state.lookbackBytes * 2)
       state.replayAttempts += 1
-      let checkpoint = source.unicodeCheckpoint(before: max(0, state.target - state.lookbackBytes))
+      let checkpoint = try source.unicodeCheckpoint(before: max(0, state.target - state.lookbackBytes))
       state.cursor = FileUnicodeCursor(offset: checkpoint.offset)
       state.clusters = UnicodeGraphemeBuffer(recognizer: checkpoint.recognizer, fragmented: checkpoint.fragmented)
       state.replayStart = checkpoint.offset
@@ -373,6 +381,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
   borrowing func paint(
     in area: Rect, frame: inout Frame, pageBytes: Int,
     previousRange: Range<Int>, style: Style, revealedStyle: Style, boundaryStyle: Style,
+    showPageBoundaries: Bool = true,
     selection: Range<Int>? = nil, selectionStyle: Style = Style(foreground: .white, background: .blue),
     match: Range<Int>? = nil, matchStyle: Style = Style(foreground: .black, background: .yellow)
   ) {
@@ -387,7 +396,9 @@ struct FileByteViewport: ~Copyable, ~Sendable {
         let range = ranges[index]
         guard !range.isEmpty else { continue }
         var cellStyle = previousRange.isEmpty || previousRange.overlaps(range) ? style : revealedStyle
-        if range.lowerBound / pageBytes != (range.upperBound - 1) / pageBytes || range.lowerBound % pageBytes == 0 {
+        if showPageBoundaries
+          && (range.lowerBound / pageBytes != (range.upperBound - 1) / pageBytes || range.lowerBound % pageBytes == 0)
+        {
           cellStyle.foreground = boundaryStyle.foreground
           cellStyle.underlined = true
           cellStyle.bold = true

@@ -9,7 +9,8 @@ import Musl
 #endif
 
 /// A visual debugger for the paged file reader. Indexing runs cooperatively
-/// after the first terminal frame. The document is never modified.
+/// after the first terminal frame. Edits stay in a bounded memory overlay until
+/// an explicit write streams the complete logical file to disk.
 @main
 struct SlateDocumentDemo: ScreenApplication {
   private enum Mode {
@@ -37,14 +38,20 @@ struct SlateDocumentDemo: ScreenApplication {
 
     Example: swift run -c release slate-document-demo pi_hex_1b.txt
 
-    Read-only byte view of any regular file, including binary, with live page-cache diagnostics.
+    Paged byte editor for regular files, including binary, with live page-cache diagnostics.
     Printable UTF-8 is shown with Unicode column widths; controls and malformed bytes appear as dots.
     Up/Down scroll rows; PgUp/PgDn page; 0-9 jump by file bytes; g/G start/end.
     [ ] jump disk pages; C clears Slate's cache; I toggles the inspector; ? helps; Q quits.
     Drag the scrollbar to seek; click its track to jump; the mouse wheel scrolls rows.
     Drag file text to select within its pane; y / Ctrl-C copies; Escape clears selection.
     / searches literal, case-sensitive UTF-8; Enter / n finds next and wraps; Tab switches focus; Escape closes.
-    Indexing progress appears in the UI; Q / Escape / Ctrl-C cancels. Bytes stay on disk.
+    i inserts at the cursor or replaces a selection; type/paste to edit; Escape returns to browsing.
+    In insert mode arrows move, Backspace/Delete erase, Home/End seek start/end, and Enter inserts LF.
+    :w writes; :wq writes and quits; :q refuses unsaved edits; :q! discards them.
+    :saveas path (or :w path) writes to a new name and switches to it, keeping the original file.
+    Existing save-as destinations are never overwritten. Escape cancels an in-progress write before replacement.
+    Unchanged bytes remain paged. Pending inserted text is limited to 1 MiB / 4,096 pieces; :w resets those limits.
+    Indexing progress appears in the UI; Q / Escape / Ctrl-C cancels initial indexing.
     """
 
   static func main() {

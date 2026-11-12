@@ -7,17 +7,40 @@ import Slate
 /// Drag capture retains two row offsets; mouse handlers do no I/O. Input batches
 /// coalesce position changes before the next bounded viewport preparation.
 /// Selection paints inside the pane and extends across edge-scrolled views.
+/// Editing preallocates the piece table/addition store, an 8 KiB command field,
+/// and a 64 KiB write buffer. Edits reject atomically at either overlay limit;
+/// successful writes rebase and reuse that storage. Command execution, save
+/// setup, and cooperative reindexing are explicit allocation phases. Scalar
+/// cursor fallback reads at most seven bytes through the existing page cache.
 /// Explicit offscreen copies may grow scratch storage to the selected byte count
 /// (at most the file size), then copy into the host buffer: two retained buffers
 /// proportional to the largest copy. Reads use the bounded cache. In-view copies
 /// reuse the viewport scratch grid. Mouse handlers never access disk or allocate.
-/// An initial source failure may allocate a Swift error box. It is latched until
-/// reopen, so subsequent help/resize/failure redraws never retry or allocate.
+/// Expected errors may allocate a Swift error box. A viewport source failure
+/// latches until reopen; subsequent failure redraws never retry or allocate.
 final class DocumentFileViewer: ~Sendable {
-  private var source: PagedFileDocument
+  private var source: PagedEditBuffer
   private var search = DocumentSearch()
   private var viewport = try! FileByteViewport()
-  private let displayName: String
+  private var displayName: String
+  private var path: String
+  private let commandInput = try! TextInput(capacity: 4_096)
+  private(set) var commandVisible = false
+  private(set) var isInserting = false
+  private(set) var cursorByteOffset = 0
+  private var cursorActive = false
+  private var pendingCursor: (column: Int, row: Int)?
+  private var viewportRevision: UInt64 = 0
+  private(set) var editNotice = ""
+  private var writer: DocumentFileWrite?
+  private var savedIndexer: PagedFileDocument.Indexer?
+  private var committedIdentity: DocumentFileIdentity?
+  private var writePath = ""
+  private(set) var writtenBytes = 0
+  private var quitAfterWrite = false
+  private var lastWriteRedraw: ContinuousClock.Instant?
+  private var writeScratch = InlineArray<65_536, UInt8>(repeating: 0)
+  private var savedButUnavailable = false
   private var cachedPages = InlineArray<64, Int>(repeating: -1)
   private var freshSlots = InlineArray<64, Bool>(repeating: false)
   private var previousRange = 0..<0
@@ -75,10 +98,16 @@ final class DocumentFileViewer: ~Sendable {
   var searchState: DocumentSearch.State { search.state }
   var searchVisible: Bool { search.isVisible }
   var searchFocused: Bool { search.isFocused }
+  var isDirty: Bool { source.isDirty }
+  var byteCount: Int { source.byteCount }
+  var documentPath: String { path }
+  var isWriting: Bool { writer != nil || savedIndexer != nil }
   var storageBudgetBytes: Int {
-    source.cacheStorageBudgetBytes + viewport.storageBudgetBytes + selectionCopyBytes.capacity + search.storagePayloadBytes
+    source.storageBudgetBytes + viewport.storageBudgetBytes + selectionCopyBytes.capacity + search.storagePayloadBytes
+      + commandInput.capacity * 2 + MemoryLayout<InlineArray<65_536, UInt8>>.stride
   }
   var hasPendingWork: Bool {
+    if isWriting { return true }
     if viewport.hasPendingWork || search.hasPendingWork { return true }
     guard case .selection(let drag) = mouseCapture,
       let deadline = drag.scrollDeadline, selectionScrollDirection(at: drag) != 0
@@ -88,6 +117,11 @@ final class DocumentFileViewer: ~Sendable {
 
   private let helpLines = [
     "FILE BYTES -> DISK PAGES -> CACHE SLOTS -> VIEWPORT",
+    "i / Esc         Insert at cursor or selection / return to browsing",
+    ":w / :wq        Write the buffer to disk / write and quit",
+    ":saveas path    Write under a new name; keep the original file",
+    ":q / :q!        Quit / discard unsaved edits and quit",
+    "Insert mode     Type/paste; arrows move; Backspace/Delete erase",
     "Up/Down / j k   Scroll one row of bytes",
     "PgUp/PgDn       Move one screen; Space pages down",
     "0 ... 9         Jump to 0% ... 90% of file bytes",
@@ -119,7 +153,8 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   init(_ path: String, source: consuming PagedFileDocument) {
-    self.source = consume source
+    self.source = try! PagedEditBuffer(source: consume source)
+    self.path = path
     if let slash = path.lastIndex(of: "/") {
       displayName = String(path[path.index(after: slash)...])
     } else {
@@ -128,6 +163,7 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    if let update = editingEvent(event, copyBuffer: &copyBuffer) { return update }
     switch event {
     case .key(let key, let modifiers):
       if !helpVisible && !preparationFailed,
@@ -137,7 +173,8 @@ final class DocumentFileViewer: ~Sendable {
         clearSelection()
         return update
       }
-      let copy = key == .control(.c) || (modifiers == .control && key == .character("c"))
+      let copy =
+        key == .control(.c) || (modifiers == .control && key == .character("c"))
         || (modifiers.isEmpty && key == .character("y"))
       if copy && !helpVisible && selectionRange != nil { return copySelection(to: &copyBuffer) }
       return handle(key, modifiers: modifiers)
@@ -167,40 +204,47 @@ final class DocumentFileViewer: ~Sendable {
       if search.isVisible {
         Row(gap: 1) {
           Text("/", style: ViewerPalette.accent)
-          InputBox(search.input, focused: search.isFocused, placeholder: "Find literal UTF-8", style: ViewerPalette.body)
+          InputBox(
+            search.input, focused: search.isFocused, placeholder: "Find literal UTF-8", style: ViewerPalette.body)
         }.frame(width: .fill, height: .fixed(1))
         Row { Text(search.statusMessage, style: ViewerPalette.muted) }
           .frame(width: .fill, height: .fixed(1))
+      }
+      if commandVisible {
+        Row(gap: 1) {
+          Text(":", style: ViewerPalette.accent)
+          InputBox(commandInput, focused: true, placeholder: "w · wq · q! · saveas path", style: ViewerPalette.body)
+        }.frame(width: .fill, height: .fixed(1))
       }
     }.frame(width: .fill, height: .fill, alignment: .topLeading)
   }
 
   private func documentSize(in size: TerminalSize) -> TerminalSize {
-    TerminalSize(columns: size.columns, rows: max(0, size.rows - (search.isVisible ? 2 : 0)))
+    TerminalSize(columns: size.columns, rows: max(0, size.rows - (search.isVisible ? 2 : 0) - (commandVisible ? 1 : 0)))
   }
 
   func handle(_ key: InputKey, modifiers: KeyModifiers) -> ScreenUpdate {
     let cancelledDrag = mouseCapture.isScrollbar
     mouseCapture = .idle
     selectionScrollPending = false
-    if key == .control(.q) || key == .control(.c) { return .quit }
-    if modifiers == .control && (key == .character("q") || key == .character("c")) { return .quit }
+    if key == .control(.q) || key == .control(.c) { return requestQuit() }
+    if modifiers == .control && (key == .character("q") || key == .character("c")) { return requestQuit() }
     if helpVisible {
       if key == .escape || key == .character("?") {
         helpVisible = false
         return .redraw
       }
-      return key == .character("q") ? .quit : .none
+      return key == .character("q") ? requestQuit() : .none
     }
     if key == .escape {
       if textSelection != nil {
         clearSelection()
         return .redraw
       }
-      return .quit
+      return requestQuit()
     }
     if preparationFailed && key != .character("q") && key != .character("?")
-      && key != .character("i") && key != .character("I")
+      && key != .character("i") && key != .character("I") && key != .character(":")
     {
       return .none
     }
@@ -216,9 +260,11 @@ final class DocumentFileViewer: ~Sendable {
     }
     guard modifiers.isEmpty else { return cancelledDrag ? .redraw : .none }
     switch key {
-    case .character("q"): return .quit
+    case .character("q"): return requestQuit()
+    case .character(":"): return openCommand()
+    case .character("i"): return beginInserting()
     case .character("?"): helpVisible = true
-    case .character("i"), .character("I"): showInspector.toggle()
+    case .character("I"): showInspector.toggle()
     case .character("c"), .character("C"):
       source.discardCachedPages()
       for slot in 0..<source.configuration.cachePages { cachedPages[slot] = -1 }
@@ -356,6 +402,7 @@ final class DocumentFileViewer: ~Sendable {
   /// At most three rows per 50 ms tick and one viewport per frame. Returning
   /// false from hasPendingWork until due lets the runner sleep between ticks.
   func performPendingWork(at now: ContinuousClock.Instant = ContinuousClock().now) -> ScreenUpdate {
+    if isWriting { return advanceWrite(at: now) }
     if viewport.hasPendingWork { return advanceViewport() }
     if search.hasPendingWork {
       if let match = search.advance(from: &source) {
@@ -383,6 +430,7 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   func mouse(_ event: MouseEvent) -> ScreenUpdate {
+    guard viewportRevision == source.editRevision else { return .none }
     guard !helpVisible, !preparationFailed, let size = preparedSize,
       size.columns >= 16, size.rows >= 7
     else {
@@ -413,9 +461,11 @@ final class DocumentFileViewer: ~Sendable {
       let wasDraggingScrollbar = mouseCapture.isScrollbar
       clearSelection()
       if let range = selectionBytes(column: event.column, row: event.row, layout: layout, clamp: false) {
+        cursorByteOffset = range.lowerBound
+        cursorActive = true
         textSelection = .init(byteRange: range)
         mouseCapture = .selection(.init(column: event.column, row: event.row))
-        return hadSelection || wasDraggingScrollbar ? .redraw : .none
+        return hadSelection || wasDraggingScrollbar || isInserting ? .redraw : .none
       }
       // A press outside the byte pane clears its highlight without capturing
       // clicks in the gutter, inspector, header, or footer.
@@ -522,6 +572,7 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   func prepare(in size: TerminalSize) {
+    if isWriting || savedButUnavailable { return }
     guard !preparationFailed else { return }
     if preparedSize != size {
       mouseCapture = .idle
@@ -606,6 +657,16 @@ final class DocumentFileViewer: ~Sendable {
     previousRange = request.previousRange
     firstByte = viewport.visibleRange.lowerBound
     visibleBytes = viewport.visibleRange.count
+    viewportRevision = source.editRevision
+    if let pendingCursor {
+      let row = min(max(0, viewport.size.rows - 1), pendingCursor.row)
+      if let range = viewport.byteRange(column: pendingCursor.column, row: row, clamp: true) {
+        cursorByteOffset = range.lowerBound
+      } else {
+        cursorByteOffset = min(firstByte, source.byteCount)
+      }
+      self.pendingCursor = nil
+    }
     preparationFailed = false
     notice = ""
     viewportRequest = nil
@@ -642,13 +703,18 @@ final class DocumentFileViewer: ~Sendable {
     let layout = DocumentViewerLayout(
       size: size, byteCount: source.byteCount, showInspector: showInspector)
     paintHeader(layout: layout, frame: &frame)
-    if layout.rich { frame.border(layout.document, title: " FILE BYTES ", style: ViewerPalette.border) }
+    if layout.rich {
+      frame.border(
+        layout.document, title: source.isDirty ? " BUFFER BYTES " : " FILE BYTES ", style: ViewerPalette.border)
+    }
     viewport.paint(
       in: layout.text, frame: &frame, pageBytes: source.configuration.pageBytes,
       previousRange: previousRange, style: ViewerPalette.body,
       revealedStyle: ViewerPalette.revealed, boundaryStyle: ViewerPalette.accent,
+      showPageBoundaries: !source.isDirty,
       selection: selectionRange, selectionStyle: ViewerPalette.selection,
       match: search.match, matchStyle: ViewerPalette.match)
+    paintCursor(layout: layout, frame: &frame)
     paintRows(layout: layout, frame: &frame)
     paintScrollbar(layout: layout, frame: &frame)
     if let inspector = layout.inspector { paintInspector(in: inspector, frame: &frame) }
@@ -660,7 +726,9 @@ final class DocumentFileViewer: ~Sendable {
     frame.fill(Rect(width: frame.area.width, height: 1), with: Cell(style: ViewerPalette.header))
     label(" SLATE / FILE READER", x: 0, y: 0, width: frame.area.width, style: ViewerPalette.header, frame: &frame)
     if frame.area.width >= 48 {
-      label("READ ONLY", x: frame.area.width - 11, y: 0, width: 10, style: ViewerPalette.header, frame: &frame)
+      label(
+        isInserting ? "INSERT" : source.isDirty ? "MODIFIED" : "BROWSE",
+        x: frame.area.width - 11, y: 0, width: 10, style: ViewerPalette.header, frame: &frame)
     }
     label(displayName, x: 1, y: 1, width: frame.area.width - 2, style: ViewerPalette.title, frame: &frame)
     guard layout.rich else { return }
@@ -709,7 +777,7 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   private func paintInspector(in area: Rect, frame: inout Frame) {
-    frame.border(area, title: " PAGE CACHE ", style: ViewerPalette.border)
+    frame.border(area, title: source.isDirty ? " BASE FILE CACHE " : " PAGE CACHE ", style: ViewerPalette.border)
     let x = area.x + 2
     label("Byte cache KiB", x: x, y: area.y + 1, width: 17, style: ViewerPalette.muted, frame: &frame)
     number(
@@ -748,8 +816,16 @@ final class DocumentFileViewer: ~Sendable {
   private func paintFooter(layout: DocumentViewerLayout, height: Int, frame: inout Frame) {
     let y = height - (layout.rich ? 4 : 3)
     let width = frame.area.width
-    if preparationFailed {
-      label(notice, x: 1, y: y, width: width - 2, style: ViewerPalette.error, frame: &frame)
+    if isWriting {
+      label(
+        savedIndexer != nil ? "INDEXING SAVED FILE" : "WRITING", x: 1, y: y, width: 21, style: ViewerPalette.accent,
+        frame: &frame)
+      number(writtenBytes, x: 23, y: y, width: 13, frame: &frame)
+      label("bytes", x: 37, y: y, width: 6, style: ViewerPalette.muted, frame: &frame)
+    } else if !editNotice.isEmpty || preparationFailed {
+      label(
+        editNotice.isEmpty ? notice : editNotice, x: 1, y: y, width: width - 2, style: ViewerPalette.error,
+        frame: &frame)
     } else {
       label("BYTE", x: 1, y: y, width: 4, style: ViewerPalette.muted, frame: &frame)
       number(viewport.visibleRange.lowerBound, x: 6, y: y, width: 13, frame: &frame)
@@ -794,7 +870,9 @@ final class DocumentFileViewer: ~Sendable {
     label(
       selectionRange != nil
         ? "y / Ctrl-C copy  Esc clear selection"
-        : layout.rich ? "/ search  j/k row  PgUp/Dn screen  0-9 jump  C clear" : "/ search  j/k row  0-9 jump",
+        : isInserting
+          ? "INSERT  Esc browse  :w save  arrows move"
+          : layout.rich ? "i edit  :w save  / search  j/k row  0-9 jump" : "i edit  :w save  / search",
       x: 1, y: helpY, width: width - 17, style: ViewerPalette.muted, frame: &frame)
     label("? help  Q quit", x: max(1, width - 15), y: helpY, width: 14, style: ViewerPalette.muted, frame: &frame)
     if layout.rich {
@@ -807,6 +885,14 @@ final class DocumentFileViewer: ~Sendable {
           "file bytes; gutter and cache excluded",
           x: 26, y: helpY - 1, width: width - 28,
           style: ViewerPalette.muted, frame: &frame)
+      } else if source.isDirty {
+        label("EDITS", x: 1, y: helpY - 1, width: 6, style: ViewerPalette.accent, frame: &frame)
+        number(source.addedByteCount, x: 7, y: helpY - 1, width: 8, frame: &frame)
+        label("/ 1 MiB", x: 16, y: helpY - 1, width: 8, style: ViewerPalette.muted, frame: &frame)
+        number(source.pieceCount, x: 25, y: helpY - 1, width: 5, frame: &frame)
+        label(
+          "/ 4096 pieces; :w releases edits", x: 31, y: helpY - 1, width: width - 33, style: ViewerPalette.muted,
+          frame: &frame)
       } else {
         label(
           "> new bytes   underline: page start   + loaded   # resident   . uncached",
@@ -826,7 +912,8 @@ final class DocumentFileViewer: ~Sendable {
     for row in 0..<min(helpLines.count, height - 2) {
       label(
         helpLines[row], x: area.x + 2, y: area.y + 1 + row, width: area.width - 4,
-        style: row == 0 || helpLines[row] == "WATCH THE READER" ? ViewerPalette.title : ViewerPalette.muted, frame: &frame)
+        style: row == 0 || helpLines[row] == "WATCH THE READER" ? ViewerPalette.title : ViewerPalette.muted,
+        frame: &frame)
     }
   }
 
@@ -867,6 +954,468 @@ final class DocumentFileViewer: ~Sendable {
       if remainder == 0 { break }
     }
     if remainder > 0 { frame[x, y] = Cell(Glyph("#")!, style: style) }
+  }
+}
+
+extension DocumentFileViewer {
+  /// Commands allocate only on explicit execution (path parsing/save setup).
+  /// Typing uses the fixed piece/addition stores. A save reads at most one
+  /// cached page / 64 KiB per turn, with no document-sized snapshot or task.
+  private func editingEvent(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate? {
+    if isWriting {
+      switch event {
+      case .key(.escape, _) where writer != nil:
+        writer = nil
+        quitAfterWrite = false
+        editNotice = "Write cancelled. Unsaved edits are retained."
+        reloadRequested = true
+        return .redraw
+      default: return ScreenUpdate.none
+      }
+    }
+    if commandVisible {
+      switch event {
+      case .key(.escape, _), .key(.control(.c), _):
+        commandVisible = false
+        return .redraw
+      case .key(.enter, _):
+        commandVisible = false
+        return executeCommand()
+      case .key(let key, let modifiers):
+        switch commandInput.handle(key, modifiers: modifiers, copyBuffer: &copyBuffer) {
+        case .rejected: editNotice = "Command limit: 4,096 UTF-8 bytes."
+        default: break
+        }
+      case .paste(let text):
+        do { try commandInput.insert(text) } catch {
+          editNotice = "Command is too long or contains unsupported controls."
+        }
+      case .pasteRejected: editNotice = "Paste rejected: invalid UTF-8 or incomplete paste."
+      case .mouse: return ScreenUpdate.none
+      }
+      return .redraw
+    }
+    guard isInserting else { return nil }
+    switch event {
+    case .key(.escape, _):
+      isInserting = false
+      clearSelection()
+      editNotice = "Buffer only. :w writes; :saveas path writes under a new name."
+      return .redraw
+    case .key(.control(.q), _), .key(.control(.c), _): return requestQuit()
+    case .key(let key, let modifiers):
+      if modifiers == .control && (key == .character("q") || key == .character("c")) { return requestQuit() }
+      guard modifiers.isEmpty || modifiers == .shift else { return ScreenUpdate.none }
+      switch key {
+      case .character(let scalar):
+        var encoded = InlineArray<4, UInt8>(repeating: 0)
+        var count = 0
+        UTF8.encode(scalar) {
+          encoded[count] = $0
+          count += 1
+        }
+        return replaceSelection(with: unsafe UTF8Span(unchecked: encoded.span.extracting(first: count)))
+      case .enter: return replaceSelection(with: "\n".utf8Span)
+      case .tab: return replaceSelection(with: "\t".utf8Span)
+      case .backspace, .delete:
+        if selectionRange != nil { return replaceSelection(with: "".utf8Span) }
+        let other = adjacentOffset(forward: key == .delete)
+        return replaceBytes(min(other, cursorByteOffset)..<max(other, cursorByteOffset), with: "".utf8Span)
+      case .left, .right:
+        cursorByteOffset = adjacentOffset(forward: key == .right)
+        clearSelection()
+        revealCursor()
+      case .home:
+        cursorByteOffset = 0
+        clearSelection()
+        revealCursor()
+      case .end:
+        cursorByteOffset = source.byteCount
+        clearSelection()
+        revealCursor()
+      case .up, .down: moveCursor(rows: key == .up ? -1 : 1)
+      case .pageUp, .pageDown:
+        moveCursor(rows: key == .pageUp ? -max(1, viewport.size.rows) : max(1, viewport.size.rows))
+      default: return ScreenUpdate.none
+      }
+      return .redraw
+    case .paste(let text): return replaceSelection(with: text)
+    case .pasteRejected:
+      editNotice = "Paste rejected: invalid UTF-8 or incomplete paste."
+      return .redraw
+    case .mouse: return nil
+    }
+  }
+
+  private func requestQuit() -> ScreenUpdate {
+    if savedButUnavailable { return .quit }
+    guard !source.isDirty else {
+      editNotice = "Unsaved edits. Use :w to write, :wq to write and quit, or :q! to discard."
+      return .redraw
+    }
+    return .quit
+  }
+
+  private func openCommand() -> ScreenUpdate {
+    search.close()
+    clearSelection()
+    commandInput.selectAll()
+    try! commandInput.insert("".utf8Span)
+    commandVisible = true
+    editNotice = "w writes; wq writes and quits; saveas path changes name; q! discards."
+    return .redraw
+  }
+
+  private func beginInserting() -> ScreenUpdate {
+    guard !savedButUnavailable, !preparationFailed else { return .none }
+    if let selectionRange {
+      cursorByteOffset = selectionRange.lowerBound
+    } else if firstByte != viewport.visibleRange.lowerBound || !cursorActive
+      || !(viewport.visibleRange.lowerBound...viewport.visibleRange.upperBound).contains(cursorByteOffset)
+    {
+      // A jump and 'i' can arrive in the same input batch, before rendering.
+      // Honor the requested byte, aligning only complete UTF-8 scalars; invalid
+      // original bytes remain individually editable in this byte viewer.
+      cursorByteOffset = insertionBoundary(at: min(firstByte, source.byteCount))
+    }
+    cursorActive = true
+    isInserting = true
+    search.close()
+    editNotice = "INSERT: edits stay in memory until :w. Escape returns to browsing."
+    return .redraw
+  }
+
+  private func insertionBoundary(at offset: Int) -> Int {
+    guard offset > 0 && offset < source.byteCount else { return offset }
+    do throws(FileDocumentError) {
+      var start = offset
+      for _ in 0..<3 {
+        if try source.byte(at: start) & 0xc0 != 0x80 { break }
+        start -= 1
+        if start == 0 { break }
+      }
+      var decoder = IncrementalUTF8Decoder()
+      for position in start..<min(source.byteCount, start + 4) {
+        switch decoder.append(try source.byte(at: position)) {
+        case .scalar: return position >= offset ? start : offset
+        case .invalid: return offset
+        case .pending: continue
+        }
+      }
+    } catch { editNotice = Self.message(for: error) }
+    return offset
+  }
+
+  private func replaceSelection(with text: UTF8Span) -> ScreenUpdate {
+    replaceBytes(selectionRange ?? cursorByteOffset..<cursorByteOffset, with: text)
+  }
+
+  private func replaceBytes(_ range: Range<Int>, with text: UTF8Span) -> ScreenUpdate {
+    guard !savedButUnavailable, !preparationFailed else { return .none }
+    guard !range.isEmpty || !text.isEmpty else { return .none }
+    do {
+      try source.replace(range, with: text)
+    } catch {
+      editNotice = error.message
+      return .redraw
+    }
+    cursorByteOffset = range.lowerBound + text.count
+    pendingCursor = nil
+    clearSelection()
+    search.close()
+    viewport.cancelPreparation()
+    viewportRequest = nil
+    reloadRequested = true
+    editNotice = "Modified buffer. Escape, then :w to write."
+    revealCursor()
+    return .redraw
+  }
+
+  /// Published cell ranges preserve whole graphemes. Between redraws a bounded
+  /// four-byte fallback moves by UTF-8 scalars (malformed bytes move singly).
+  /// No event scans an unbounded line or materializes the document.
+  private func adjacentOffset(forward: Bool) -> Int {
+    if forward && cursorByteOffset == source.byteCount { return cursorByteOffset }
+    if !forward && cursorByteOffset == 0 { return 0 }
+    if viewportRevision == source.editRevision {
+      for row in 0..<viewport.size.rows {
+        for column in 0..<viewport.size.columns {
+          guard let range = viewport.byteRange(column: column, row: row, clamp: false) else { continue }
+          if forward && range.contains(cursorByteOffset) { return range.upperBound }
+          if !forward && range.contains(cursorByteOffset - 1) { return range.lowerBound }
+        }
+      }
+    }
+    let start = forward ? cursorByteOffset : max(0, cursorByteOffset - 4)
+    let end = forward ? min(source.byteCount, cursorByteOffset + 4) : cursorByteOffset
+    var bytes = InlineArray<4, UInt8>(repeating: 0)
+    var count = 0
+    do throws(FileDocumentError) {
+      try source.verifyUnchanged()
+      while start + count < end {
+        var storage = bytes.mutableSpan
+        let read = try source.readBytes(from: start + count, into: storage._mutatingExtracting(count..<end - start))
+        guard read > 0 else { throw .fileChanged }
+        count += read
+      }
+    } catch {
+      editNotice = Self.message(for: error)
+      return cursorByteOffset
+    }
+    if forward {
+      var decoder = IncrementalUTF8Decoder()
+      for index in 0..<count {
+        switch decoder.append(bytes[index]) {
+        case .scalar: return cursorByteOffset + index + 1
+        case .invalid: return cursorByteOffset + 1
+        case .pending: continue
+        }
+      }
+      return cursorByteOffset + 1
+    }
+    for candidate in 0..<count {
+      var decoder = IncrementalUTF8Decoder()
+      var validEnd = false
+      for index in candidate..<count {
+        switch decoder.append(bytes[index]) {
+        case .scalar: validEnd = index == count - 1
+        case .pending: validEnd = false
+        case .invalid: validEnd = false
+        }
+        if decoder.isComplete { break }
+      }
+      if validEnd { return start + candidate }
+    }
+    return cursorByteOffset - 1
+  }
+
+  private func moveCursor(rows delta: Int) {
+    clearSelection()
+    guard pendingCursor == nil else { return }
+    if delta > 0 && cursorByteOffset == source.byteCount { return }
+    if delta < 0 && cursorByteOffset == 0 { return }
+    if viewportRevision == source.editRevision {
+      for row in 0..<viewport.size.rows {
+        for column in 0..<viewport.size.columns {
+          guard let range = viewport.byteRange(column: column, row: row, clamp: false), range.contains(cursorByteOffset)
+          else { continue }
+          let target = row + delta
+          if (0..<viewport.size.rows).contains(target),
+            let next = viewport.byteRange(column: column, row: target, clamp: true)
+          {
+            cursorByteOffset = next.lowerBound
+            return
+          }
+          if delta < 0 && firstByte == 0 { return }
+          if delta > 0 && viewport.visibleRange.upperBound == source.byteCount {
+            cursorByteOffset = source.byteCount
+            return
+          }
+          // A single pending cell survives cooperative reverse-row replay.
+          // Page keys keep the cursor's row; edge arrows keep it at the edge.
+          pendingCursor = (column, row)
+          scroll(rows: delta)
+          return
+        }
+      }
+    }
+    scroll(rows: delta)
+    cursorByteOffset = firstByte
+    revealCursor()
+  }
+
+  private func revealCursor() {
+    pendingCursor = nil
+    if cursorByteOffset < firstByte || cursorByteOffset >= viewport.visibleRange.upperBound {
+      firstByte = cursorByteOffset
+      backwardRows = 0
+    }
+  }
+
+  private func executeCommand() -> ScreenUpdate {
+    let text = commandInput.snapshot()
+    let split = text.firstIndex(where: { $0 == " " || $0 == "\t" }) ?? text.endIndex
+    let name = text[..<split]
+    let argument = text[split...].drop(while: { $0 == " " || $0 == "\t" })
+    switch name {
+    case "q" where argument.isEmpty, "quit" where argument.isEmpty: return requestQuit()
+    case "q!" where argument.isEmpty, "quit!" where argument.isEmpty: return .quit
+    case "w", "write", "saveas", "wq", "x":
+      if name == "saveas" && argument.isEmpty {
+        editNotice = "Usage: :saveas path (writes a new file and keeps the original)."
+        return .redraw
+      }
+      return startWrite(to: argument.isEmpty ? path : String(argument), quit: name == "wq" || name == "x")
+    case "": editNotice = ""
+    default: editNotice = "Unknown command. Use :w, :wq, :q, :q!, or :saveas path."
+    }
+    return .redraw
+  }
+
+  private func startWrite(to destination: String, quit: Bool) -> ScreenUpdate {
+    guard !savedButUnavailable else {
+      editNotice = "File was written but could not be reopened. Reopen it before writing again."
+      return .redraw
+    }
+    if !source.isDirty && destination == path {
+      editNotice = "No changes to write."
+      return quit ? .quit : .redraw
+    }
+    do throws(FileDocumentError) { try source.verifyUnchanged() } catch {
+      editNotice = Self.message(for: error)
+      return .redraw
+    }
+    do {
+      writer = try DocumentFileWrite(
+        destination, expectedIdentity: destination == path ? source.snapshotIdentity : nil,
+        expectedByteCount: source.byteCount)
+    } catch {
+      editNotice = error.message
+      return .redraw
+    }
+    writePath = destination
+    committedIdentity = nil
+    writtenBytes = 0
+    quitAfterWrite = quit
+    lastWriteRedraw = nil
+    viewport.cancelPreparation()
+    viewportRequest = nil
+    search.close()
+    clearSelection()
+    editNotice = "Writing... Escape cancels before replacement."
+    return .redraw
+  }
+
+  private func advanceWrite(at now: ContinuousClock.Instant) -> ScreenUpdate {
+    if savedIndexer != nil { return advanceSavedIndex(at: now) }
+    precondition(writer != nil)
+    let count: Int
+    do throws(FileDocumentError) {
+      try source.verifyUnchanged()
+      count = try source.readBytes(from: writtenBytes, into: writeScratch.mutableSpan)
+      guard count > 0 || writtenBytes == source.byteCount else { throw .fileChanged }
+    } catch {
+      writer = nil
+      editNotice = Self.message(for: error)
+      return .redraw
+    }
+    do throws(DocumentFileWriteError) {
+      if count > 0 {
+        try writer?.append(writeScratch.span.extracting(first: count))
+        writtenBytes += count
+        return writeProgress(at: now)
+      }
+      committedIdentity = try writer?.commit()
+    } catch {
+      writer = nil
+      switch error {
+      case .committedButCannotInspect, .committedButCleanupFailed: savedButUnavailable = true
+      default: break
+      }
+      editNotice = error.message
+      return .redraw
+    }
+    writer = nil
+    path = writePath
+    displayName = String(path.split(separator: "/").last ?? Substring(path))
+    if quitAfterWrite { return .quit }
+    do {
+      savedIndexer = try PagedFileDocument.Indexer(path, configuration: source.configuration, content: .bytes)
+    } catch {
+      savedButUnavailable = true
+      editNotice = "File written, but reopening failed. Reopen the saved file before continuing."
+    }
+    return .redraw
+  }
+
+  private func advanceSavedIndex(at now: ContinuousClock.Instant) -> ScreenUpdate {
+    do { try savedIndexer?.advance() } catch {
+      savedIndexer = nil
+      savedButUnavailable = true
+      editNotice = "File written, but indexing failed. Reopen the saved file before continuing."
+      return .redraw
+    }
+    guard savedIndexer?.isComplete == true else { return writeProgress(at: now) }
+    guard let indexer = savedIndexer.take() else { preconditionFailure("Completed saved index is missing") }
+    let saved = indexer.finish()
+    guard saved.snapshotIdentity == committedIdentity else {
+      savedButUnavailable = true
+      editNotice = "File was written, then changed externally. Reopen it before continuing."
+      return .redraw
+    }
+    source.replaceBase(consume saved)
+    reloadRequested = true
+    preparationFailed = false
+    cursorByteOffset = min(cursorByteOffset, source.byteCount)
+    firstByte = min(firstByte, source.byteCount)
+    for slot in 0..<cachedPages.count {
+      cachedPages[slot] = -1
+      freshSlots[slot] = false
+    }
+    editNotice = "Written. Buffer matches the saved file."
+    return .redraw
+  }
+
+  private func writeProgress(at now: ContinuousClock.Instant) -> ScreenUpdate {
+    if let lastWriteRedraw, lastWriteRedraw.duration(to: now) < .milliseconds(33) { return .none }
+    lastWriteRedraw = now
+    return .redraw
+  }
+
+  private func paintCursor(layout: DocumentViewerLayout, frame: inout Frame) {
+    guard isInserting, viewportRevision == source.editRevision else { return }
+    for row in 0..<viewport.size.rows {
+      for column in 0..<viewport.size.columns {
+        let range = viewport.byteRange(column: column, row: row, clamp: false)
+        let previousEnd: Int?
+        if column > 0 {
+          previousEnd = viewport.byteRange(column: column - 1, row: row, clamp: false)?.upperBound
+        } else if row > 0 {
+          previousEnd = viewport.byteRange(column: viewport.size.columns - 1, row: row - 1, clamp: false)?.upperBound
+        } else {
+          previousEnd = nil
+        }
+        let eof =
+          cursorByteOffset == source.byteCount && range == nil
+          && (cursorByteOffset == 0 && row == 0 && column == 0 || previousEnd == cursorByteOffset)
+        if range?.contains(cursorByteOffset) == true || eof {
+          let x = layout.text.x + column
+          let y = layout.text.y + row
+          guard x < frame.area.right, y < frame.area.bottom else { return }
+          var cell = frame[x, y]
+          cell.style.inverse.toggle()
+          cell.style.underlined = true
+          frame[x, y] = cell
+          return
+        }
+      }
+    }
+    // A completely full viewport has no blank EOF cell. Mark the last glyph
+    // until insertion/resize creates space, rather than hiding the caret.
+    if cursorByteOffset == source.byteCount && viewport.visibleRange.upperBound == source.byteCount,
+      viewport.size.columns > 0, viewport.size.rows > 0
+    {
+      let x = layout.text.x + viewport.size.columns - 1
+      let y = layout.text.y + viewport.size.rows - 1
+      guard x < frame.area.right, y < frame.area.bottom else { return }
+      var cell = frame[x, y]
+      cell.style.inverse.toggle()
+      cell.style.underlined = true
+      frame[x, y] = cell
+    }
+  }
+}
+
+extension PagedEditError {
+  var message: String {
+    switch self {
+    case .addedCapacityExceeded: return "Edit store is full (1 MiB). Write with :w before adding more text."
+    case .pieceCapacityExceeded: return "Edit table is full (4,096 pieces). Write with :w before making more edits."
+    case .fileCapacityExceeded: return "Edit exceeds the configured file size limit. Buffer is unchanged."
+    case .revisionCapacityExceeded: return "Edit revision limit reached. Write with :w before editing again."
+    case .invalidRange: return "Edit position is invalid. Buffer is unchanged."
+    case .source(let error): return DocumentFileViewer.message(for: error)
+    }
   }
 }
 
