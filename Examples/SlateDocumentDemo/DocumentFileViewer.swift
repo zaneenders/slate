@@ -22,7 +22,6 @@ final class DocumentFileViewer: ~Sendable {
   private var freshSlots = InlineArray<64, Bool>(repeating: false)
   private var previousRange = 0..<0
   private var visibleBytes = 0
-  private var rowBytes = 1
   private var reloadRequested = true
   private var showInspector = true
   private var preparationFailed = false
@@ -212,7 +211,7 @@ final class DocumentFileViewer: ~Sendable {
     }
     if modifiers == .control && key == .end {
       backwardRows = 0
-      firstByte = source.isASCII ? maximumFirstByte : source.byteCount
+      firstByte = source.byteCount
       return .redraw
     }
     guard modifiers.isEmpty else { return cancelledDrag ? .redraw : .none }
@@ -232,7 +231,7 @@ final class DocumentFileViewer: ~Sendable {
       firstByte = 0
       backwardRows = 0
     case .end, .character("G"):
-      firstByte = source.isASCII ? maximumFirstByte : source.byteCount
+      firstByte = source.byteCount
       backwardRows = 0
     case .character("["):
       backwardRows = 0
@@ -266,9 +265,7 @@ final class DocumentFileViewer: ~Sendable {
       backwardRows = max(0, backwardRows - delta)
       return
     }
-    if source.isASCII {
-      firstByte = min(maximumFirstByte, max(0, firstByte + delta * rowBytes))
-    } else if delta > 0 && viewport.visibleRange.upperBound == source.byteCount {
+    if delta > 0 && viewport.visibleRange.upperBound == source.byteCount {
       return
     } else if let offset = viewport.offset(scrollingRows: delta, from: firstByte) {
       firstByte = min(source.byteCount, offset)
@@ -505,7 +502,7 @@ final class DocumentFileViewer: ~Sendable {
 
   private func seekScrollbar(_ scrollbar: DocumentScrollbar, row: Int, grab: Int) {
     let target = scrollbar.byteOffset(pointerRow: row, grabOffsetRows: grab)
-    firstByte = !source.isASCII && target == scrollbar.maximumFirstByte ? source.byteCount : target
+    firstByte = target == scrollbar.maximumFirstByte ? source.byteCount : target
     backwardRows = 0
   }
 
@@ -533,9 +530,8 @@ final class DocumentFileViewer: ~Sendable {
     preparedSize = size
     let layout = DocumentViewerLayout(size: size, byteCount: source.byteCount, showInspector: showInspector)
     let requestedSize = TerminalSize(columns: layout.text.width, rows: layout.text.height)
-    if source.isASCII || viewport.size != requestedSize { visibleBytes = requestedSize.columns * requestedSize.rows }
-    rowBytes = max(1, requestedSize.columns)
-    firstByte = min(firstByte, source.isASCII ? maximumFirstByte : source.byteCount)
+    if viewport.size != requestedSize { visibleBytes = requestedSize.columns * requestedSize.rows }
+    firstByte = min(firstByte, source.byteCount)
     let preserveSelection = selectionScrollPending && viewport.size == requestedSize
     selectionScrollPending = false
     if (viewport.size != requestedSize || viewport.visibleRange.lowerBound != firstByte || backwardRows > 0)
@@ -609,7 +605,7 @@ final class DocumentFileViewer: ~Sendable {
     guard let request = viewportRequest else { preconditionFailure("Completed viewport has no request") }
     previousRange = request.previousRange
     firstByte = viewport.visibleRange.lowerBound
-    if !source.isASCII { visibleBytes = viewport.visibleRange.count }
+    visibleBytes = viewport.visibleRange.count
     preparationFailed = false
     notice = ""
     viewportRequest = nil

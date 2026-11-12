@@ -293,9 +293,9 @@ import Testing
   let viewer = try DocumentFileViewer(
     fixture.path,
     configuration: .init(pageBytes: 4, cachePages: 1, maximumPages: 8))
-  viewer.prepare(in: TerminalSize(columns: 40, rows: 7))
+  try prepareViewer(viewer, in: TerminalSize(columns: 40, rows: 7))
   #expect(viewer.handle(.end, modifiers: []) == .redraw)
-  viewer.prepare(in: TerminalSize(columns: 40, rows: 7))
+  try prepareViewer(viewer, in: TerminalSize(columns: 40, rows: 7))
   #expect(viewer.visibleRange.upperBound == 18)
   #expect(viewer.handle(.character("0"), modifiers: []) == .redraw && viewer.firstByte == 0)
   #expect(viewer.handle(.character("9"), modifiers: []) == .redraw && viewer.firstByte == 15)
@@ -303,13 +303,13 @@ import Testing
   let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: fixture.path))
   try handle.truncate(atOffset: 0)
   try handle.close()
-  viewer.prepare(in: TerminalSize(columns: 40, rows: 7))
+  try prepareViewer(viewer, in: TerminalSize(columns: 40, rows: 7))
   #expect(viewer.notice.contains("File changed"))
   let range = viewer.visibleRange
   let stats = viewer.statistics
   #expect(viewer.handle(.down, modifiers: []) == .none)
   #expect(viewer.handle(.character("C"), modifiers: []) == .none)
-  viewer.prepare(in: TerminalSize(columns: 40, rows: 7))
+  try prepareViewer(viewer, in: TerminalSize(columns: 40, rows: 7))
   #expect(viewer.visibleRange == range && viewer.statistics == stats)
   #expect(viewer.handle(.character("?"), modifiers: []) == .redraw)
   #expect(viewer.handle(.escape, modifiers: []) == .redraw)

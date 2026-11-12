@@ -36,15 +36,15 @@ import Testing
   let viewer = try DocumentFileViewer(fixture.path, configuration: .init(pageBytes: 1_024, cachePages: 2))
   let size = TerminalSize(columns: 80, rows: 24)
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.count, showInspector: true)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   let x = try #require(layout.scrollbarColumn)
   let beforeMouse = viewer.statistics
   #expect(viewer.mouse(.init(action: .press, button: .left, column: x, row: layout.text.y)) == .redraw)
   #expect(viewer.firstByte == 0)
   #expect(viewer.mouse(.init(action: .move, button: .left, column: 0, row: 65_534)) == .redraw)
-  #expect(viewer.firstByte == fixture.count - layout.text.width * layout.text.height)
+  #expect(viewer.firstByte == fixture.count)  // EOF is resolved during viewport preparation.
   #expect(viewer.statistics == beforeMouse)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   #expect(viewer.visibleRange.upperBound == fixture.count && viewer.lastPageLoads > 0)
   var surface = try Surface(maximumSize: size)
   try surface.render(size: size) { frame in
@@ -57,7 +57,7 @@ import Testing
   #expect(viewer.mouse(.init(action: .release, button: .left, column: 0, row: 0)) == .redraw)
   #expect(viewer.mouse(.init(action: .move, button: .left, column: x, row: layout.text.bottom - 1)) == .none)
   #expect(viewer.firstByte == 0)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   try surface.render(size: size) { frame in
     viewer.paint(in: &frame)
     #expect(frame[x, layout.text.y].style.foreground == .indexed(81))
@@ -69,9 +69,9 @@ import Testing
   let viewer = try DocumentFileViewer(fixture.path)
   let size = TerminalSize(columns: 80, rows: 24)
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.count, showInspector: true)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   _ = viewer.handle(.character("3"), modifiers: [])
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   let offset = viewer.firstByte
   let bar = try #require(
     DocumentScrollbar(
@@ -85,7 +85,7 @@ import Testing
   _ = viewer.mouse(.init(action: .release, button: .left, column: 0, row: row))
   #expect(viewer.firstByte == offset)
   _ = viewer.mouse(.init(action: .press, button: .left, column: bar.column, row: layout.text.bottom - 1))
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   #expect(viewer.visibleRange.upperBound == fixture.count)
   _ = viewer.mouse(.init(action: .release, button: .left, column: bar.column, row: layout.text.bottom - 1))
   _ = viewer.mouse(.init(action: .press, button: .left, column: bar.column, row: layout.text.y))
@@ -99,7 +99,7 @@ import Testing
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.count, showInspector: true)
   let x = try #require(layout.scrollbarColumn)
   #expect(viewer.mouse(.init(action: .press, button: .left, column: x, row: 10)) == .none)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   for event in [
     MouseEvent(action: .press, button: .right, column: x, row: layout.text.y),
     .init(action: .press, button: .left, column: x - 1, row: layout.text.y),
@@ -113,7 +113,7 @@ import Testing
   #expect(viewer.mouse(.init(action: .move, button: .left, column: x, row: layout.text.bottom - 1)) == .none)
   #expect(viewer.firstByte == 0)
   _ = viewer.mouse(.init(action: .press, button: .left, column: x, row: layout.text.y))
-  viewer.prepare(in: .init(columns: 112, rows: 30))
+  try prepareViewer(viewer, in: .init(columns: 112, rows: 30))
   #expect(viewer.mouse(.init(action: .move, button: .left, column: x, row: 29)) == .none)
   #expect(viewer.firstByte == 0)
   _ = viewer.handle(.character("?"), modifiers: [])
@@ -124,21 +124,21 @@ import Testing
 @Test func documentScrollbarHandlesNoTrackFullThumbAndWheelBoundaries() throws {
   let small = try ScrollFixture(count: 32)
   let smallViewer = try DocumentFileViewer(small.path)
-  smallViewer.prepare(in: .init(columns: 80, rows: 24))
+  try prepareViewer(smallViewer, in: .init(columns: 80, rows: 24))
   #expect(smallViewer.mouse(.init(action: .press, button: .left, column: 78, row: 10)) == .none)
   let fixture = try ScrollFixture(count: 16_384)
   let viewer = try DocumentFileViewer(fixture.path)
   let size = TerminalSize(columns: 80, rows: 24)
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.count, showInspector: true)
-  viewer.prepare(in: size)
+  try prepareViewer(viewer, in: size)
   #expect(viewer.mouse(.init(action: .scrollUp, column: 10, row: layout.text.y)) == .none)
   #expect(viewer.mouse(.init(action: .scrollDown, column: 10, row: layout.text.y)) == .redraw)
   #expect(viewer.firstByte == layout.text.width * 3)
   #expect(viewer.mouse(.init(action: .scrollUp, column: 10, row: layout.text.y)) == .redraw)
   #expect(viewer.firstByte == 0)
-  viewer.prepare(in: .init(columns: 31, rows: 7))
+  try prepareViewer(viewer, in: .init(columns: 31, rows: 7))
   #expect(viewer.mouse(.init(action: .press, button: .left, column: 30, row: 3)) == .none)
-  viewer.prepare(in: .init(columns: 40, rows: 6))  // A one-row track cannot move a thumb.
+  try prepareViewer(viewer, in: .init(columns: 40, rows: 6))  // A one-row track cannot move a thumb.
   #expect(viewer.mouse(.init(action: .press, button: .left, column: 39, row: 2)) == .none)
 }
 
@@ -155,12 +155,14 @@ import Testing
   _ = application.performPendingWork()
   try #require(!application.hasPendingWork)
   _ = application.render(in: size)
+  try finishApplicationWork(&application, size: size)
   #expect(application.event(.mouse(press), copyBuffer: &copy) == .redraw)
   #expect(
     application.event(.mouse(.init(action: .move, button: .left, column: 0, row: 65_534)), copyBuffer: &copy) == .redraw
   )
   _ = application.event(.mouse(.init(action: .release, button: .left, column: 0, row: 65_534)), copyBuffer: &copy)
   _ = application.render(in: size)
+  try finishApplicationWork(&application, size: size)
   var surface = try Surface(maximumSize: size)
   try surface.render(size: size) { application.paint(in: &$0) }
   let percent = (39..<43).map { surface.cell(x: $0, y: size.rows - 4)!.glyph.scalar }.map(String.init).joined()

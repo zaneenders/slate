@@ -92,7 +92,6 @@ struct PagedFileDocument: TextDocumentSource, ~Copyable, ~Sendable {
   private var clock: UInt64 = 0
   private var invalidUTF8ByteOffset: Int?
   private(set) var statistics = FilePageStatistics()
-  private(set) var isASCII = true
 
   var byteCount: Int { identity.byteCount }
   var snapshotIdentity: DocumentFileIdentity { identity }
@@ -353,7 +352,6 @@ struct PagedFileDocument: TextDocumentSource, ~Copyable, ~Sendable {
       for local in 0..<byteCount {
         let byte = document.bytes[local]
         if byte >= 0x80 {
-          document.isASCII = false
           if asciiStart < local {
             let failure = unicode.appendASCII(
               document.bytes.span.extracting(asciiStart..<local), at: indexedByteCount + asciiStart)

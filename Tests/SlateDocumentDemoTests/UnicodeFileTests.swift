@@ -4,15 +4,6 @@ import Testing
 
 @testable import SlateDocumentDemo
 
-func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
-  for _ in 0..<65_536 {
-    if !viewer.isPreparingViewport { return }
-    _ = viewer.performPendingWork()
-  }
-  Issue.record("Unicode preparation exceeded the bounded replay workload")
-  try #require(!viewer.isPreparingViewport)
-}
-
 @Test func unicodeFileSeeksAndMapsWholeGraphemesAcrossEveryPageSeam() throws {
   let text = "Ae\u{301}漢👩🏽‍💻🇺🇸1️⃣Z"
   let fixture = try UnicodeFileFixture(Array(text.utf8))
@@ -67,8 +58,9 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   }
 }
 
-@Test func unicodePreparationYieldsAndRetainsTheLastSnapshotOnMutation() throws {
-  let fixture = try UnicodeFileFixture(Array((String(repeating: "a", count: 131_072) + "漢").utf8))
+@Test(arguments: ["", "漢"])
+func viewportPreparationYieldsAndRetainsTheLastSnapshotOnMutation(suffix: String) throws {
+  let fixture = try UnicodeFileFixture(Array((String(repeating: "a", count: 131_072) + suffix).utf8))
   var source = try PagedFileDocument.open(fixture.path, configuration: .init(pageBytes: 65_536, cachePages: 1))
   var viewport = try FileByteViewport(maximumSize: .init(columns: 8, rows: 2))
   try viewport.prepare(from: &source, firstByte: 0, size: viewport.maximumSize)
@@ -79,6 +71,11 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   #expect(try !viewport.advance(from: &source, maximumScalars: 1))
   #expect(viewport.hasPendingWork && viewport.visibleRange == previous)
   #expect(throws: FileDocumentError.invalidConfiguration) { try viewport.advance(from: &source, maximumScalars: 0) }
+  let beforeCancellation = source.statistics
+  viewport.cancelPreparation()
+  #expect(try !viewport.advance(from: &source))
+  #expect(viewport.visibleRange == previous && source.statistics == beforeCancellation)
+  try viewport.begin(from: &source, firstByte: 100_000, size: viewport.maximumSize)
   let file = try FileHandle(forWritingTo: URL(fileURLWithPath: fixture.path))
   try file.truncate(atOffset: 1)
   try file.close()
@@ -95,7 +92,7 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   let size = TerminalSize(columns: 80, rows: 24)
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.bytes.count, showInspector: true)
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   let budget = viewer.storageBudgetBytes
   _ = viewer.mouse(.init(action: .press, button: .left, column: layout.text.x + 3, row: layout.text.y))
   _ = viewer.mouse(.init(action: .move, button: .left, column: layout.text.x + 1, row: layout.text.y))
@@ -108,32 +105,32 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   #expect(viewer.statistics == statistics)
   _ = viewer.handle(.down, modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   #expect(viewer.firstByte > 0)
   _ = viewer.handle(.up, modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   #expect(viewer.firstByte == 0)
   _ = viewer.handle(.end, modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   #expect(viewer.visibleRange.upperBound == fixture.bytes.count && viewer.notice.isEmpty)
   let endStart = viewer.firstByte
   _ = viewer.handle(.up, modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   #expect(viewer.firstByte < endStart && viewer.notice.isEmpty)
   #expect(viewer.storageBudgetBytes == budget)
   _ = viewer.handle(.home, modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   _ = viewer.mouse(.init(action: .press, button: .left, column: layout.text.x, row: layout.text.y))
   _ = viewer.mouse(.init(action: .move, button: .left, column: 65_534, row: 65_534))
   let tick = ContinuousClock().now.advanced(by: .seconds(1))
   for step in 0..<4 {
     _ = viewer.performPendingWork(at: tick.advanced(by: .milliseconds(step * 50)))
     viewer.prepare(in: size)
-    try finishUnicodePreparation(viewer)
+    try finishViewportPreparation(viewer)
   }
   _ = viewer.mouse(.init(action: .release, button: .left, column: 65_534, row: 65_534))
   let range = try #require(viewer.selectionRange)
@@ -181,8 +178,9 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   }
 }
 
-@Test func unicodeRowHistoryRetainsDistinctRowsAcrossTrackpadDirectionChanges() throws {
-  let fixture = try UnicodeFileFixture(Array((String(repeating: "Aé漢e\u{301}😀Z", count: 8_192)).utf8))
+@Test(arguments: ["abcdef", "Aé漢e\u{301}😀Z"])
+func viewportRowHistoryRetainsDistinctRowsAcrossTrackpadDirectionChanges(pattern: String) throws {
+  let fixture = try UnicodeFileFixture(Array(String(repeating: pattern, count: 8_192).utf8))
   let size = TerminalSize(columns: 80, rows: 30)
   var source = try PagedFileDocument.open(fixture.path)
   var viewport = try FileByteViewport(maximumSize: size)
@@ -281,14 +279,15 @@ func finishUnicodePreparation(_ viewer: DocumentFileViewer) throws {
   #expect(viewport.visibleRange.lowerBound == 4)
 }
 
-@Test func unicodeTrackpadBurstsLetPendingReverseWorkFinish() throws {
-  let fixture = try UnicodeFileFixture(Array((String(repeating: "a", count: 1_048_576) + "漢").utf8))
+@Test(arguments: ["", "漢"])
+func viewportTrackpadBurstsLetPendingReverseWorkFinish(suffix: String) throws {
+  let fixture = try UnicodeFileFixture(Array((String(repeating: "a", count: 1_048_576) + suffix).utf8))
   let viewer = try DocumentFileViewer(fixture.path)
   let size = TerminalSize(columns: 160, rows: 60)
   let layout = DocumentViewerLayout(size: size, byteCount: fixture.bytes.count, showInspector: true)
   _ = viewer.handle(.character("9"), modifiers: [])
   viewer.prepare(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   let start = viewer.firstByte
   let budget = viewer.storageBudgetBytes
   for _ in 0..<64 {

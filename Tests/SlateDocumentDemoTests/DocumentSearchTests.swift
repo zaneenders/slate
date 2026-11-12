@@ -130,7 +130,7 @@ import Testing
   let viewer = try DocumentFileViewer(fixture.path, configuration: .init(pageBytes: 4, cachePages: 1))
   let size = TerminalSize(columns: 80, rows: 24)
   _ = viewer.render(in: size)
-  try finishUnicodePreparation(viewer)
+  try finishViewportPreparation(viewer)
   var copy = CopyBuffer()
   _ = viewer.event(.key(.character("/")), copyBuffer: &copy)
   #expect(viewer.searchVisible && viewer.searchFocused)
@@ -160,7 +160,7 @@ import Testing
   #expect(viewer.searchFocused)
   for smallSize in [TerminalSize(columns: 0, rows: 0), .init(columns: 1, rows: 1), .init(columns: 16, rows: 7), surface.maximumSize] {
     try surface.render(size: smallSize) { viewer.render(in: smallSize) } paint: { viewer.paint(in: &$0) }
-    try finishUnicodePreparation(viewer)
+    try finishViewportPreparation(viewer)
     #expect(viewer.searchMatch == 1_002..<1_020)
   }
 }
@@ -181,15 +181,6 @@ private func finishSearch(_ search: inout DocumentSearch, source: inout PagedFil
   }
   let unfinished = search.hasPendingWork
   try #require(!unfinished)
-}
-
-private func finishApplicationWork(_ application: inout SlateDocumentDemo, size: TerminalSize) throws {
-  for _ in 0..<4_096 {
-    _ = application.render(in: size)
-    if !application.hasPendingWork { return }
-    _ = application.performPendingWork()
-  }
-  try #require(!application.hasPendingWork)
 }
 
 private struct SearchFixture: ~Copyable {

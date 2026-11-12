@@ -4,11 +4,12 @@ import Slate
 /// Two fixed grids of glyphs, byte ranges, and row offsets, plus two raw-byte
 /// grids (64 bytes per possible cell). At 160x60 the array payload is 2,919,376
 /// bytes; inline state is included by storageBudgetBytes. No capacity grows.
-/// Unicode preparation runs in <=64 KiB / 16,384 scalar batches, with a 4 ms
+/// Preparation runs in <=64 KiB / 16,384 scalar batches, with a 4 ms
 /// deadline checked every 64 scalars. A page load/syscall may exceed it. Failed
-/// or cancelled work preserves the previous snapshot. ASCII keeps the previous
-/// <=9,600-byte path. Painting/copying do no I/O. Runtime warm-up and explicit
-/// host copy-buffer growth are outside the steady-state allocation guarantee.
+/// or cancelled work preserves the previous snapshot. All files share the same
+/// Unicode preparation and cell mapping. Painting/copying do no I/O. Runtime
+/// warm-up and explicit host copy-buffer growth are outside the steady-state
+/// allocation guarantee.
 /// A 128-entry history stores distinct row starts and their owned Unicode state;
 /// two inline 61-entry checkpoint grids follow the published/scratch row grids.
 /// At capacity the oldest distinct row is replaced. Replay refills up to 61
@@ -32,7 +33,6 @@ struct FileByteViewport: ~Copyable, ~Sendable {
   private var scratchRowCheckpoints = InlineArray<61, FileUnicodeCheckpoint>(repeating: .init())
   private var history = InlineArray<128, FileRowAnchor>(repeating: .init())
   private var historyCursor = 0
-  private var asciiPrepared = false
   private(set) var size = TerminalSize(columns: 0, rows: 0)
   private(set) var visibleRange = 0..<0
 
@@ -72,10 +72,6 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     let x = min(size.columns - 1, max(0, column))
     let y = min(size.rows - 1, max(0, row))
     var index = y * size.columns + x
-    if asciiPrepared {
-      if index >= visibleRange.count { return clamp ? visibleRange.upperBound - 1..<visibleRange.upperBound : nil }
-      return visibleRange.lowerBound + index..<visibleRange.lowerBound + index + 1
-    }
     if !ranges[index].isEmpty { return ranges[index] }
     guard clamp else { return nil }
     while index > 0 {
@@ -87,6 +83,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
 
   /// Cache exhaustion triggers bounded replay during preparation, never I/O in
   /// mouse/key handlers. Reverse requests coalesce to at most 60 rows per frame.
+  /// After an arbitrary byte jump, replay may include a partial preceding row.
   borrowing func offset(scrollingRows delta: Int, from firstByte: Int) -> Int? {
     if delta >= 0 {
       for row in 0..<size.rows where rows[row] == firstByte {
@@ -151,14 +148,6 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     if size.columns == 0 || size.rows == 0 {
       for row in 0...size.rows { scratchRows[row] = firstByte }
       commit(firstByte: firstByte, byteCount: 0, size: size)
-      return
-    }
-    if source.isASCII {
-      let first =
-        firstByte == source.byteCount
-        ? max(0, source.byteCount - size.columns * size.rows)
-        : max(0, firstByte - backwardRows * size.columns)
-      try prepareASCII(from: &source, firstByte: first, size: size)
       return
     }
     for index in 0..<size.columns * size.rows {
@@ -325,23 +314,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     state.rawCount = 0
   }
 
-  private mutating func prepareASCII(
-    from source: inout PagedFileDocument, firstByte: Int, size: TerminalSize
-  ) throws(FileDocumentError) {
-    let count = min(size.columns * size.rows, source.byteCount - firstByte)
-    var copied = 0
-    while copied < count {
-      var storage = scratch.mutableSpan
-      let amount = try source.readBytes(from: firstByte + copied, into: storage._mutatingExtracting(copied..<count))
-      guard amount > 0 && amount <= count - copied else { throw .fileChanged }
-      copied += amount
-    }
-    for row in 0...size.rows { scratchRows[row] = firstByte + min(count, row * size.columns) }
-    try source.verifyUnchanged()
-    commit(firstByte: firstByte, byteCount: count, size: size, ascii: true)
-  }
-
-  private mutating func commit(firstByte: Int, byteCount: Int, size: TerminalSize, ascii: Bool = false) {
+  private mutating func commit(firstByte: Int, byteCount: Int, size: TerminalSize) {
     if self.size.columns == size.columns && publishedIdentity == sourceIdentity {
       rememberRows()
     }
@@ -351,7 +324,6 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     swap(&rows, &scratchRows)
     swap(&rowCheckpoints, &scratchRowCheckpoints)
     visibleRange = firstByte..<firstByte + byteCount
-    asciiPrepared = ascii
     publishedIdentity = sourceIdentity
     self.size = size
     for row in 0...size.rows where rows[row] < firstByte || rows[row] > visibleRange.upperBound {
@@ -364,7 +336,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
   }
 
   private mutating func rememberRows() {
-    guard !asciiPrepared, size.rows > 0 else { return }
+    guard size.rows > 0 else { return }
     for row in 0..<size.rows where rows[row] < rows[row + 1] {
       remember(rowCheckpoints[row], previous: row > 0 ? rows[row - 1] : -1)
     }
@@ -412,10 +384,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
     for row in 0..<rows {
       for column in 0..<columns {
         let index = row * size.columns + column
-        let range =
-          asciiPrepared
-          ? (index < visibleRange.count ? visibleRange.lowerBound + index..<visibleRange.lowerBound + index + 1 : 0..<0)
-          : ranges[index]
+        let range = ranges[index]
         guard !range.isEmpty else { continue }
         var cellStyle = previousRange.isEmpty || previousRange.overlaps(range) ? style : revealedStyle
         if range.lowerBound / pageBytes != (range.upperBound - 1) / pageBytes || range.lowerBound % pageBytes == 0 {
@@ -431,11 +400,7 @@ struct FileByteViewport: ~Copyable, ~Sendable {
           cellStyle.foreground = selectionStyle.foreground
           cellStyle.background = selectionStyle.background
         }
-        let value = asciiPrepared && index < visibleRange.count ? bytes[index] : 0
-        let glyph =
-          asciiPrepared
-          ? ((0x20...0x7e).contains(value) ? Glyph(Unicode.Scalar(value))! : Glyph(".")!)
-          : glyphs[index]
+        let glyph = glyphs[index]
         frame[area.x + column, area.y + row] =
           Cell(glyph.columnWidth == 2 && column + 1 == columns ? .space : glyph, style: cellStyle)
       }

@@ -4,6 +4,53 @@ import Testing
 
 @testable import SlateDocumentDemo
 
+@Test(arguments: ["", "漢"])
+func byteViewportMapsASCIIAcrossPageSeamsAndHistoryExhaustion(suffix: String) throws {
+  let bytes = (0..<32_768).map { UInt8($0 % 128) } + Array(suffix.utf8)
+  let fixture = try ByteFixture(bytes)
+  var source = try PagedFileDocument.open(fixture.path, configuration: .init(pageBytes: 64, cachePages: 1))
+  var viewport = try FileByteViewport()
+  let size = TerminalSize(columns: 16, rows: 4)
+  let budget = viewport.storageBudgetBytes
+  var surface = try Surface(maximumSize: viewport.maximumSize)
+  for offset in [0, 63, 64, 4_095, 4_096] {
+    try viewport.prepare(from: &source, firstByte: offset, size: size)
+    #expect(viewport.visibleRange == offset..<offset + size.columns * size.rows)
+    let beforePaint = source.statistics
+    try surface.render(size: size) { frame in
+      viewport.paint(
+        in: frame.area, frame: &frame, pageBytes: 64, previousRange: 0..<0,
+        style: Style(), revealedStyle: Style(), boundaryStyle: Style())
+      for index in 0..<size.columns * size.rows {
+        let byteOffset = offset + index
+        let byte = bytes[byteOffset]
+        let expected: Unicode.Scalar = (0x20...0x7e).contains(byte) ? Unicode.Scalar(byte) : "."
+        let column = index % size.columns
+        let row = index / size.columns
+        #expect(frame[column, row].glyph.scalar == expected)
+        #expect(viewport.byteRange(column: column, row: row, clamp: false) == byteOffset..<byteOffset + 1)
+      }
+    }
+    #expect(source.statistics == beforePaint)
+  }
+  // More than 128 distinct rows replaces old anchors without growing storage.
+  for row in 0..<160 {
+    try viewport.prepare(from: &source, firstByte: row * size.columns, size: size)
+  }
+  try viewport.begin(from: &source, firstByte: viewport.visibleRange.lowerBound, size: size, backwardRows: 60)
+  for _ in 0..<64 {
+    if !viewport.hasPendingWork { break }
+    _ = try viewport.advance(from: &source)
+  }
+  let pending = viewport.hasPendingWork
+  try #require(!pending)
+  #expect(viewport.visibleRange.lowerBound == 99 * size.columns)
+  try viewport.prepare(from: &source, firstByte: 0, size: viewport.maximumSize)
+  #expect(viewport.visibleRange == 0..<9_600)
+  #expect(viewport.storageBudgetBytes == budget && source.residentPageCount == 1)
+  #expect(source.statistics.evictions > 0)
+}
+
 @Test func byteViewportPreservesOffsetsAcrossUTF8ControlsAndPageSeams() throws {
   let fixture = try ByteFixture(Array("ab\r\n\t\u{1b}é漢xyz".utf8))
   var source = try PagedFileDocument.open(
@@ -31,7 +78,7 @@ import Testing
   #expect(source.statistics == stats)
 }
 
-@Test func byteViewportSeeksToEndOfLongLineWithoutReadingItsPrefix() throws {
+@Test func byteViewportSeeksToEndOfLongLineWithBoundedPageReplay() throws {
   let fixture = try ByteFixture(Array(repeating: 0x31, count: 1_048_576) + Array("last".utf8))
   var source = try PagedFileDocument.open(
     fixture.path, configuration: .init(pageBytes: 4_096, cachePages: 1, maximumPages: 512))
@@ -39,7 +86,7 @@ import Testing
   let budget = viewport.storageBudgetBytes + source.cacheStorageBudgetBytes
   try viewport.prepare(from: &source, firstByte: source.byteCount - 16, size: viewport.maximumSize)
   #expect(viewport.visibleRange.upperBound == source.byteCount)
-  #expect(source.statistics.loads == 2 && source.statistics.bytesRead == 4_100)
+  #expect(source.statistics.loads <= 3 && source.statistics.bytesRead <= 8_196)
   #expect(viewport.byte(at: 12) == 0x6c && viewport.byte(at: 15) == 0x74)
   for _ in 0..<16 {
     try viewport.prepare(from: &source, firstByte: 0, size: viewport.maximumSize)
