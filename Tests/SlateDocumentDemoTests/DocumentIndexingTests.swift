@@ -99,8 +99,11 @@ import Testing
     TerminalSize(columns: 0, rows: 0), .init(columns: 1, rows: 1), .init(columns: 36, rows: 12),
     .init(columns: 40, rows: 24), .init(columns: 80, rows: 24), surface.maximumSize
   ] {
-    _ = application.render(in: size)
-    try surface.render(size: size) { application.paint(in: &$0) }
+    try surface.render(size: size) {
+      application.render(in: size)
+    } paint: {
+      application.paint(in: &$0)
+    }
     #expect(application.indexingProgress == progress)
   }
   let title = (0..<20).map { surface.cell(x: $0, y: 3)!.glyph.scalar }.map(String.init).joined()
@@ -115,9 +118,12 @@ import Testing
     #expect(!application.hasPendingWork && application.indexingProgress == nil)
     #expect(application.performPendingWork() == .none)
     let size = TerminalSize(columns: 80, rows: 24)
-    _ = application.render(in: size)
     var surface = try Surface(maximumSize: size)
-    try surface.render(size: size) { application.paint(in: &$0) }
+    try surface.render(size: size) {
+      application.render(in: size)
+    } paint: {
+      application.paint(in: &$0)
+    }
     let title = (0..<20).map { surface.cell(x: $0, y: 3)!.glyph.scalar }.map(String.init).joined()
     #expect(title.contains("FILE BYTES"))
   }
@@ -166,9 +172,12 @@ import Testing
     #expect(!application.hasPendingWork && application.indexingProgress == nil)
     let size = TerminalSize(columns: 80, rows: 24)
     let layout = DocumentViewerLayout(size: size, byteCount: bytes.count, showInspector: true)
-    _ = application.render(in: size)
     var surface = try Surface(maximumSize: size)
-    try surface.render(size: size) { application.paint(in: &$0) }
+    try surface.render(size: size) {
+      application.render(in: size)
+    } paint: {
+      application.paint(in: &$0)
+    }
     for (index, byte) in bytes.enumerated() {
       let scalar = (0x20...0x7e).contains(byte) ? Unicode.Scalar(byte) : "."
       #expect(surface.cell(x: layout.text.x + index, y: layout.text.y)?.glyph.scalar == scalar)

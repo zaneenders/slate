@@ -22,6 +22,35 @@ extension Block {
   }
 
   @inlinable public func background(_ color: Color) -> some Block { Background(content: self, color: color) }
+
+  /// Positions a layer's top-left corner in parent-local terminal cells. The
+  /// content is sized first, then its common origin is clamped inside the parent.
+  /// Intended for Overlay: this wrapper fills its allocated layout slot. It adds
+  /// one layout node and shares the existing cell grid. Coordinates are 0...65,535.
+  @inlinable public func position(column: Int, row: Int) -> some Block {
+    Positioned(content: self, column: column, row: row)
+  }
+}
+
+@usableFromInline struct Positioned<Content: Block>: Block, ~Sendable {
+  @usableFromInline typealias Body = Never
+  let content: Content
+  let column: UInt16
+  let row: UInt16
+
+  @usableFromInline init(content: Content, column: Int, row: Int) {
+    precondition((0...65_535).contains(column) && (0...65_535).contains(row))
+    self.content = content
+    self.column = UInt16(column)
+    self.row = UInt16(row)
+  }
+
+  @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
+    let parent = try builder.begin(
+      LayoutNode(kind: .positioned, positionColumn: column, positionRow: row, width: .fill, height: .fill))
+    defer { builder.end(parent) }
+    try content._build(into: &builder)
+  }
 }
 
 @usableFromInline struct Framed<Content: Block>: Block, ~Sendable {

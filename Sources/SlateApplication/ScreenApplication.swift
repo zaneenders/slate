@@ -31,17 +31,20 @@ public struct ScreenApplicationConfiguration: Sendable {
   public let viewportOverflow: ViewportOverflow
   /// Own scoped SGR mouse tracking for each active session, including resume.
   public let mouseTracking: Bool
+  public let capabilities: TerminalCapabilities
 
   public init(
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
     nodeCapacity: Int = LayoutLimits.maximumNodes,
     viewportOverflow: ViewportOverflow = .clip,
-    mouseTracking: Bool = false
+    mouseTracking: Bool = false,
+    capabilities: TerminalCapabilities = .init()
   ) {
     self.maximumSize = maximumSize
     self.nodeCapacity = nodeCapacity
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
+    self.capabilities = capabilities
   }
 }
 
@@ -191,10 +194,7 @@ extension ScreenApplication where Self: ~Copyable {
     } catch { throw .io(error) }
     let paste: BracketedPaste
     do throws(IOError) { paste = try output.bracketedPaste() } catch { throw .io(error) }
-    let graphemes: GraphemeClustering
-    do throws(IOError) { graphemes = try output.graphemeClustering() } catch { throw .io(error) }
-    let result = try runTrackedSession(runner: &runner, input: raw, output: output, signals: signals)
-    do throws(IOError) { try graphemes.restore() } catch { throw .io(error) }
+    let result = try runUnicodeSession(runner: &runner, input: raw, output: output, signals: signals)
     do throws(IOError) { try paste.restore() } catch { throw .io(error) }
     do throws(IOError) {
       try alternate.restore()
@@ -202,6 +202,20 @@ extension ScreenApplication where Self: ~Copyable {
     do throws(TerminalError) {
       try raw.restore()
     } catch { throw .terminal(error) }
+    return result
+  }
+
+  private mutating func runUnicodeSession(
+    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
+    signals: borrowing SignalSession
+  ) throws(ScreenApplicationError) -> ScreenRunResult {
+    if runner.capabilities.unicode == .ascii {
+      return try runTrackedSession(runner: &runner, input: input, output: output, signals: signals)
+    }
+    let graphemes: GraphemeClustering
+    do throws(IOError) { graphemes = try output.graphemeClustering() } catch { throw .io(error) }
+    let result = try runTrackedSession(runner: &runner, input: input, output: output, signals: signals)
+    do throws(IOError) { try graphemes.restore() } catch { throw .io(error) }
     return result
   }
 

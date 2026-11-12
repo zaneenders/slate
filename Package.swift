@@ -21,7 +21,8 @@ let package = Package(
   platforms: [.macOS(.v27)],
   products: [
     .library(name: "Slate", targets: ["Slate"]),
-    .executable(name: "slate-document-demo", targets: ["SlateDocumentDemo"])
+    .executable(name: "slate-document-demo", targets: ["SlateDocumentDemo"]),
+    .executable(name: "slate-graphics-demo", targets: ["SlateGraphicsDemo"])
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5"),
@@ -29,6 +30,12 @@ let package = Package(
   ],
   targets: [
     // Demo
+    .executableTarget(
+      name: "SlateGraphicsDemo",
+      dependencies: ["Slate"],
+      path: "Examples/SlateGraphicsDemo",
+      swiftSettings: swiftSettings
+    ),
     .executableTarget(
       name: "SlateDocumentDemo",
       dependencies: [
@@ -103,13 +110,18 @@ let package = Package(
 
     // Tests
     .testTarget(
+      name: "SlateGraphicsDemoTests",
+      dependencies: ["SlateGraphicsDemo", "Slate", "CIOTestSupport"],
+      swiftSettings: [.enableExperimentalFeature("Lifetimes")]
+    ),
+    .testTarget(
       name: "SlateDocumentDemoTests",
       dependencies: ["SlateDocumentDemo", "Slate"],
       swiftSettings: [.enableExperimentalFeature("Lifetimes")]
     ),
     .testTarget(
       name: "SlateUITests",
-      dependencies: ["SlateUI"]
+      dependencies: ["SlateUI", "CIOTestSupport"]
     ),
     .testTarget(
       name: "SlateTerminalTests",

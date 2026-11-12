@@ -19,15 +19,19 @@ public enum LayoutSize: Equatable, Sendable {
 }
 
 public enum Alignment: Sendable {
-  case topLeading, center, leading, trailing, bottomTrailing
+  case topLeading, top, topTrailing, leading, center, trailing, bottomLeading, bottom, bottomTrailing
 
   func offset(available: Int, content: Int, horizontal: Bool) -> Int {
     let remainder = max(0, available - content)
     switch self {
     case .topLeading: return 0
+    case .top: return horizontal ? remainder / 2 : 0
+    case .topTrailing: return horizontal ? remainder : 0
     case .center: return remainder / 2
     case .leading: return horizontal ? 0 : remainder / 2
     case .trailing: return horizontal ? remainder : remainder / 2
+    case .bottomLeading: return horizontal ? 0 : remainder
+    case .bottom: return horizontal ? remainder / 2 : remainder
     case .bottomTrailing: return remainder
     }
   }

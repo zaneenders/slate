@@ -10,6 +10,7 @@ public import SlateUI
 /// It never clears the terminal or another region.
 /// For compound Unicode, coordinate an output.graphemeClustering() scope with
 /// other writers. ScreenApplication already manages this terminal mode.
+/// Select ASCII capabilities to preserve cell positions without that mode.
 ///
 /// Layout uses local coordinates and the requested size; output clips to the
 /// current viewport. Cells outside that viewport are abandoned on clear/resize.
@@ -20,11 +21,12 @@ public import SlateUI
 public struct ScreenRegion: ~Copyable, ~Sendable {
   public var maximumSize: TerminalSize { surface.maximumSize }
   public var nodeCapacity: Int { surface.nodeCapacity }
+  public var capabilities: TerminalCapabilities { writer.capabilities }
   /// Includes a partially painted region after an output error, so clear or a
   /// subsequent draw can repair it. No more than one region is retained.
   public private(set) var paintedRegion: Rect?
   private var surface: Surface
-  private var writer = ANSIWriter()
+  private var writer: ANSIWriter
 
   /// Owned element storage plus the inline owner, excluding allocator metadata
   /// and caller-owned Strings retained only during a draw.
@@ -32,10 +34,14 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
     surface.storageBudgetBytes + MemoryLayout<Self>.stride - MemoryLayout<Surface>.stride
   }
 
-  public init(maximumSize: TerminalSize, nodeCapacity: Int = LayoutLimits.maximumNodes) throws(ScreenError) {
+  public init(
+    maximumSize: TerminalSize, nodeCapacity: Int = LayoutLimits.maximumNodes,
+    capabilities: TerminalCapabilities = .init()
+  ) throws(ScreenError) {
     do throws(SurfaceError) {
       surface = try Surface(maximumSize: maximumSize, nodeCapacity: nodeCapacity)
     } catch { throw ScreenError(error) }
+    writer = ANSIWriter(capabilities: capabilities)
   }
 
   /// Rejects size/layout exhaustion before any output or change of ownership.

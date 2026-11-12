@@ -1,10 +1,11 @@
 // Keep cell constructors and equality witnesses visible across the target
 // boundary so painting and diffing do not add a function call for every cell.
 
-/// The terminal's default color or an entry in its 256-color palette.
+/// A terminal default, palette entry, or explicit 24-bit RGB color.
 public enum Color: Equatable, Sendable {
   case `default`
   case indexed(UInt8)
+  case rgb(UInt8, UInt8, UInt8)
 
   public static let black = Color.indexed(0)
   public static let red = Color.indexed(1)
@@ -19,6 +20,8 @@ public enum Color: Equatable, Sendable {
     switch (left, right) {
     case (.default, .default): return true
     case (.indexed(let left), .indexed(let right)): return left == right
+    case (.rgb(let lr, let lg, let lb), .rgb(let rr, let rg, let rb)):
+      return lr == rr && lg == rg && lb == rb
     default: return false
     }
   }

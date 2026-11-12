@@ -18,7 +18,7 @@ import Slate
 /// reuse the viewport scratch grid. Mouse handlers never access disk or allocate.
 /// Expected errors may allocate a Swift error box. A viewport source failure
 /// latches until reopen; subsequent failure redraws never retry or allocate.
-final class DocumentFileViewer: ~Sendable {
+final class DocumentFileViewer: CanvasDrawing, ~Sendable {
   private var source: PagedEditBuffer
   private var search = DocumentSearch()
   private var viewport = try! FileByteViewport()
@@ -196,11 +196,11 @@ final class DocumentFileViewer: ~Sendable {
     }
   }
 
-  /// Blocks own the search strip; custom drawing owns only the rows above it.
+  /// Layout assigns the canvas its own clipped region above the input strips.
   func render(in size: TerminalSize) -> some Block {
     prepare(in: documentSize(in: size))
     return Column {
-      Row {}.frame(width: .fill, height: .fill)
+      Canvas(self)
       if search.isVisible {
         Row(gap: 1) {
           Text("/", style: ViewerPalette.accent)
@@ -693,8 +693,8 @@ final class DocumentFileViewer: ~Sendable {
   }
 
   func paint(in frame: inout Frame) {
-    let size = documentSize(in: TerminalSize(columns: frame.area.width, rows: frame.area.height))
-    let area = Rect(width: size.columns, height: size.rows)
+    let area = frame.area
+    let size = TerminalSize(columns: area.width, rows: area.height)
     frame.fill(area, with: Cell(style: ViewerPalette.body))
     guard area.height >= 7 && area.width >= 16 else {
       frame.text("Resize to 16 x 7; Q quits", in: area, style: ViewerPalette.muted)

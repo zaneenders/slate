@@ -8,9 +8,10 @@ public enum SurfaceError: Error, Equatable, Sendable {
 
 /// A cell surface independent of presentation, terminal modes, and byte encoding.
 /// Owns one fixed grid and bounded layout storage, all allocated at startup.
-/// Rendering reuses that storage; capacity/layout rejection preserves the last
-/// frame. Caller-created Strings and first-use runtime metadata are outside the
-/// steady-state allocation guarantee. Frame views must end before the next render.
+/// Optimized successful rendering reuses that storage without allocation;
+/// capacity/layout rejection preserves the last frame. Error propagation,
+/// caller-created Strings/drawing work, and first-use runtime metadata are outside
+/// that guarantee. Frame views must end before the next render.
 public struct Surface: ~Copyable, ~Sendable {
   public static let maximumColumns = 512
   public static let maximumRows = 256
@@ -24,7 +25,7 @@ public struct Surface: ~Copyable, ~Sendable {
   /// and caller-owned text retained only during rendering.
   public var storageBudgetBytes: Int {
     maximumSize.columns * maximumSize.rows * MemoryLayout<Cell>.stride
-      + nodeCapacity * (MemoryLayout<LayoutNode>.stride + MemoryLayout<TextInput?>.stride)
+      + nodeCapacity * (MemoryLayout<LayoutNode>.stride + MemoryLayout<BlockDrawing?>.stride)
       + MemoryLayout<Self>.stride
   }
 

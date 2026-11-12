@@ -27,14 +27,16 @@ public struct FrameStatistics: Equatable, Sendable {
 /// on invalidation and retains the last successful grid for diffing.
 /// Compound Unicode requires grapheme-aware terminal widths. ScreenApplication
 /// manages mode 2027; manual presenters can borrow output.graphemeClustering().
+/// Select ASCII capabilities for output independent of terminal Unicode widths.
 public struct Screen: ~Copyable, ~Sendable {
   public static let maximumColumns = Surface.maximumColumns
   public static let maximumRows = Surface.maximumRows
   public var maximumSize: TerminalSize { surface.maximumSize }
   public var nodeCapacity: Int { surface.nodeCapacity }
+  public var capabilities: TerminalCapabilities { writer.capabilities }
   private var surface: Surface
   private var previous: RigidArray<Cell>
-  private var writer = ANSIWriter()
+  private var writer: ANSIWriter
   private var previousSize = TerminalSize(columns: 0, rows: 0)
   private var valid = false
 
@@ -45,12 +47,14 @@ public struct Screen: ~Copyable, ~Sendable {
 
   public init(
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
-    nodeCapacity: Int = LayoutLimits.maximumNodes
+    nodeCapacity: Int = LayoutLimits.maximumNodes,
+    capabilities: TerminalCapabilities = .init()
   ) throws(ScreenError) {
     do throws(SurfaceError) {
       surface = try Surface(maximumSize: maximumSize, nodeCapacity: nodeCapacity)
     } catch { throw ScreenError(error) }
     previous = RigidArray(repeating: Cell(), count: maximumSize.columns * maximumSize.rows)
+    writer = ANSIWriter(capabilities: capabilities)
   }
 
   /// Call after another writer changes the display, or when switching outputs.

@@ -27,6 +27,8 @@ struct ScreenRunner: ~Copyable {
   private var handlesSuspension = false
   private var requestedSuspend = false
 
+  var capabilities: TerminalCapabilities { screen.capabilities }
+
   mutating func resume() {
     screen.invalidate()
     previousActualSize = nil
@@ -37,7 +39,9 @@ struct ScreenRunner: ~Copyable {
   }
 
   init(configuration: ScreenApplicationConfiguration) throws(ScreenError) {
-    screen = try Screen(maximumSize: configuration.maximumSize, nodeCapacity: configuration.nodeCapacity)
+    screen = try Screen(
+      maximumSize: configuration.maximumSize, nodeCapacity: configuration.nodeCapacity,
+      capabilities: configuration.capabilities)
     overflow = configuration.viewportOverflow
   }
 

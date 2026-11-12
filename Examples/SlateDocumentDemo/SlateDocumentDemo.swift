@@ -144,7 +144,7 @@ struct SlateDocumentDemo: ScreenApplication {
   func paint(in frame: inout Frame) {
     switch mode {
     case .indexing(let opening): opening.paint(in: &frame)
-    case .file(let viewer): viewer.paint(in: &frame)
+    case .file: break  // The viewer paints through its layout-owned canvas.
     case .failure(let message):
       frame.fill(frame.area, with: Cell(style: ViewerPalette.body))
       frame.text(message, in: frame.area, style: Style(foreground: .red))

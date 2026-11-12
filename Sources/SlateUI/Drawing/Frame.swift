@@ -1,23 +1,54 @@
-/// An exclusive view of one frame's cells. It cannot escape the draw call.
+/// An exclusive, zero-origin view of a drawing region. It cannot escape the draw
+/// call. Drawing clips to `area`; wide-glyph repairs may blank a neighboring half
+/// outside the region while preserving its style.
 public struct Frame: ~Copyable, ~Escapable, ~Sendable {
   @usableFromInline var cells: MutableSpan<Cell>
+  @usableFromInline let rowStride: Int
+  @usableFromInline let originOffset: Int
   public let area: Rect
 
   @_lifetime(copy cells)
   init(cells: consuming MutableSpan<Cell>, size: TerminalSize) {
     precondition(cells.count == size.columns * size.rows)
     self.cells = consume cells
+    rowStride = size.columns
+    originOffset = 0
     area = Rect(width: size.columns, height: size.rows)
+  }
+
+  @_lifetime(copy cells)
+  private init(cells: consuming MutableSpan<Cell>, area: Rect, rowStride: Int, originOffset: Int) {
+    precondition(!area.isEmpty && area.x == 0 && area.y == 0)
+    precondition(rowStride > 0)
+    precondition(originOffset >= 0 && originOffset % rowStride + area.width <= rowStride)
+    precondition(originOffset + (area.height - 1) * rowStride + area.width <= cells.count)
+    self.cells = consume cells
+    self.area = area
+    self.rowStride = rowStride
+    self.originOffset = originOffset
+  }
+
+  /// Borrows the existing grid; only wide-glyph footprint cleanup may touch a
+  /// neighboring cell outside the local drawing area. No scratch grid is needed.
+  mutating func withRegion(_ region: Rect, paint: (inout Frame) -> Void) {
+    let clipped = area.intersection(region)
+    guard !clipped.isEmpty else { return }
+    let offset = originOffset + clipped.y * rowStride + clipped.x
+    let count = cells.count
+    var local = Frame(
+      cells: cells._mutatingExtracting(0..<count),
+      area: Rect(width: clipped.width, height: clipped.height), rowStride: rowStride, originOffset: offset)
+    paint(&local)
   }
 
   @inlinable public subscript(x: Int, y: Int) -> Cell {
     get {
       precondition(x >= 0 && x < area.width && y >= 0 && y < area.height)
-      return cells[y * area.width + x]
+      return cells[originOffset + y * rowStride + x]
     }
     set {
       precondition(x >= 0 && x < area.width && y >= 0 && y < area.height)
-      let index = y * area.width + x
+      let index = originOffset + y * rowStride + x
       // Keep ordinary cell writes visible across target boundaries; passing an
       // 80-byte owned glyph through an out-of-line setter dominates ASCII paint.
       if newValue.glyph.columnWidth == 1 && cells[index].glyph.columnWidth == 1 {
@@ -33,13 +64,13 @@ public struct Frame: ~Copyable, ~Escapable, ~Sendable {
     guard !clipped.isEmpty else { return }
     let value = cell.isContinuation ? Cell(style: cell.style) : cell
     for y in clipped.y..<clipped.bottom {
-      let start = y * self.area.width + clipped.x
+      let start = originOffset + y * rowStride + clipped.x
       let end = start + clipped.width
       // Interior footprints are completely overwritten. Repair only footprints
       // crossing the two edges, then fill the contiguous run without per-cell
       // neighbor checks (the common background/clear path).
-      if clipped.x > 0 && cells[start].isContinuation { cells[start - 1] = Cell(style: cells[start - 1].style) }
-      if clipped.right < self.area.right && cells[end - 1].glyph.columnWidth == 2 {
+      if cells[start].isContinuation { cells[start - 1] = Cell(style: cells[start - 1].style) }
+      if cells[end - 1].glyph.columnWidth == 2 {
         cells[end] = Cell(style: cells[end].style)
       }
       var index = start
@@ -137,22 +168,18 @@ public struct Frame: ~Copyable, ~Escapable, ~Sendable {
   /// All writes preserve wide-cell footprints, including writes over a trailing
   /// half. At most the target and two neighbors are touched, within this row.
   @usableFromInline mutating func put(_ value: Cell, x: Int, y: Int) {
-    let index = y * area.width + x
+    let index = originOffset + y * rowStride + x
     if value.glyph.columnWidth == 1 && cells[index].glyph.columnWidth == 1 {
       cells[index] = value
       return
     }
-    if value.isContinuation {
-      if x > 0 && cells[index - 1].glyph.columnWidth == 2 {
-        cells[index - 1].style = value.style
-        cells[index] = value
-      } else {
-        cells[index] = Cell(style: value.style)
-      }
+    if value.isContinuation && x > 0 && cells[index - 1].glyph.columnWidth == 2 {
+      cells[index - 1].style = value.style
+      cells[index] = value
       return
     }
-    if cells[index].isContinuation && x > 0 { cells[index - 1] = Cell(style: cells[index - 1].style) }
-    if cells[index].glyph.columnWidth == 2 && x + 1 < area.width {
+    if cells[index].isContinuation { cells[index - 1] = Cell(style: cells[index - 1].style) }
+    if cells[index].glyph.columnWidth == 2 {
       cells[index + 1] = Cell(style: cells[index + 1].style)
     }
     if value.glyph.columnWidth == 2 {
@@ -160,13 +187,13 @@ public struct Frame: ~Copyable, ~Escapable, ~Sendable {
         cells[index] = Cell(style: value.style)
         return
       }
-      if cells[index + 1].glyph.columnWidth == 2 && x + 2 < area.width {
+      if cells[index + 1].glyph.columnWidth == 2 {
         cells[index + 2] = Cell(style: cells[index + 2].style)
       }
       cells[index] = value
       cells[index + 1] = .continuation(style: value.style)
     } else {
-      cells[index] = value
+      cells[index] = value.isContinuation ? Cell(style: value.style) : value
     }
   }
 

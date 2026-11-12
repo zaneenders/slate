@@ -82,7 +82,8 @@ import Testing
   let pendingBeforeCancellation = search.hasPendingWork
   try #require(pendingBeforeCancellation)
   var copy = CopyBuffer()
-  #expect(search.handle(.escape, modifiers: [], copyBuffer: &copy, firstByte: 0, byteCount: source.byteCount) == .redraw)
+  #expect(
+    search.handle(.escape, modifiers: [], copyBuffer: &copy, firstByte: 0, byteCount: source.byteCount) == .redraw)
   let statistics = source.statistics
   #expect(!search.hasPendingWork && !search.isVisible && !search.isFocused && search.match == nil)
   #expect(search.state == .cancelled && search.advance(from: &source) == nil)
@@ -142,15 +143,18 @@ import Testing
   }
   try #require(!viewer.hasPendingWork && viewer.searchState == .found)
   #expect(viewer.searchMatch == 1_002..<1_020)
-  var surface = try Surface(maximumSize: .init(columns: 160, rows: 60), nodeCapacity: SlateDocumentDemo.configuration.nodeCapacity)
-  try surface.render(size: size) { viewer.render(in: size) } paint: { viewer.paint(in: &$0) }
+  var surface = try Surface(
+    maximumSize: .init(columns: 160, rows: 60), nodeCapacity: SlateDocumentDemo.configuration.nodeCapacity)
+  try surface.render(size: size) { viewer.render(in: size) }
   #expect(surface.cell(x: 0, y: 22)?.glyph.scalar == "/")
   let queryGlyph = try #require(surface.cell(x: 2, y: 22)?.glyph)
   #expect(String(copying: queryGlyph.utf8()) == "漢")
-  let layout = DocumentViewerLayout(size: .init(columns: 80, rows: 22), byteCount: fixture.bytes.count, showInspector: true)
+  let layout = DocumentViewerLayout(
+    size: .init(columns: 80, rows: 22), byteCount: fixture.bytes.count, showInspector: true)
   let highlights = (0..<layout.text.height).flatMap { row in
     (0..<layout.text.width).filter { column in
-      surface.cell(x: layout.text.x + column, y: layout.text.y + row)?.style.background == ViewerPalette.match.background
+      surface.cell(x: layout.text.x + column, y: layout.text.y + row)?.style.background
+        == ViewerPalette.match.background
     }
   }
   #expect(highlights.count == 4)
@@ -158,8 +162,10 @@ import Testing
   #expect(!viewer.searchFocused)
   _ = viewer.event(.mouse(.init(action: .press, button: .left, column: 2, row: 22)), copyBuffer: &copy)
   #expect(viewer.searchFocused)
-  for smallSize in [TerminalSize(columns: 0, rows: 0), .init(columns: 1, rows: 1), .init(columns: 16, rows: 7), surface.maximumSize] {
-    try surface.render(size: smallSize) { viewer.render(in: smallSize) } paint: { viewer.paint(in: &$0) }
+  for smallSize in [
+    TerminalSize(columns: 0, rows: 0), .init(columns: 1, rows: 1), .init(columns: 16, rows: 7), surface.maximumSize
+  ] {
+    try surface.render(size: smallSize) { viewer.render(in: smallSize) }
     try finishViewportPreparation(viewer)
     #expect(viewer.searchMatch == 1_002..<1_020)
   }

@@ -4,6 +4,32 @@ import Testing
 
 @testable import SlateDocumentDemo
 
+@Test func documentViewerCanvasComposesAtAnOffsetAndPreservesTheCommandStrip() throws {
+  let fixture = try ViewerFixture("0123456789abcdef")
+  let viewer = try DocumentFileViewer(fixture.path)
+  let viewerSize = TerminalSize(columns: 80, rows: 24)
+  let size = TerminalSize(columns: 82, rows: 24)
+  var surface = try Surface(maximumSize: size)
+  var copy = CopyBuffer()
+  for commands in [false, true] {
+    if commands { _ = viewer.event(.key(.character(":")), copyBuffer: &copy) }
+    try surface.render(size: size) {
+      Row {
+        Text("L").frame(width: .fixed(1), height: .fill, alignment: .topLeading)
+        viewer.render(in: viewerSize).frame(width: .fixed(80), height: .fill)
+        Text("R").frame(width: .fixed(1), height: .fill, alignment: .topLeading)
+      }
+    }
+    #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "L")
+    #expect(surface.cell(x: 81, y: 0)?.glyph.scalar == "R")
+    #expect(surface.cell(x: 2, y: 0)?.glyph.scalar == "S")
+    let documentSize = TerminalSize(columns: 80, rows: commands ? 23 : 24)
+    let layout = DocumentViewerLayout(size: documentSize, byteCount: 16, showInspector: true)
+    #expect(surface.cell(x: 1 + layout.text.x, y: layout.text.y)?.glyph.scalar == "0")
+    if commands { #expect(surface.cell(x: 1, y: 23)?.glyph.scalar == ":") }
+  }
+}
+
 @Test func documentViewerWrapsBytesAndMarksOnlyRevealedRows() throws {
   let text = String(repeating: "0123456789abcdef", count: 1_024)
   let fixture = try ViewerFixture(text)

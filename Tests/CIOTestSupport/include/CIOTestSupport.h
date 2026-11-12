@@ -1,6 +1,16 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
+
+#if defined(__APPLE__)
+// Opt-in synchronous allocation probe. Prepare before each measured test on the
+// same thread; returns zero unless the separate interposer dylib was injected.
+// No awaits, test assertions, logging, or nested measurements between begin/end.
+int cli_test_prepare_allocation_counter(void);
+void cli_test_begin_allocation_count(void);
+uint64_t cli_test_end_allocation_count(void);
+#endif
 
 // Spawn an isolated process group on a PTY, without running Swift after fork.
 int cli_test_spawn_terminal(const char *path, int slave, int *child);

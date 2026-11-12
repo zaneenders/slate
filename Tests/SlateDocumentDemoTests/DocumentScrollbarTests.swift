@@ -164,7 +164,11 @@ import Testing
   _ = application.render(in: size)
   try finishApplicationWork(&application, size: size)
   var surface = try Surface(maximumSize: size)
-  try surface.render(size: size) { application.paint(in: &$0) }
+  try surface.render(size: size) {
+    application.render(in: size)
+  } paint: {
+    application.paint(in: &$0)
+  }
   let percent = (39..<43).map { surface.cell(x: $0, y: size.rows - 4)!.glyph.scalar }.map(String.init).joined()
   #expect(percent == "100%")
 }

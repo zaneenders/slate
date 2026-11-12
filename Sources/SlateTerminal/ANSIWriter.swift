@@ -2,9 +2,12 @@ import SlateUI
 
 // Shared by full-screen and region presentation; each owner retains its writer.
 struct ANSIWriter: ~Copyable {
+  let capabilities: TerminalCapabilities
   private var bytes = InlineArray<4_096, UInt8>(repeating: 0)
   private var count = 0
   private(set) var outputBytes = 0
+
+  init(capabilities: TerminalCapabilities = .init()) { self.capabilities = capabilities }
 
   mutating func reset() {
     count = 0
@@ -56,8 +59,10 @@ struct ANSIWriter: ~Copyable {
   }
 
   mutating func style(
-    _ style: Style, previous: Style? = nil, to output: borrowing Output
+    _ requested: Style, previous: Style? = nil, to output: borrowing Output
   ) throws(IOError) {
+    let style = resolved(requested)
+    let previous = previous.map { resolved($0) }
     // Color-only transitions preserve active text attributes. A full reset
     // handles unknown previous state and changes to text attributes.
     // Uses the existing buffer; at most two palette parameters replace a reset
@@ -71,21 +76,11 @@ struct ANSIWriter: ~Copyable {
       guard foregroundChanged || backgroundChanged else { return }
       try literal("\u{1b}[", to: output)
       if foregroundChanged {
-        if case .indexed(let value) = style.foreground {
-          try literal("38;5;", to: output)
-          try number(Int(value), to: output)
-        } else {
-          try literal("39", to: output)
-        }
+        try color(style.foreground, foreground: true, to: output)
       }
       if backgroundChanged {
         if foregroundChanged { try byte(0x3b, to: output) }
-        if case .indexed(let value) = style.background {
-          try literal("48;5;", to: output)
-          try number(Int(value), to: output)
-        } else {
-          try literal("49", to: output)
-        }
+        try color(style.background, foreground: false, to: output)
       }
       try byte(0x6d, to: output)
       return
@@ -95,18 +90,51 @@ struct ANSIWriter: ~Copyable {
     if style.dim { try literal(";2", to: output) }
     if style.underlined { try literal(";4", to: output) }
     if style.inverse { try literal(";7", to: output) }
-    if case .indexed(let value) = style.foreground {
-      try literal(";38;5;", to: output)
-      try number(Int(value), to: output)
+    if style.foreground != .default {
+      try byte(0x3b, to: output)
+      try color(style.foreground, foreground: true, to: output)
     }
-    if case .indexed(let value) = style.background {
-      try literal(";48;5;", to: output)
-      try number(Int(value), to: output)
+    if style.background != .default {
+      try byte(0x3b, to: output)
+      try color(style.background, foreground: false, to: output)
     }
     try byte(0x6d, to: output)
   }
 
+  private func resolved(_ requested: Style) -> Style {
+    var style = requested
+    style.foreground = capabilities.resolve(requested.foreground)
+    style.background = capabilities.resolve(requested.background)
+    return style
+  }
+
+  private mutating func color(_ color: Color, foreground: Bool, to output: borrowing Output) throws(IOError) {
+    switch color {
+    case .default: try number(foreground ? 39 : 49, to: output)
+    case .indexed(let value):
+      if capabilities.color == .ansi16 {
+        precondition(value < 16)
+        try number((foreground ? 30 : 40) + Int(value % 8) + (value < 8 ? 0 : 60), to: output)
+      } else {
+        try literal(foreground ? "38;5;" : "48;5;", to: output)
+        try number(Int(value), to: output)
+      }
+    case .rgb(let red, let green, let blue):
+      try literal(foreground ? "38;2;" : "48;2;", to: output)
+      try number(Int(red), to: output)
+      try byte(0x3b, to: output)
+      try number(Int(green), to: output)
+      try byte(0x3b, to: output)
+      try number(Int(blue), to: output)
+    }
+  }
+
   mutating func glyph(_ glyph: Glyph, to output: borrowing Output) throws(IOError) {
+    if capabilities.unicode == .ascii && (glyph.byteCount != 1 || glyph.scalar.value > 0x7f) {
+      try byte(0x3f, to: output)
+      if glyph.columnWidth == 2 { try byte(0x20, to: output) }
+      return
+    }
     let source = glyph.utf8().span
     for index in 0..<source.count { try byte(source[index], to: output) }
   }
