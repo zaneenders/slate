@@ -34,9 +34,9 @@ struct SlateDocumentDemo: ScreenApplication {
   }
 
   private static let usage = """
-    Usage: slate-document-demo [--] path/to/file
+    Usage: document [--] path/to/file
 
-    Example: swift run -c release slate-document-demo pi_hex_1b.txt
+    Example: swift run -c release document pi_hex_1b.txt
 
     Paged byte editor for regular files, including binary, with live page-cache diagnostics.
     Printable UTF-8 is shown with Unicode column widths; controls and malformed bytes appear as dots.
@@ -64,7 +64,7 @@ struct SlateDocumentDemo: ScreenApplication {
     if case .failure(let message) = application.mode { fail(message) }
     do throws(ScreenApplicationError) { try application.run(signalHandling: .managed) } catch {
       if case .interrupted(let number) = error { exit(128 + number) }
-      fail("slate-document-demo: \(error)")
+      fail("document: \(error)")
     }
     if case .failure(let message) = application.mode { fail(message) }
   }

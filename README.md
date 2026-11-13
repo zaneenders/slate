@@ -6,7 +6,7 @@ drawing, and ANSI frame diffing. Requires Swift 6.4.2; the macOS target is 27.
 Start with the small interactive example:
 
 ```sh
-swift run slate-starter
+swift run starter
 ```
 
 [SlateStarter.swift](Examples/SlateStarter/SlateStarter.swift) is the intended
@@ -21,7 +21,7 @@ to exit. Slate handles terminal setup, cleanup, and resizing.
 Run the larger graphics showcase:
 
 ```sh
-swift run -c release slate-graphics-demo
+swift run -c release graphics
 ```
 
 Drag the floating panel by its title bar with the left mouse button. It stays
@@ -198,9 +198,9 @@ their own `output.graphemeClustering()` scope.
 swift test
 swift test -c release
 Scripts/check-render-allocations.sh
-swift run slate-starter
-swift run -c release slate-graphics-demo
-swift run -c release slate-document-demo path/to/file
+swift run starter
+swift run -c release graphics
+swift run -c release document path/to/file
 ```
 
 The document viewer also exercises Canvas with paging, selection, and input strips.

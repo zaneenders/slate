@@ -21,9 +21,9 @@ let package = Package(
   platforms: [.macOS(.v27)],
   products: [
     .library(name: "Slate", targets: ["Slate"]),
-    .executable(name: "slate-starter", targets: ["SlateStarter"]),
-    .executable(name: "slate-document-demo", targets: ["SlateDocumentDemo"]),
-    .executable(name: "slate-graphics-demo", targets: ["SlateGraphicsDemo"])
+    .executable(name: "starter", targets: ["SlateStarter"]),
+    .executable(name: "document", targets: ["SlateDocumentDemo"]),
+    .executable(name: "graphics", targets: ["SlateGraphicsDemo"])
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5"),
