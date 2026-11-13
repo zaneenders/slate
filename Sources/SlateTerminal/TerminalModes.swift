@@ -4,8 +4,10 @@ import SystemPackage
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
+import CSystem
 import Glibc
 #elseif canImport(Musl)
+import CSystem
 import Musl
 #endif
 
