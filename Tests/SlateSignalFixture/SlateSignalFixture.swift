@@ -15,7 +15,9 @@ struct SlateSignalFixture: ScreenApplication {
       do { try field.insert(text) } catch { return .quit }
       return .redraw
     case .pasteRejected: return .quit
+    case .pasteEmpty: return .none
     case .mouse: return .none
+    case .tick: return .none
     }
   }
 

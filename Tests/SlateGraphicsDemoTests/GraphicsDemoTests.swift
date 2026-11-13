@@ -6,7 +6,7 @@ import Testing
 @Test func graphicsDemoRendersAtEmptySmallAndMaximumSizesWithoutChangingStorage() throws {
   let application = SlateGraphicsDemo()
   let configuration = SlateGraphicsDemo.configuration
-  var surface = try Surface(maximumSize: configuration.maximumSize, nodeCapacity: configuration.nodeCapacity)
+  var surface = try Surface(maximumSize: configuration.maximumSize)
   let budget = surface.storageBudgetBytes
   for size in [
     TerminalSize(columns: 0, rows: 0), .init(columns: 1, rows: 1), .init(columns: 16, rows: 7),
@@ -35,7 +35,7 @@ import Testing
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)
-  var surface = try Surface(maximumSize: size, nodeCapacity: SlateGraphicsDemo.configuration.nodeCapacity)
+  var surface = try Surface(maximumSize: size)
   try surface.render(size: size) { application.render(in: size) }
   let initial = graphicsCells(surface)
   #expect(application.event(.key(.character("o")), copyBuffer: &copy) == .redraw)
@@ -50,25 +50,22 @@ import Testing
   #expect(application.animationPhase == 0)
 }
 
-@Test func graphicsDemoAdvancesAtMostOncePerDeadlineAndHonorsPause() {
-  let start = ContinuousClock().now
-  var application = SlateGraphicsDemo(now: start)
+@Test func graphicsDemoAdvancesOnTicksAndHonorsPause() {
+  var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
-  #expect(!application.isDue(at: start.advanced(by: .milliseconds(49))))
-  #expect(application.advance(at: start.advanced(by: .milliseconds(49))) == .none)
-  #expect(application.advance(at: start.advanced(by: .milliseconds(50))) == .redraw)
+  #expect(application.tickInterval == .milliseconds(16))
+  #expect(!application.hasPendingWork)
+  #expect(application.event(.tick(elapsed: .milliseconds(16)), copyBuffer: &copy) == .redraw)
   #expect(application.animationPhase == 1)
-  #expect(application.advance(at: start.advanced(by: .milliseconds(50))) == .none)
-  let late = start.advanced(by: .seconds(3_600))
-  #expect(application.advance(at: late) == .redraw)
-  #expect(application.animationPhase == 2)
-  #expect(!application.isDue(at: late.advanced(by: .milliseconds(49))))
-  #expect(application.event(.key(.character(" ")), copyBuffer: &copy) == .redraw)
-  #expect(application.isPaused && !application.isDue(at: late))
-  #expect(application.advance(at: late) == .none)
+  #expect(application.event(.tick(elapsed: .seconds(3_600)), copyBuffer: &copy) == .redraw)
   #expect(application.animationPhase == 2)
   #expect(application.event(.key(.character(" ")), copyBuffer: &copy) == .redraw)
-  #expect(application.advance(at: late) == .redraw)
+  #expect(application.isPaused && application.tickInterval == nil)
+  #expect(application.event(.tick(elapsed: .milliseconds(16)), copyBuffer: &copy) == .none)
+  #expect(application.animationPhase == 2)
+  #expect(application.event(.key(.character(" ")), copyBuffer: &copy) == .redraw)
+  #expect(application.tickInterval == .milliseconds(16))
+  #expect(application.event(.tick(elapsed: .milliseconds(16)), copyBuffer: &copy) == .redraw)
   #expect(application.animationPhase == 3)
   #expect(application.event(.key(.character("q")), copyBuffer: &copy) == .quit)
   #expect(application.event(.key(.character("c"), modifiers: .control), copyBuffer: &copy) == .quit)

@@ -88,13 +88,6 @@ import Glibc
       Issue.record("Invalid capacity was accepted")
     } catch { #expect(error == .invalidCapacity) }
   }
-  for capacity in [0, 513] {
-    do {
-      let screen = try Screen(nodeCapacity: capacity)
-      _ = consume screen
-      Issue.record("Invalid node capacity was accepted")
-    } catch { #expect(error == .invalidCapacity) }
-  }
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   var screen = try Screen(maximumSize: TerminalSize(columns: 2, rows: 2))
@@ -107,21 +100,21 @@ import Glibc
   #expect(screen.cell(x: 0, y: 0) == nil)
 }
 
-@Test func layoutExhaustionPreservesLastFrameAndAllowsReuse() throws {
+@Test func layoutFailurePreservesLastFrameAndAllowsReuse() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  var screen = try Screen(maximumSize: TerminalSize(columns: 4, rows: 1), nodeCapacity: 3)
+  var screen = try Screen(maximumSize: TerminalSize(columns: 4, rows: 1))
   try screen.draw(size: screen.maximumSize, to: output) { Text("ok") }
   _ = try capture.take()
   do {
     try screen.draw(size: screen.maximumSize, to: output) {
       Row {
         Text("A")
-        Text("B")
+        Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
       }
     }
-    Issue.record("Node exhaustion was accepted")
-  } catch { #expect(error == .layout(.nodeCapacityExceeded)) }
+    Issue.record("Layout failure was ignored")
+  } catch { #expect(error == .layout(.textTooLong)) }
   #expect(try capture.take().isEmpty)
   #expect(row(screen, y: 0, columns: 4) == "ok  ")
   #expect(try screen.draw(size: screen.maximumSize, to: output) { Text("ok") }.outputBytes == 0)

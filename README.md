@@ -3,7 +3,22 @@
 A Swift terminal graphics library with composable layout, Unicode cells, custom
 drawing, and ANSI frame diffing. Requires Swift 6.4.2; the macOS target is 27.
 
-Run the graphics showcase:
+Start with the small interactive example:
+
+```sh
+swift run slate-starter
+```
+
+[SlateStarter.swift](Examples/SlateStarter/SlateStarter.swift) is the intended
+starting point for a new application: a text input, a submitted message, and an
+event handler. Type or paste into the input and press **Enter** to display the
+text in the second field. Further edits update that field only after another
+Enter. **Escape** or **Ctrl-C** quits; **q** is ordinary input.
+Edit `render` to change the screen and `event` to change how it responds to input.
+Return `.redraw` after changing state, `.none` when nothing changes, or `.quit`
+to exit. Slate handles terminal setup, cleanup, and resizing.
+
+Run the larger graphics showcase:
 
 ```sh
 swift run -c release slate-graphics-demo
@@ -12,8 +27,8 @@ swift run -c release slate-graphics-demo
 Drag the floating panel by its title bar with the left mouse button. It stays
 inside the viewport and remembers its position when reopened. **O** toggles the
 panel, **Escape** closes it, **Space** pauses the bars, and **Q** quits. Resize
-the terminal to see the layout adapt. Animation advances at most once per 50 ms
-deadline and drops missed frames instead of accumulating work.
+the terminal to see the layout adapt. Animation advances on 16 ms ticks and drops
+missed ticks instead of accumulating work.
 
 ## Custom drawing
 
@@ -57,6 +72,30 @@ struct Demo: ScreenApplication {
 `Frame` borrows those cells for synchronous drawing. `Screen` presents full-screen
 ANSI diffs; `ScreenRegion` presents a positioned region. `ScreenApplication`
 provides the input loop and terminal-mode lifecycle.
+
+Applications receive `.tick(elapsed:)` events every 50 ms by default. Override
+`tickInterval` to change the interval or return `nil` to disable ticks:
+
+```swift
+var tickInterval: Duration? { isPaused ? nil : .milliseconds(16) }
+
+mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+  switch event {
+  case .tick(let elapsed):
+    animation.advance(by: elapsed)
+    return .redraw
+  default: return .none
+  }
+}
+```
+
+The runner owns scheduling. Changing the interval or resuming a suspended session
+starts a fresh interval; intervals must be positive. Elapsed time includes delays,
+and a late iteration delivers one tick rather than catching up missed updates.
+Polling rounds up to whole milliseconds, and callbacks or I/O can delay delivery.
+Ticks request no rendering unless the handler returns `.redraw`. Pending work
+remains independent: use `hasPendingWork` and `performPendingWork()` for bounded
+cooperative processing, such as indexing a file.
 
 ## Layers
 
@@ -128,14 +167,27 @@ their own `output.graphemeClustering()` scope.
   a class-bound reference, avoiding per-frame closure contexts and boxed values.
   Allocation guarantees apply to warmed, successful release-mode rendering;
   debug builds and error propagation may allocate.
-- Layout uses fixed startup storage: at most 512 nodes and depth 32. Canvas shares
-  the drawing table with input fields; its payload costs 16 bytes per node on
-  64-bit hosts. `storageBudgetBytes` includes that table.
+- Layout uses `UniqueArray` storage, starting at 64 nodes and doubling on demand
+  without a node limit. Depth remains limited to 32. Applications need no capacity
+  setting. Growth is an explicit allocation exception; smaller frames and failed
+  layouts retain capacity for reuse. `nodeCapacity` reports the current capacity.
+  Canvas shares the drawing table with input fields; its payload costs 16 bytes
+  per node on 64-bit hosts. `storageBudgetBytes` reports current retained storage.
+  Layout memory scales with retained capacity times the node/drawing strides;
+  doubling temporarily needs at most 1.5 times the new payload during growth.
+  Layout work scales with node count, including offscreen and empty blocks;
+  applications own the size and processing cost of their block lists.
 - Drawing runs once per nonempty canvas, in block order, after successful layout.
-  Capacity rejection preserves the last frame and releases temporary references.
+  Viewport or layout failure preserves the last frame and releases temporary references.
 - Each canvas borrows the existing grid: no extra cell buffer or copying. Writes
   clip to its local area. Overwriting half an existing wide glyph also blanks its
   other half, even across the clip edge, while preserving the neighboring style.
+- Bracketed paste retains at most `ScreenApplicationConfiguration.maximumPasteBytes`
+  (1 MiB by default, 64 MiB maximum). Oversized pastes are drained through their
+  terminator and reported as `.pasteRejected(.tooLarge)`, so their tail never
+  becomes keystrokes. Empty bracketed pastes are reported as `.pasteEmpty`; some
+  terminals use them for image-only clipboard contents, which applications can
+  resolve through a host clipboard.
 - Drawn cells use explicit styles. A surrounding background remains in untouched
   cells. Caller drawing work, strings, allocations, and first-use runtime metadata
   are outside the library's steady-state allocation guarantee.
@@ -146,14 +198,15 @@ their own `output.graphemeClustering()` scope.
 swift test
 swift test -c release
 Scripts/check-render-allocations.sh
+swift run slate-starter
 swift run -c release slate-graphics-demo
 swift run -c release slate-document-demo path/to/file
 ```
 
 The document viewer also exercises Canvas with paging, selection, and input strips.
-The macOS allocation probe checks warmed maximum-grid/node rendering, overlays,
-mouse dragging, color presentation, and capacity rejection with an injected
-allocator counter and a positive control. Successful frames must allocate
-nothing. Rejected layouts allow two Swift Testing diagnostic allocations with
-the pinned toolchain. Output checks use `/dev/null`; they do not measure terminal
-latency.
+The macOS allocation probe checks layout growth and reuse, warmed maximum-grid
+rendering, overlays, animation ticks, mouse dragging, color presentation, and
+layout failure with an injected allocator counter and a positive control.
+Successful frames must allocate nothing within retained capacity. Rejected layouts
+allow two Swift Testing diagnostic allocations with the pinned toolchain. Output
+checks use `/dev/null`; they do not measure terminal latency.

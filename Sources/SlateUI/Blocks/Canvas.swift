@@ -20,6 +20,6 @@ public struct Canvas: Block, ~Sendable {
   public init(_ drawing: any CanvasDrawing) { self.drawing = drawing }
 
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
-    try builder.canvas(drawing)
+    builder.canvas(drawing)
   }
 }

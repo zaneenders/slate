@@ -2,7 +2,7 @@ import Slate
 import SlateTestSupport
 import Testing
 
-@Test func publicBlockListsRenderSlicesAndBoundEvenEmptyChildren() throws {
+@Test func publicBlockListsRenderSlicesAndLargeEmptyOrPopulatedLists() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   let size = TerminalSize(columns: 8, rows: 3)
@@ -12,11 +12,13 @@ import Testing
   #expect(screen.cell(x: 0, y: 0)?.glyph.scalar == "o")
   #expect(screen.cell(x: 0, y: 1)?.glyph.scalar == "t")
   #expect(screen.cell(x: 0, y: 2)?.glyph == .space)
-  let empty = Array(repeating: EmptyPublicBlock(), count: LayoutLimits.maximumNodes + 1)
-  #expect(throws: ScreenError.layout(.nodeCapacityExceeded)) {
-    try screen.draw(size: size, to: output) { BlockList(empty[...]) }
-  }
+  let empty = Array(repeating: EmptyPublicBlock(), count: 4_096)
+  try screen.draw(size: size, to: output) { BlockList(empty[...]) }
+  #expect(screen.cell(x: 0, y: 0)?.glyph == .space)
+  let repeated = Array(repeating: Text("ok"), count: 4_096)
+  try screen.draw(size: size, to: output) { Row { BlockList(repeated[...]) } }
   #expect(screen.cell(x: 0, y: 0)?.glyph.scalar == "o")
+  #expect(screen.cell(x: 7, y: 0)?.glyph.scalar == "k")
   try screen.draw(size: size, to: output) { BlockList(lines[0..<0]) }
   #expect(screen.cell(x: 0, y: 0)?.glyph == .space)
 }

@@ -144,7 +144,7 @@ import Testing
   try #require(!viewer.hasPendingWork && viewer.searchState == .found)
   #expect(viewer.searchMatch == 1_002..<1_020)
   var surface = try Surface(
-    maximumSize: .init(columns: 160, rows: 60), nodeCapacity: SlateDocumentDemo.configuration.nodeCapacity)
+    maximumSize: .init(columns: 160, rows: 60))
   try surface.render(size: size) { viewer.render(in: size) }
   #expect(surface.cell(x: 0, y: 22)?.glyph.scalar == "/")
   let queryGlyph = try #require(surface.cell(x: 2, y: 22)?.glyph)

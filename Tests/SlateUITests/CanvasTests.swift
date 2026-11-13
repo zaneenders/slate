@@ -54,7 +54,7 @@ import Testing
 }
 
 @Test func canvasReleasesOwnersAfterSuccessAndFailureAndPreservesTheLastFrame() throws {
-  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1), nodeCapacity: 2)
+  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1))
   weak var released: CanvasProbe?
   do {
     let drawing = CanvasProbe { $0.text("keep", in: $0.area) }
@@ -66,10 +66,10 @@ import Testing
   do {
     let drawing = CanvasProbe { _ in Issue.record("Rejected layouts must not paint") }
     released = drawing
-    #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+    #expect(throws: SurfaceError.layout(.textTooLong)) {
       try surface.render(size: surface.maximumSize) {
         Canvas(drawing)
-        Text("overflow")
+        Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
       }
     }
     #expect(throws: SurfaceError.viewportCapacityExceeded) {

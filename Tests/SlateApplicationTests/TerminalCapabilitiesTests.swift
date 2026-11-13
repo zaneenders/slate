@@ -27,7 +27,7 @@ import Musl
       try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
       #expect(!failLayout)
     } catch {
-      #expect(failLayout && error == .screen(.layout(.nodeCapacityExceeded)))
+      #expect(failLayout && error == .screen(.layout(.textTooLong)))
     }
     expectEqual(try attributes(of: pty.slave), saved)
     let bytes = try capabilitySessionOutput(pty.master)
@@ -40,12 +40,12 @@ import Musl
 private struct ASCIIApplication: ScreenApplication {
   var failLayout = false
   static var configuration: ScreenApplicationConfiguration {
-    .init(nodeCapacity: 2, capabilities: .init(color: .trueColor, unicode: .ascii))
+    .init(capabilities: .init(color: .trueColor, unicode: .ascii))
   }
 
   @BlockBuilder func render(in size: TerminalSize) -> some Block {
     if failLayout {
-      Column { Text("overflow") }
+      Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
     } else {
       Text("漢é", style: Style(foreground: .rgb(1, 2, 3)))
     }

@@ -51,7 +51,7 @@ import Musl
       try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
       #expect(!failLayout)
     } catch {
-      #expect(failLayout && error == .screen(.layout(.nodeCapacityExceeded)))
+      #expect(failLayout && error == .screen(.layout(.textTooLong)))
     }
     let received = try mouseSessionOutput(pty.master)
     #expect(received.contains("\u{1b}[?1006h\u{1b}[?1003h"))
@@ -85,7 +85,7 @@ private struct MouseApplication: ScreenApplication, ~Copyable {
   let probe = MouseProbe()
   var failLayout = false
   var quitOnRelease = false
-  static var configuration: ScreenApplicationConfiguration { .init(nodeCapacity: 2, mouseTracking: true) }
+  static var configuration: ScreenApplicationConfiguration { .init(mouseTracking: true) }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
     switch event {
@@ -95,12 +95,16 @@ private struct MouseApplication: ScreenApplication, ~Copyable {
     case .key(let key, _):
       probe.keys.append(key)
       return key == .character("q") ? .quit : .none
-    case .paste, .pasteRejected: return .none
+    case .paste, .pasteEmpty, .pasteRejected, .tick: return .none
     }
   }
 
   @BlockBuilder func render(in size: TerminalSize) -> some Block {
-    if failLayout { Column { Text("too many nodes") } } else { Text("mouse") }
+    if failLayout {
+      Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
+    } else {
+      Text("mouse")
+    }
   }
 
   func paint(in frame: inout Frame) { probe.frames += 1 }

@@ -92,27 +92,29 @@ import Testing
   #expect(surface.cell(x: 5, y: 0)?.isContinuation == true)
 }
 
-@Test func overlayExhaustionPreservesTheLastFrameAndAllowsReuse() throws {
+@Test func overlayLayoutFailurePreservesTheLastFrameAndAllowsReuse() throws {
   let drawing = OverlayDrawing { $0.text("keep", in: $0.area) }
-  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1), nodeCapacity: 3)
-  let budget = surface.storageBudgetBytes
+  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1))
+  let initialBudget = surface.storageBudgetBytes
   try surface.render(size: surface.maximumSize) { Overlay { Canvas(drawing) } }
-  #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+  #expect(throws: SurfaceError.layout(.textTooLong)) {
     try surface.render(size: surface.maximumSize) {
       Overlay {
         Canvas(drawing)
-        Text("overflow")
+        Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
       }
     }
   }
   #expect(drawing.calls == 1)
   #expect(overlayRow(surface, y: 0) == "keep")
-  #expect(surface.storageBudgetBytes == budget)
+  let budget = surface.storageBudgetBytes
+  #expect(budget == initialBudget)
   try surface.render(size: surface.maximumSize) { Overlay { Text("next") } }
   #expect(overlayRow(surface, y: 0) == "next")
   try surface.render(size: surface.maximumSize) { Overlay {} }
   #expect(overlayRow(surface, y: 0) == "    ")
   try surface.render(size: TerminalSize(columns: 0, rows: 0)) { Overlay { Canvas(drawing) } }
+  #expect(surface.storageBudgetBytes == budget)
   #expect(drawing.calls == 1)
 }
 

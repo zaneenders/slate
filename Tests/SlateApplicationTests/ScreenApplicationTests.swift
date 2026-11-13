@@ -183,15 +183,15 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(try capture.take().isEmpty)
 }
 
-@Test func applicationLayoutExhaustionUnwindsBothTerminalScopes() throws {
+@Test func applicationLayoutFailureUnwindsBothTerminalScopes() throws {
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
-  var application = LimitedApplication()
+  var application = FailingLayoutApplication()
   do {
     try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
-    Issue.record("Node exhaustion was ignored")
-  } catch { #expect(error == .screen(.layout(.nodeCapacityExceeded))) }
+    Issue.record("Layout failure was ignored")
+  } catch { #expect(error == .screen(.layout(.textTooLong))) }
   expectEqual(try attributes(of: pty.slave), saved)
   try expectApplicationScreenRestored(pty.master)
 }
@@ -340,7 +340,9 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let now = ContinuousClock().now
-  let counts = [0, 65_535, 65_536, 65_537, 131_073, 1_048_577, 65_536, 1, 0, 1_048_577]
+  let counts = [0, 65_535, 65_536, 65_537, 131_073, 1_048_576, 65_536, 1]
+  var expectedPastes = 0
+  var expectedEmptyPastes = 0
   for count in counts {
     let body = count >= 2 ? String(repeating: "q", count: count - 2) + "é" : String(repeating: "q", count: count)
     let bytes = Array(("\u{1b}[200~" + body + "\u{1b}[201~j").utf8)
@@ -349,20 +351,76 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
         runner.receive(bytes.span.extracting(start..<min(start + 64, bytes.count)), at: now, application: &application))
     }
     #expect(application.probe.keys.last == .character("j"))
-    #expect(application.probe.pastes.last == body)
+    if count == 0 {
+      expectedEmptyPastes += 1
+    } else {
+      expectedPastes += 1
+      #expect(application.probe.pastes.last == body)
+    }
   }
-  #expect(application.probe.pastes.count == counts.count)
+  #expect(application.probe.pastes.count == expectedPastes)
+  #expect(application.probe.emptyPastes == expectedEmptyPastes)
   #expect(application.probe.pasteErrors.isEmpty)
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count))
   let bad: [UInt8] = Array("\u{1b}[200~".utf8) + [0xff] + Array("\u{1b}[201~".utf8)
   #expect(runner.receive(bad.span, at: now, application: &application))
   #expect(application.probe.pasteErrors == [.invalidUTF8])
-  #expect(application.probe.pastes.count == counts.count)
+  #expect(application.probe.pastes.count == expectedPastes)
   let recovered = "\u{1b}[200~café\u{1b}[201~j".utf8Span.span
   #expect(runner.receive(recovered, at: now, application: &application))
   #expect(application.probe.pastes.last == "café")
-  #expect(application.probe.pastes.count == counts.count + 1)
+  #expect(application.probe.pastes.count == expectedPastes + 1)
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count + 1))
+}
+
+@Test func applicationBoundsPastesAndSurfacesEmptyPastes() throws {
+  var runner = try ScreenRunner(configuration: .init(maximumPasteBytes: 4))
+  var application = ProbeApplication()
+  let now = ContinuousClock().now
+  #expect(feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(application.probe.pastes == ["abcd"])
+  #expect(application.probe.keys.last == .character("j"))
+
+  // The oversized body is drained through its terminator; the following key
+  // still arrives and the rejected tail is never replayed as text.
+  #expect(feedPaste("\u{1b}[200~abcde\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(application.probe.pasteErrors == [.tooLarge])
+  #expect(application.probe.pastes == ["abcd"])
+  #expect(application.probe.keys.last == .character("j"))
+
+  #expect(feedPaste("\u{1b}[200~\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(application.probe.emptyPastes == 1)
+  #expect(application.probe.pastes == ["abcd"])
+
+  // Reset clears the oversized state and retained storage remains reusable.
+  #expect(feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(application.probe.pastes == ["abcd", "abcd"])
+}
+
+@Test func applicationRejectsInvalidPasteCapacity() {
+  #expect(ScreenApplicationConfiguration().maximumPasteBytes == 1_048_576)
+  #expect(ScreenApplicationConfiguration.maximumPasteBytesLimit == 64 * 1_048_576)
+  #expect(throws: ScreenError.invalidCapacity) {
+    _ = try ScreenRunner(configuration: .init(maximumPasteBytes: 0))
+  }
+  #expect(throws: ScreenError.invalidCapacity) {
+    _ = try ScreenRunner(
+      configuration: .init(maximumPasteBytes: ScreenApplicationConfiguration.maximumPasteBytesLimit + 1))
+  }
+}
+
+private func feedPaste(
+  _ text: String, to runner: inout ScreenRunner, application: inout ProbeApplication,
+  at now: ContinuousClock.Instant
+) -> Bool {
+  let bytes = Array(text.utf8)
+  for start in stride(from: 0, to: bytes.count, by: 64) {
+    let end = min(start + 64, bytes.count)
+    if !runner.receive(bytes.span.extracting(start..<end), at: now, application: &application) {
+      return false
+    }
+  }
+  return true
 }
 
 private final class WorkProbe {
@@ -401,6 +459,7 @@ private final class ApplicationProbe {
   var modifiers: [KeyModifiers] = []
   var sizes: [TerminalSize] = []
   var pastes: [String] = []
+  var emptyPastes = 0
   var pasteErrors: [PasteError] = []
 }
 
@@ -415,6 +474,9 @@ private struct ProbeApplication: ScreenApplication, ~Copyable {
     case .paste(let text):
       probe.pastes.append(String(copying: text))
       return .redraw
+    case .pasteEmpty:
+      probe.emptyPastes += 1
+      return .redraw
     case .pasteRejected(let error):
       probe.pasteErrors.append(error)
       return .redraw
@@ -424,7 +486,7 @@ private struct ProbeApplication: ScreenApplication, ~Copyable {
       guard modifiers.isEmpty else { return .none }
       if key == quitKey { return .quit }
       return key == .character("r") ? .redraw : .none
-    case .mouse: return .none
+    case .mouse, .tick: return .none
     }
   }
 
@@ -434,15 +496,16 @@ private struct ProbeApplication: ScreenApplication, ~Copyable {
   }
 }
 
-private struct LimitedApplication: ScreenApplication {
-  static var configuration: ScreenApplicationConfiguration { .init(nodeCapacity: 1) }
+private struct FailingLayoutApplication: ScreenApplication {
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
     switch event {
     case .key(_, let modifiers): return modifiers.isEmpty ? .quit : .none
     default: return .none
     }
   }
-  func render(in size: TerminalSize) -> some Block { Text("x") }
+  func render(in size: TerminalSize) -> some Block {
+    Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
+  }
 }
 
 private func setApplicationTerminalSize(_ descriptor: Int32) throws {

@@ -95,17 +95,17 @@ import Testing
 
 @Test func inputLayoutReleasesFieldReferencesAfterSuccessAndPartialFailure() throws {
   let size = TerminalSize(columns: 8, rows: 1)
-  var surface = try Surface(maximumSize: size, nodeCapacity: 3)
+  var surface = try Surface(maximumSize: size)
   weak var retained: TextInput?
   do {
     let input = try TextInput("field")
     retained = input
     try surface.render(size: size) { InputBox(input) }
-    #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+    #expect(throws: SurfaceError.layout(.textTooLong)) {
       try surface.render(size: size) {
         Column {
           InputBox(input)
-          Text("overflow")
+          Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
         }
       }
     }

@@ -116,7 +116,7 @@ struct SlateDocumentDemo: ScreenApplication {
   }
 
   static var configuration: ScreenApplicationConfiguration {
-    .init(maximumSize: TerminalSize(columns: 160, rows: 60), nodeCapacity: 32, mouseTracking: true)
+    .init(maximumSize: TerminalSize(columns: 160, rows: 60), mouseTracking: true)
   }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {

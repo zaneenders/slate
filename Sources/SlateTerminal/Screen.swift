@@ -22,7 +22,8 @@ public struct FrameStatistics: Equatable, Sendable {
 }
 
 /// Presents a UI surface with ANSI diffing. Owns two fixed-capacity cell grids,
-/// bounded layout storage, and a 4 KiB writer. Rendering and output are synchronous.
+/// growable layout storage, and a 4 KiB writer. Layout capacity is
+/// retained between draws. Rendering and output are synchronous.
 /// Shares cell presentation with ScreenRegion; this owner clears the terminal
 /// on invalidation and retains the last successful grid for diffing.
 /// Compound Unicode requires grapheme-aware terminal widths. ScreenApplication
@@ -47,11 +48,10 @@ public struct Screen: ~Copyable, ~Sendable {
 
   public init(
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
-    nodeCapacity: Int = LayoutLimits.maximumNodes,
     capabilities: TerminalCapabilities = .init()
   ) throws(ScreenError) {
     do throws(SurfaceError) {
-      surface = try Surface(maximumSize: maximumSize, nodeCapacity: nodeCapacity)
+      surface = try Surface(maximumSize: maximumSize)
     } catch { throw ScreenError(error) }
     previous = RigidArray(repeating: Cell(), count: maximumSize.columns * maximumSize.rows)
     writer = ANSIWriter(capabilities: capabilities)

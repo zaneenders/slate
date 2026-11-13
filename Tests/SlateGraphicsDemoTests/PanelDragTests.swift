@@ -79,7 +79,7 @@ import Testing
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)
-  var surface = try Surface(maximumSize: size, nodeCapacity: SlateGraphicsDemo.configuration.nodeCapacity)
+  var surface = try Surface(maximumSize: size)
   try surface.render(size: size) { application.render(in: size) }
   #expect(SlateGraphicsDemo.configuration.mouseTracking)
   _ = application.event(.mouse(.init(action: .press, button: .left, column: 30, row: 8)), copyBuffer: &copy)
@@ -105,7 +105,7 @@ import Testing
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)
-  var surface = try Surface(maximumSize: size, nodeCapacity: SlateGraphicsDemo.configuration.nodeCapacity)
+  var surface = try Surface(maximumSize: size)
   _ = application.event(.key(.character("o")), copyBuffer: &copy)
   try surface.render(size: size) { application.render(in: size) }
   let background = (0..<(size.columns * size.rows)).map {

@@ -164,11 +164,15 @@ import Testing
     }
     #expect(try source.readBytes(from: bytes.count, into: output.mutableSpan) == 0)
     #expect(throws: FileDocumentError.invalidRange) { try source.readBytes(from: -1, into: output.mutableSpan) }
-    #expect(throws: FileDocumentError.invalidRange) { try source.readBytes(from: bytes.count + 1, into: output.mutableSpan) }
+    #expect(throws: FileDocumentError.invalidRange) {
+      try source.readBytes(from: bytes.count + 1, into: output.mutableSpan)
+    }
     let statistics = source.statistics
     #expect(throws: FileDocumentError.invalidUTF8(byteOffset: 3)) { try source.validateSnapshot() }
     #expect(throws: FileDocumentError.invalidUTF8(byteOffset: 3)) { try source.lineContentRange(at: 0) }
-    #expect(throws: FileDocumentError.invalidUTF8(byteOffset: 3)) { try source.readUTF8(from: 0, into: output.mutableSpan) }
+    #expect(throws: FileDocumentError.invalidUTF8(byteOffset: 3)) {
+      try source.readUTF8(from: 0, into: output.mutableSpan)
+    }
     var viewport = try TextViewport(maximumSize: .init(columns: 8, rows: 1))
     #expect(throws: TextViewportError<FileDocumentError>.source(.invalidUTF8(byteOffset: 3))) {
       try viewport.prepare(from: &source, size: viewport.maximumSize)
@@ -188,7 +192,8 @@ import Testing
   var source = try PagedFileDocument.open(fixture.path, configuration: .init(pageBytes: 4, cachePages: 1))
   let budget = source.cacheStorageBudgetBytes
   var output = InlineArray<8, UInt8>(repeating: 0xa5)
-  for (offset, limit, expected) in [(0, 0, 0), (0, 2, 2), (3, 8, 1), (4, 3, 3), (8, 8, 2), (0, Int.max, 4), (10, 8, 0)] {
+  for (offset, limit, expected) in [(0, 0, 0), (0, 2, 2), (3, 8, 1), (4, 3, 3), (8, 8, 2), (0, Int.max, 4), (10, 8, 0)]
+  {
     output = InlineArray(repeating: 0xa5)
     let before = source.statistics
     let count = try source.readBytes(from: offset, maximumCount: limit, into: output.mutableSpan)

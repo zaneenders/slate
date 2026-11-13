@@ -2,7 +2,7 @@ import SlateUI
 import Testing
 
 @Test func customPaintingUsesTheComposedFrameAndSkipsRejectedLayouts() throws {
-  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1), nodeCapacity: 2)
+  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1))
   var calls = 0
   try surface.render(
     size: surface.maximumSize,
@@ -14,10 +14,10 @@ import Testing
     })
   #expect(calls == 1 && surface.cell(x: 0, y: 0)?.glyph.scalar == "x")
   #expect(surface.cell(x: 1, y: 0)?.glyph.scalar == "a")
-  #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+  #expect(throws: SurfaceError.layout(.textTooLong)) {
     try surface.render(
       size: surface.maximumSize,
-      content: { Column { Text("too many nodes") } },
+      content: { Column { Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1)) } },
       paint: { _ in calls += 1 })
   }
   #expect(throws: SurfaceError.viewportCapacityExceeded) {

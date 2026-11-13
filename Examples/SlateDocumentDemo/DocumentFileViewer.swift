@@ -192,7 +192,7 @@ final class DocumentFileViewer: CanvasDrawing, ~Sendable {
       }
       return mouse(event)
     case .paste(let text): return search.paste(text, byteCount: source.byteCount)
-    case .pasteRejected: return .none
+    case .pasteEmpty, .pasteRejected, .tick: return .none
     }
   }
 
@@ -990,8 +990,9 @@ extension DocumentFileViewer {
         do { try commandInput.insert(text) } catch {
           editNotice = "Command is too long or contains unsupported controls."
         }
-      case .pasteRejected: editNotice = "Paste rejected: invalid UTF-8 or incomplete paste."
-      case .mouse: return ScreenUpdate.none
+      case .pasteRejected:
+        editNotice = "Paste rejected: invalid UTF-8, incomplete framing, or too large."
+      case .pasteEmpty, .mouse, .tick: return ScreenUpdate.none
       }
       return .redraw
     }
@@ -1041,9 +1042,9 @@ extension DocumentFileViewer {
       return .redraw
     case .paste(let text): return replaceSelection(with: text)
     case .pasteRejected:
-      editNotice = "Paste rejected: invalid UTF-8 or incomplete paste."
+      editNotice = "Paste rejected: invalid UTF-8, incomplete framing, or too large."
       return .redraw
-    case .mouse: return nil
+    case .pasteEmpty, .mouse, .tick: return nil
     }
   }
 

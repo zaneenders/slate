@@ -38,13 +38,11 @@ public enum Alignment: Sendable {
 }
 
 public enum LayoutLimits: Sendable {
-  public static let maximumNodes = 512
   public static let maximumDepth = 32
   public static let maximumTextScalars = 4_096
 }
 
 public enum LayoutError: Error, Equatable, Sendable {
-  case nodeCapacityExceeded
   case depthExceeded
   case textTooLong
 }

@@ -15,7 +15,7 @@ import Glibc
 @Test func regionDrawUsesLocalLayoutAndAbsoluteOutputWithoutClearingTheTerminal() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 2), nodeCapacity: 4)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 2))
   let region = Rect(x: 3, y: 2, width: 2, height: 2)
   let viewport = TerminalSize(columns: 10, rows: 8)
   let painted = try surface.draw(in: region, clippedTo: viewport, to: output) { Text("AB\nCD") }
@@ -55,7 +55,7 @@ import Glibc
 @Test func regionClipsCellsWithoutChangingLayoutAndClearsThePreviousOrigin() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 4, rows: 2), nodeCapacity: 4)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 4, rows: 2))
   let viewport = TerminalSize(columns: 5, rows: 3)
   let region = Rect(x: 3, y: 2, width: 4, height: 2)
   let painted = try surface.draw(in: region, clippedTo: viewport, to: output) {
@@ -89,7 +89,7 @@ import Glibc
   #expect(try capture.take().isEmpty)
 }
 
-@Test func regionRejectsCapacityAndLayoutExhaustionBeforeChangingTheOwnedLayer() throws {
+@Test func regionRejectsInvalidViewportAndLayoutBeforeChangingTheOwnedLayer() throws {
   for size in [
     TerminalSize(columns: 0, rows: 1), TerminalSize(columns: 513, rows: 1),
     TerminalSize(columns: 1, rows: 257)
@@ -99,15 +99,9 @@ import Glibc
       _ = consume invalid
     }
   }
-  for capacity in [0, 513] {
-    #expect(throws: ScreenError.invalidCapacity) {
-      let invalid = try ScreenRegion(maximumSize: TerminalSize(columns: 1, rows: 1), nodeCapacity: capacity)
-      _ = consume invalid
-    }
-  }
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 1), nodeCapacity: 2)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 1))
   let region = Rect(x: 1, y: 1, width: 2, height: 1)
   let viewport = TerminalSize(columns: 5, rows: 5)
   try surface.draw(in: region, clippedTo: viewport, to: output) { Text("ok") }
@@ -115,8 +109,10 @@ import Glibc
   #expect(throws: ScreenError.viewportCapacityExceeded) {
     try surface.draw(in: Rect(width: 3, height: 1), clippedTo: viewport, to: output) { Text("bad") }
   }
-  #expect(throws: ScreenError.layout(.nodeCapacityExceeded)) {
-    try surface.draw(in: Rect(width: 1, height: 1), clippedTo: viewport, to: output) { Column { Text("bad") } }
+  #expect(throws: ScreenError.layout(.textTooLong)) {
+    try surface.draw(in: Rect(width: 1, height: 1), clippedTo: viewport, to: output) {
+      Column { Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1)) }
+    }
   }
   #expect(surface.paintedRegion == region)
   #expect(try capture.take().isEmpty)
@@ -130,7 +126,7 @@ import Glibc
 @Test func regionRetainsOnlyOneRepairRectangleAcrossFailedMovesAndClears() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
-  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 1), nodeCapacity: 2)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 1))
   let viewport = TerminalSize(columns: 20, rows: 10)
   let previous = Rect(x: 1, y: 1, width: 2, height: 1)
   let next = Rect(x: 7, y: 5, width: 2, height: 1)

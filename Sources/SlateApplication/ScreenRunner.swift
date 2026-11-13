@@ -12,8 +12,9 @@ import Musl
 /// tasks. Each poll handles at most 64 bytes, reusing 16 event slots until that
 /// batch is consumed. Decoder work is bounded by supplied bytes and event slots;
 /// paste framing can retain five delimiter bytes across input batches.
-/// Screen storage is allocated at startup. Paste and copy storage grows with
-/// incoming pastes and explicit copy requests, retaining capacity for reuse.
+/// Cell storage is allocated at startup; layout storage grows on demand.
+/// Paste storage is bounded by `configuration.maximumPasteBytes`; copy storage
+/// grows with explicit copy requests. Both retain capacity for reuse.
 /// Other storage is inline; no application borrows survive callbacks or a
 /// suspend/resume cycle.
 struct ScreenRunner: ~Copyable {
@@ -22,10 +23,11 @@ struct ScreenRunner: ~Copyable {
   private var input = TerminalInput()
   private var previousActualSize: TerminalSize?
   private var needsRedraw = true
-  private var paste = PasteBuffer()
+  private var paste: PasteBuffer
   private var copyBuffer = CopyBuffer()
   private var handlesSuspension = false
   private var requestedSuspend = false
+  private var ticks = TickSchedule()
 
   var capabilities: TerminalCapabilities { screen.capabilities }
 
@@ -34,14 +36,19 @@ struct ScreenRunner: ~Copyable {
     previousActualSize = nil
     needsRedraw = true
     requestedSuspend = false
+    ticks.reset()
     // Preserve incomplete paste framing across suspension: its tail is data.
     input.resume(at: ContinuousClock().now)
   }
 
   init(configuration: ScreenApplicationConfiguration) throws(ScreenError) {
+    guard configuration.maximumPasteBytes > 0,
+      configuration.maximumPasteBytes <= ScreenApplicationConfiguration.maximumPasteBytesLimit
+    else { throw .invalidCapacity }
     screen = try Screen(
-      maximumSize: configuration.maximumSize, nodeCapacity: configuration.nodeCapacity,
+      maximumSize: configuration.maximumSize,
       capabilities: configuration.capabilities)
+    paste = PasteBuffer(maximumBytes: configuration.maximumPasteBytes)
     overflow = configuration.viewportOverflow
   }
 
@@ -88,8 +95,9 @@ struct ScreenRunner: ~Copyable {
     var retries = SystemCallRetryBudget()
     // This loop intentionally lasts for the application session. Work between
     // polls is bounded by one input batch, one application-bounded work step,
-    // and one capacity-limited frame. Pending work uses nonblocking polls;
-    // idle applications retain the 50 ms input/resize deadline.
+    // one tick, and one frame. Layout work scales with application node count.
+    // Pending work uses nonblocking polls; timers can shorten the 50 ms
+    // input/resize polling interval.
     while true {
       let number = signals.termination()
       if number != 0 { return .interrupted(number) }
@@ -104,7 +112,8 @@ struct ScreenRunner: ~Copyable {
         try draw(application: &application, actualSize: actualSize, to: output)
       } catch { throw .screen(error) }
       var readiness = pollfd(fd: input.rawDescriptor, events: Int16(POLLIN), revents: 0)
-      let ready = unsafe poll(&readiness, 1, application.hasPendingWork ? 0 : 50)
+      let timeout = try pollTimeout(at: clock.now, application: application)
+      let ready = unsafe poll(&readiness, 1, timeout)
       if ready < 0 {
         let error = errno
         if retries.retry(after: error) { continue }
@@ -132,24 +141,32 @@ struct ScreenRunner: ~Copyable {
       }
       retries = SystemCallRetryBudget()
       guard performPendingWork(application: &application) else { break }
+      guard try tick(at: clock.now, application: &application) else { break }
     }
     do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
     return requestedSuspend ? .suspend : .quit
+  }
+
+  mutating func pollTimeout<Application: ScreenApplication & ~Copyable>(
+    at now: ContinuousClock.Instant, application: borrowing Application
+  ) throws(ScreenApplicationError) -> Int32 {
+    try ticks.synchronize(interval: application.tickInterval, at: now)
+    return application.hasPendingWork ? 0 : ticks.timeoutMilliseconds(at: now)
+  }
+
+  mutating func tick<Application: ScreenApplication & ~Copyable>(
+    at now: ContinuousClock.Instant, application: inout Application
+  ) throws(ScreenApplicationError) -> Bool {
+    try ticks.synchronize(interval: application.tickInterval, at: now)
+    guard let elapsed = ticks.next(at: now) else { return true }
+    return apply(application.event(.tick(elapsed: elapsed), copyBuffer: &copyBuffer))
   }
 
   mutating func performPendingWork<Application: ScreenApplication & ~Copyable>(
     application: inout Application
   ) -> Bool {
     guard application.hasPendingWork else { return true }
-    switch application.performPendingWork() {
-    case .none: return true
-    case .redraw:
-      needsRedraw = true
-      return true
-    case .quit:
-      requestedSuspend = false
-      return false
-    }
+    return apply(application.performPendingWork())
   }
 
   mutating func receive<Application: ScreenApplication & ~Copyable>(
@@ -190,17 +207,28 @@ struct ScreenRunner: ~Copyable {
       paste.append(byte)
       return true
     case .paste(.cancelled):
+      let error: PasteError = paste.isTooLarge ? .tooLarge : .incomplete
       paste.reset()
-      update = application.event(.pasteRejected(.incomplete), copyBuffer: &copyBuffer)
+      update = application.event(.pasteRejected(error), copyBuffer: &copyBuffer)
     case .paste(.end):
-      do throws(PasteError) {
-        update = application.event(.paste(try paste.text()), copyBuffer: &copyBuffer)
-      } catch {
-        update = application.event(.pasteRejected(error), copyBuffer: &copyBuffer)
+      if paste.isTooLarge {
+        update = application.event(.pasteRejected(.tooLarge), copyBuffer: &copyBuffer)
+      } else if paste.isEmpty {
+        update = application.event(.pasteEmpty, copyBuffer: &copyBuffer)
+      } else {
+        do throws(PasteError) {
+          update = application.event(.paste(try paste.text()), copyBuffer: &copyBuffer)
+        } catch {
+          update = application.event(.pasteRejected(error), copyBuffer: &copyBuffer)
+        }
       }
       paste.reset()
     default: return true
     }
+    return apply(update)
+  }
+
+  private mutating func apply(_ update: ScreenUpdate) -> Bool {
     switch update {
     case .none: return true
     case .redraw:

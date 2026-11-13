@@ -1,43 +1,32 @@
 import Slate
 
 /// A small integration example: two startup-owned drawings, bounded layout, and
-/// one animation step per 50 ms deadline. Late frames are dropped, never queued.
+/// one animation step per 16 ms tick. Late ticks are dropped, never queued.
 @main
 struct SlateGraphicsDemo: ScreenApplication {
   private let gradient = GradientDrawing()
   private let bars = BarDrawing()
   private let panelDrag = PanelDrag()
-  private var nextFrame: ContinuousClock.Instant
   private(set) var isPaused = false
   private(set) var showsOverlay = true
 
-  init() { self.init(now: ContinuousClock().now) }
-  init(now: ContinuousClock.Instant) { nextFrame = now.advanced(by: .milliseconds(50)) }
-
   static var configuration: ScreenApplicationConfiguration {
     .init(
-      maximumSize: TerminalSize(columns: 240, rows: 80), nodeCapacity: 64, mouseTracking: true,
+      maximumSize: TerminalSize(columns: 240, rows: 80), mouseTracking: true,
       capabilities: .init(color: .trueColor, unicode: .grapheme))
   }
 
   var animationPhase: Int { bars.phase }
   var overlayBounds: Rect { panelDrag.bounds }
   var isDraggingOverlay: Bool { panelDrag.isDragging }
-  var hasPendingWork: Bool { isDue(at: ContinuousClock().now) }
-
-  func isDue(at now: ContinuousClock.Instant) -> Bool { !isPaused && now >= nextFrame }
-
-  mutating func performPendingWork() -> ScreenUpdate { advance(at: ContinuousClock().now) }
-
-  mutating func advance(at now: ContinuousClock.Instant) -> ScreenUpdate {
-    guard isDue(at: now) else { return .none }
-    bars.advance()
-    nextFrame = now.advanced(by: .milliseconds(50))
-    return .redraw
-  }
+  var tickInterval: Duration? { isPaused ? nil : .milliseconds(16) }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
     switch event {
+    case .tick:
+      guard !isPaused else { return .none }
+      bars.advance()
+      return .redraw
     case .key(let key, let modifiers): return handle(key, modifiers: modifiers)
     case .mouse(let mouse): return showsOverlay ? panelDrag.handle(mouse) : .none
     default: return .none
@@ -59,7 +48,6 @@ struct SlateGraphicsDemo: ScreenApplication {
       showsOverlay = false
     case .character(" "):
       isPaused.toggle()
-      nextFrame = ContinuousClock().now.advanced(by: .milliseconds(50))
     default: return .none
     }
     return .redraw

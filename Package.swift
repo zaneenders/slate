@@ -21,6 +21,7 @@ let package = Package(
   platforms: [.macOS(.v27)],
   products: [
     .library(name: "Slate", targets: ["Slate"]),
+    .executable(name: "slate-starter", targets: ["SlateStarter"]),
     .executable(name: "slate-document-demo", targets: ["SlateDocumentDemo"]),
     .executable(name: "slate-graphics-demo", targets: ["SlateGraphicsDemo"])
   ],
@@ -30,6 +31,12 @@ let package = Package(
   ],
   targets: [
     // Demo
+    .executableTarget(
+      name: "SlateStarter",
+      dependencies: ["Slate"],
+      path: "Examples/SlateStarter",
+      swiftSettings: swiftSettings
+    ),
     .executableTarget(
       name: "SlateGraphicsDemo",
       dependencies: ["Slate"],

@@ -26,25 +26,30 @@ public struct ScreenApplicationConfiguration: Sendable {
     case fail
   }
 
+  public static let defaultMaximumPasteBytes = 1_048_576
+  public static let maximumPasteBytesLimit = 64 * 1_048_576
+
   public let maximumSize: TerminalSize
-  public let nodeCapacity: Int
   public let viewportOverflow: ViewportOverflow
   /// Own scoped SGR mouse tracking for each active session, including resume.
   public let mouseTracking: Bool
   public let capabilities: TerminalCapabilities
+  /// Maximum bracketed-paste payload retained in memory. Oversized pastes are
+  /// consumed through their terminator and reported as `.pasteRejected(.tooLarge)`.
+  public let maximumPasteBytes: Int
 
   public init(
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
-    nodeCapacity: Int = LayoutLimits.maximumNodes,
     viewportOverflow: ViewportOverflow = .clip,
     mouseTracking: Bool = false,
-    capabilities: TerminalCapabilities = .init()
+    capabilities: TerminalCapabilities = .init(),
+    maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes
   ) {
     self.maximumSize = maximumSize
-    self.nodeCapacity = nodeCapacity
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
     self.capabilities = capabilities
+    self.maximumPasteBytes = maximumPasteBytes
   }
 }
 
@@ -56,6 +61,7 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
   case disconnected
   case signalSetup(errno: Int32)
   case interrupted(signal: Int32)
+  case invalidTickInterval
 }
 
 /// A synchronous terminal application. State belongs to the application;
@@ -69,6 +75,11 @@ public protocol ScreenApplication: ~Copyable {
   associatedtype Content: Block
   init()
   static var configuration: ScreenApplicationConfiguration { get }
+  /// Interval between timed events. Defaults to 50 ms; nil disables ticks.
+  /// Intervals must be positive or run throws `.invalidTickInterval`.
+  /// Changes restart the interval. Late ticks are skipped, never queued.
+  /// Polling rounds up to whole milliseconds; callbacks and I/O can delay delivery.
+  var tickInterval: Duration? { get }
   /// Whether another bounded work step can run without waiting for input.
   /// Default is false. The runner presents the first frame before doing work.
   var hasPendingWork: Bool { get }
@@ -76,8 +87,9 @@ public protocol ScreenApplication: ~Copyable {
   /// Return `.redraw` when progress should be presented or `.quit` to stop.
   /// Do not retain frame borrows or start another terminal reader here.
   mutating func performPendingWork() -> ScreenUpdate
-  /// Receives keys, mouse input, complete pastes, and paste failures. Default returns `.none`.
-  /// Copy requests are prepared synchronously and written after this input batch.
+  /// Receives ticks, keys, mouse input, complete or empty pastes, and paste failures.
+  /// Default returns `.none`. Copy requests are prepared synchronously and written
+  /// after this input batch.
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate
   @BlockBuilder borrowing func render(in size: TerminalSize) -> Content
   /// Draws after block layout, before presentation. The frame cannot escape.
@@ -87,6 +99,7 @@ public protocol ScreenApplication: ~Copyable {
 
 extension ScreenApplication where Self: ~Copyable {
   public static var configuration: ScreenApplicationConfiguration { .init() }
+  public var tickInterval: Duration? { .milliseconds(50) }
   public var hasPendingWork: Bool { false }
   public mutating func performPendingWork() -> ScreenUpdate { .none }
   public mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
@@ -121,12 +134,13 @@ extension ScreenApplication where Self: ~Copyable {
   /// Swift error unwinding makes best-effort restoration attempts.
   ///
   /// Reports typed screen, terminal, I/O, and polling failures.
-  /// Resize and lone-Escape deadlines are checked at 50 ms poll boundaries;
+  /// Resize and lone-Escape checks use a poll timeout of at most 50 ms;
   /// callbacks and blocking I/O can extend that interval.
   public mutating func run(
     inputFileDescriptor: Int32 = 0, outputFileDescriptor: Int32 = 1,
     signalHandling: ScreenSignalHandling = .unchanged
   ) throws(ScreenApplicationError) {
+    if let tickInterval, tickInterval <= .zero { throw .invalidTickInterval }
     var runner: ScreenRunner
 
     do throws(ScreenError) {

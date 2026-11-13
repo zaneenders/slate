@@ -33,11 +33,8 @@ import Testing
   for size in [TerminalSize(columns: 0, rows: 1), TerminalSize(columns: 513, rows: 1)] {
     #expect(throws: SurfaceError.invalidCapacity) { _ = try Surface(maximumSize: size) }
   }
-  for count in [0, LayoutLimits.maximumNodes + 1] {
-    #expect(throws: SurfaceError.invalidCapacity) { _ = try Surface(nodeCapacity: count) }
-  }
   let size = TerminalSize(columns: 4, rows: 2)
-  var surface = try Surface(maximumSize: size, nodeCapacity: 3)
+  var surface = try Surface(maximumSize: size)
   try surface.render(size: size) { Text("keep") }
   #expect(throws: SurfaceError.viewportCapacityExceeded) {
     try surface.render(size: TerminalSize(columns: 5, rows: 1)) { Text("oversized") }
@@ -48,11 +45,11 @@ import Testing
   do {
     let input = try TextInput("field")
     retained = input
-    #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+    #expect(throws: SurfaceError.layout(.textTooLong)) {
       try surface.render(size: size) {
         Column {
           InputBox(input)
-          Text("overflow")
+          Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
         }
       }
     }

@@ -8,7 +8,7 @@ extension LayoutTree {
       if style.background == .default { style.background = node.inheritedBackground }
       switch node.kind {
       case .drawing:
-        switch drawings[Int(node.drawingIndex)]! {
+        switch drawings[node.drawingIndex]! {
         case .input(let input):
           input.paint(in: node.region, frame: &frame, focused: node.focused, placeholder: node.text, style: style)
         case .canvas(let drawing):

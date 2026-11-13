@@ -1,16 +1,16 @@
 import BasicContainers
 
-// Optimized presenters need the metadata for Surface's fixed generic storage.
+// Optimized presenters need the metadata for Surface's generic storage.
 // Keep it ABI-visible while layout nodes remain internal to SlateUI.
 @usableFromInline struct LayoutNode: Sendable {
   enum Kind: Sendable { case root, row, column, overlay, positioned, frame, padding, border, background, text, drawing }
   var kind: Kind = .root
-  // These fit alongside kind before the next 8-byte-aligned field. Field
-  // references live in a separate fixed array so ordinary nodes stay compact.
+  // Position coordinates fit before the next 8-byte-aligned field. Drawing
+  // indices use Int, like node indices, so storage growth has no 16-bit ceiling.
   var focused = false
-  var drawingIndex: UInt16 = 0
   var positionColumn: UInt16 = 0
   var positionRow: UInt16 = 0
+  var drawingIndex: Int = 0
   var width: LayoutSize = .fit
   var height: LayoutSize = .fit
   var alignment: Alignment = .topLeading
@@ -28,7 +28,7 @@ import BasicContainers
   var region = Rect(width: 0, height: 0)
 }
 
-/// Class-bound payloads fit inline in fixed layout storage; no closure contexts
+/// Class-bound payloads fit inline in layout storage; no closure contexts
 /// or existential boxes are allocated when a block is built.
 @usableFromInline enum BlockDrawing: ~Sendable {
   case input(TextInput)
@@ -39,25 +39,27 @@ import BasicContainers
 /// Public only because it appears in the protocol's underscored rendering hook;
 /// storage and mutation remain module-internal and frame-scoped.
 public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
-  private var nodes: MutableSpan<LayoutNode>
-  private var drawings: MutableSpan<BlockDrawing?>
+  // Borrow the owners rather than their element storage: growth can relocate
+  // elements without invalidating these frame-scoped references.
+  private var nodes: MutableRef<UniqueArray<LayoutNode>>
+  private var drawings: MutableRef<UniqueArray<BlockDrawing?>>
   private var drawingCount = 0
   private var parent = 0
   private var depth = 0
   private(set) var count = 1
 
-  @_lifetime(copy nodes, copy drawings)
-  init(nodes: consuming MutableSpan<LayoutNode>, drawings: consuming MutableSpan<BlockDrawing?>) {
+  @_lifetime(&nodes, &drawings)
+  init(nodes: inout UniqueArray<LayoutNode>, drawings: inout UniqueArray<BlockDrawing?>) {
     precondition(nodes.count > 0)
     precondition(drawings.count == nodes.count)
-    self.nodes = consume nodes
-    self.drawings = consume drawings
+    self.nodes = MutableRef(&nodes)
+    self.drawings = MutableRef(&drawings)
   }
 
   mutating func begin(_ node: LayoutNode) throws(LayoutError) -> Int {
     guard depth < LayoutLimits.maximumDepth else { throw .depthExceeded }
     let previous = parent
-    parent = try append(node)
+    parent = append(node)
     depth += 1
     return previous
   }
@@ -68,13 +70,23 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
     parent = previous
   }
 
-  private mutating func append(_ node: LayoutNode) throws(LayoutError) -> Int {
-    guard count < nodes.count else { throw .nodeCapacityExceeded }
+  private mutating func append(_ node: LayoutNode) -> Int {
+    if count == nodes.value.count {
+      // Retain each new high-water mark. This is the only layout-storage
+      // allocation path after initialization; there is no configured node cap.
+      let capacity = nodes.value.count * 2
+      nodes.value.reserveCapacity(capacity)
+      drawings.value.reserveCapacity(capacity)
+      for _ in nodes.value.count..<capacity {
+        nodes.value.append(LayoutNode())
+        drawings.value.append(nil)
+      }
+    }
     let index = count
-    nodes[index] = node
-    let last = nodes[parent].lastChild
-    if last >= 0 { nodes[last].nextSibling = index } else { nodes[parent].firstChild = index }
-    nodes[parent].lastChild = index
+    nodes.value[index] = node
+    let last = nodes.value[parent].lastChild
+    if last >= 0 { nodes.value[last].nextSibling = index } else { nodes.value[parent].firstChild = index }
+    nodes.value[parent].lastChild = index
     count += 1
     return index
   }
@@ -89,20 +101,20 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
 
   mutating func inputBox(_ input: TextInput, focused: Bool, placeholder: String, style: Style) throws(LayoutError) {
     try validateText(placeholder)
-    _ = try append(
+    _ = append(
       LayoutNode(
-        kind: .drawing, focused: focused, drawingIndex: UInt16(drawingCount),
+        kind: .drawing, focused: focused, drawingIndex: drawingCount,
         width: .fill, text: placeholder, style: style, measuredWidth: 12, measuredHeight: 1))
-    precondition(drawingCount < drawings.count)
-    drawings[drawingCount] = .input(input)
+    precondition(drawingCount < drawings.value.count)
+    drawings.value[drawingCount] = .input(input)
     drawingCount += 1
   }
 
-  mutating func canvas(_ drawing: any CanvasDrawing) throws(LayoutError) {
-    _ = try append(
-      LayoutNode(kind: .drawing, drawingIndex: UInt16(drawingCount), width: .fill, height: .fill))
-    precondition(drawingCount < drawings.count)
-    drawings[drawingCount] = .canvas(drawing)
+  mutating func canvas(_ drawing: any CanvasDrawing) {
+    _ = append(
+      LayoutNode(kind: .drawing, drawingIndex: drawingCount, width: .fill, height: .fill))
+    precondition(drawingCount < drawings.value.count)
+    drawings.value[drawingCount] = .canvas(drawing)
     drawingCount += 1
   }
 
@@ -134,7 +146,7 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
         width += cluster.glyph.columnWidth
       }
     }
-    _ = try append(
+    _ = append(
       LayoutNode(
         kind: .text, text: text, style: style,
         measuredWidth: max(maximumWidth, width), measuredHeight: height))
@@ -142,13 +154,13 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
 }
 
 struct LayoutTree: ~Copyable {
-  private(set) var nodes: RigidArray<LayoutNode>
-  private(set) var drawings: RigidArray<BlockDrawing?>
+  private(set) var nodes: UniqueArray<LayoutNode>
+  private(set) var drawings: UniqueArray<BlockDrawing?>
   private(set) var count = 1
 
-  init(capacity: Int) {
-    nodes = RigidArray(repeating: LayoutNode(), count: capacity)
-    drawings = RigidArray(repeating: nil, count: capacity)
+  init() {
+    nodes = UniqueArray(repeating: LayoutNode(), count: 64)
+    drawings = UniqueArray(repeating: nil, count: 64)
   }
 
   /// The surface resets after painting or failure; this records every initialized
@@ -158,7 +170,7 @@ struct LayoutTree: ~Copyable {
   ) throws(LayoutError) {
     precondition(count == 1)
     do {
-      var builder = _BlockLayout(nodes: nodes.mutableSpan, drawings: drawings.mutableSpan)
+      var builder = _BlockLayout(nodes: &nodes, drawings: &drawings)
       defer { count = builder.count }
       try content()._build(into: &builder)
     }

@@ -171,24 +171,25 @@ import Testing
   }
 }
 
-@Test func positionNodeExhaustionPreservesTheLastFrameAndAllowsStorageReuse() throws {
+@Test func positionLayoutFailurePreservesTheLastFrameAndAllowsStorageReuse() throws {
   let drawing = PositionDrawing { $0.text("keep", in: $0.area) }
-  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1), nodeCapacity: 4)
-  let budget = surface.storageBudgetBytes
+  var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1))
+  let initialBudget = surface.storageBudgetBytes
   try surface.render(size: surface.maximumSize) {
     Overlay { Canvas(drawing).position(column: 0, row: 0) }
   }
-  #expect(throws: SurfaceError.layout(.nodeCapacityExceeded)) {
+  #expect(throws: SurfaceError.layout(.textTooLong)) {
     try surface.render(size: surface.maximumSize) {
       Overlay {
         Canvas(drawing).position(column: 0, row: 0)
-        Text("overflow")
+        Text(String(repeating: "x", count: LayoutLimits.maximumTextScalars + 1))
       }
     }
   }
   #expect(drawing.calls == 1)
   #expect(positionRow(surface, y: 0) == "keep")
-  #expect(surface.storageBudgetBytes == budget)
+  let budget = surface.storageBudgetBytes
+  #expect(budget == initialBudget)
   try surface.render(size: surface.maximumSize) {
     Overlay { Text("next").position(column: 65_535, row: 65_535) }
   }
