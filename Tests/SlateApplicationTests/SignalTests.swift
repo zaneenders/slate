@@ -200,7 +200,7 @@ private struct SignalDuringQuitApplication: ScreenApplication {
 @Test(arguments: [SIGINT, SIGTERM, SIGHUP])
 func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2027h")
+  try child.awaitOutput("\u{1b}[>1u")
   #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
   try #require(kill(child.pid, number) == 0)
   let (kind, value) = try child.awaitState()
@@ -208,19 +208,20 @@ func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[?2004l")
   #expect(child.output.contains("\u{1b}[?2027r"))
+  #expect(child.output.contains("\u{1b}[<u"))
   #expect(child.output.contains("\u{1b}[?25h\u{1b}[?1049l"))
 }
 
-@Test(arguments: [false, true])
-func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Bool) throws {
+@Test(arguments: [0, 1, 2])
+func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Int) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2027h")
+  try child.awaitOutput("\u{1b}[>1u")
   try child.send("\tHello")
   // End a partial paste after resume: its q must remain text.
   try child.send("\u{1b}[200~q")
-  if keyboard {
+  if keyboard != 0 {
     // Ctrl-Z inside paste is data, so finish first before requesting suspend.
-    try child.send("\u{1b}[201~\u{1a}")
+    try child.send("\u{1b}[201~" + (keyboard == 1 ? "\u{1a}" : "\u{1b}[122;5u"))
   } else {
     try #require(kill(child.pid, SIGTSTP) == 0)
   }
@@ -229,11 +230,12 @@ func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Bool) th
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[?2004l")
   #expect(child.output.contains("\u{1b}[?2027r"))
+  #expect(child.output.contains("\u{1b}[<u"))
   child.output = ""
   try #require(kill(child.pid, SIGCONT) == 0)
-  try child.awaitOutput("\u{1b}[?2027h")
+  try child.awaitOutput("\u{1b}[>1u")
   #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
-  if !keyboard { try child.send("\u{1b}[201~") }
+  if keyboard == 0 { try child.send("\u{1b}[201~") }
   try child.send("\u{1}\u{3}")
   try child.awaitOutput("\u{1b}]52;c;SGVsbG9x\u{1b}\\")
   try child.send("\u{1} \u{1}Hello\u{1}q\u{1}Copied\u{1}\u{3}")

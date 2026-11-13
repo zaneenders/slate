@@ -146,6 +146,26 @@ private func expectEverySplit(_ bytes: [UInt8], events: [InputEvent], commands: 
   #expect(decoded.events == events && decoded.commands == commands)
 }
 
+@Test func decoderPreservesSuperCommandAndControlInUnicodeKeyReports() {
+  for (codepoint, key) in [(99, InputKey.character("c")), (118, .character("v")), (233, .character("é"))] {
+    for modifier in [1, 5, 9, 73, 201] {
+      let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
+      let event: InputEvent = modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
+      expectEverySplit(Array("\u{1b}[\(codepoint);\(modifier)uq".utf8), events: [event, .key(.character("q"))])
+    }
+  }
+  for (codepoint, key) in [(9, InputKey.tab), (13, .enter), (27, .escape), (127, .backspace)] {
+    expectEverySplit(Array("\u{1b}[\(codepoint)u".utf8), events: [.key(key)])
+  }
+  #expect(KeyModifiers.command == .super)
+}
+
+@Test func decoderRejectsMalformedUnicodeKeyReportsWithoutTypingTheirTails() {
+  for body in ["", ";9", "99;", "99;0", "99;257", "1114112;9", "55296;9", "99;9;0", "99;9:3", "99::99;9", "0;9"] {
+    expectEverySplit(Array("\u{1b}[\(body)uq".utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
+  }
+}
+
 @Test func decoderFramesPasteAcrossEverySplitWithoutInterpretingItsContents() {
   for body in ["", "q\r\n\t\u{3}\u{1a}", "café 👨‍👩‍👧‍👦", "\u{1b}[A\u{1b}[200~\u{1b}[201x\u{1b}\u{1b}["] {
     expectEverySplit(

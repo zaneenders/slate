@@ -33,6 +33,9 @@ public struct ScreenApplicationConfiguration: Sendable {
   public let viewportOverflow: ViewportOverflow
   /// Own scoped SGR mouse tracking for each active session, including resume.
   public let mouseTracking: Bool
+  /// Request disambiguated keys, including Super/Command, on terminals that
+  /// support the Kitty keyboard protocol. Native terminal shortcuts still win.
+  public let enhancedKeyboard: Bool
   public let capabilities: TerminalCapabilities
   /// Maximum bracketed-paste payload retained in memory. Oversized pastes are
   /// consumed through their terminator and reported as `.pasteRejected(.tooLarge)`.
@@ -42,12 +45,14 @@ public struct ScreenApplicationConfiguration: Sendable {
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
     viewportOverflow: ViewportOverflow = .clip,
     mouseTracking: Bool = false,
+    enhancedKeyboard: Bool = false,
     capabilities: TerminalCapabilities = .init(),
     maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes
   ) {
     self.maximumSize = maximumSize
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
+    self.enhancedKeyboard = enhancedKeyboard
     self.capabilities = capabilities
     self.maximumPasteBytes = maximumPasteBytes
   }
@@ -238,12 +243,26 @@ extension ScreenApplication where Self: ~Copyable {
     signals: borrowing SignalSession
   ) throws(ScreenApplicationError) -> ScreenRunResult {
     guard Self.configuration.mouseTracking else {
-      return try runner.run(application: &self, input: input, output: output, signals: signals)
+      return try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
     }
     let mouse: MouseTracking
     do throws(IOError) { mouse = try output.mouseTracking() } catch { throw .io(error) }
-    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
+    let result = try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
     do throws(IOError) { try mouse.restore() } catch { throw .io(error) }
+    return result
+  }
+
+  private mutating func runKeyboardSession(
+    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
+    signals: borrowing SignalSession
+  ) throws(ScreenApplicationError) -> ScreenRunResult {
+    guard Self.configuration.enhancedKeyboard else {
+      return try runner.run(application: &self, input: input, output: output, signals: signals)
+    }
+    let keyboard: EnhancedKeyboard
+    do throws(IOError) { keyboard = try output.enhancedKeyboard() } catch { throw .io(error) }
+    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
+    do throws(IOError) { try keyboard.restore() } catch { throw .io(error) }
     return result
   }
 }

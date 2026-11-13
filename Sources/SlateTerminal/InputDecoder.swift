@@ -267,7 +267,9 @@ public struct InputDecoder: ~Copyable, Sendable {
       return Step(.terminalReply(.primaryAttributes))
     }
     let key: InputEvent?
-    if state == .csi, sequence[2] == 0x3c {
+    if state == .csi, byte == 0x75 {
+      key = unicodeKeyEvent()
+    } else if state == .csi, sequence[2] == 0x3c {
       key = mouseEvent(final: byte)
     } else {
       key = sequenceEvent(final: byte)
@@ -347,6 +349,51 @@ public struct InputDecoder: ~Copyable, Sendable {
       default: return nil
       }
     }
+    return modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
+  }
+
+  /// CSI u keys from Kitty's disambiguate-escape-codes enhancement. Other
+  /// enhancements (alternate keys, release events and associated text) are not
+  /// requested, so accepting their extra fields would lose input information.
+  private borrowing func unicodeKeyEvent() -> InputEvent? {
+    var codepoint: UInt32 = 0
+    var modifier: UInt32 = 1
+    var hasModifier = false
+    var sawDigit = false
+    for index in 2..<(sequenceByteCount - 1) {
+      let byte = sequence[index]
+      if byte == 0x3b, !hasModifier, sawDigit {
+        hasModifier = true
+        modifier = 0
+        sawDigit = false
+      } else if (0x30...0x39).contains(byte) {
+        if hasModifier {
+          modifier = modifier * 10 + UInt32(byte - 0x30)
+          guard modifier <= 256 else { return nil }
+        } else {
+          codepoint = codepoint * 10 + UInt32(byte - 0x30)
+          guard codepoint <= 0x10ffff else { return nil }
+        }
+        sawDigit = true
+      } else {
+        return nil
+      }
+    }
+    guard sawDigit, (1...256).contains(modifier) else { return nil }
+    let key: InputKey
+    switch codepoint {
+    case 9: key = .tab
+    case 13: key = .enter
+    case 27: key = .escape
+    case 127: key = .backspace
+    case 0x20...0x7e, 0xa0...0xd7ff, 0xe000...0x10ffff:
+      guard let scalar = Unicode.Scalar(codepoint), !(57344...63743).contains(codepoint) else {
+        return nil
+      }
+      key = .character(scalar)
+    default: return nil
+    }
+    let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
     return modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
   }
 

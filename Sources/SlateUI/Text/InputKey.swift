@@ -108,4 +108,9 @@ public struct KeyModifiers: OptionSet, Equatable, Sendable {
   public static let shift = Self(rawValue: 1)
   public static let alt = Self(rawValue: 2)
   public static let control = Self(rawValue: 4)
+  /// The Super/Windows key on Linux and Command key on macOS.
+  public static let `super` = Self(rawValue: 8)
+  public static let command = Self.super
+  public static let capsLock = Self(rawValue: 64)
+  public static let numLock = Self(rawValue: 128)
 }

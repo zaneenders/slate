@@ -196,6 +196,9 @@ struct ScreenRunner: ~Copyable {
     case .key(.control(.z)) where handlesSuspension:
       requestedSuspend = true
       return true
+    case .modifiedKey(.character("z"), .control) where handlesSuspension:
+      requestedSuspend = true
+      return true
     case .key(let key): update = application.event(.key(key), copyBuffer: &copyBuffer)
     case .modifiedKey(let key, let modifiers):
       update = application.event(.key(key, modifiers: modifiers), copyBuffer: &copyBuffer)

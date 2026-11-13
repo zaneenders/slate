@@ -40,6 +40,24 @@ extension Output {
   public borrowing func graphemeClustering() throws(IOError) -> GraphemeClustering {
     try GraphemeClustering(output: self)
   }
+
+  @_lifetime(borrow self)
+  public borrowing func enhancedKeyboard() throws(IOError) -> EnhancedKeyboard {
+    try EnhancedKeyboard(output: self)
+  }
+}
+
+/// Requests Kitty's disambiguated key encoding on supporting terminals. The
+/// previous keyboard flags are restored on exit, including suspend and errors.
+public struct EnhancedKeyboard: ~Copyable, ~Escapable, ~Sendable {
+  private var session: TerminalModeSession
+
+  @_lifetime(borrow output)
+  init(output: borrowing Output) throws(IOError) {
+    session = try TerminalModeSession(output: output, mode: .keyboard)
+  }
+
+  public consuming func restore() throws(IOError) { try session.restore() }
 }
 
 /// Uses Unicode grapheme widths (DEC mode 2027) on supporting terminals. Saves
@@ -104,7 +122,7 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
 // destruction of the public noncopyable guards from other targets. Module
 // visibility alone works in testable builds but omits it in production builds.
 @usableFromInline enum TerminalMode: Sendable {
-  case mouse, paste, alternate, grapheme
+  case mouse, paste, alternate, grapheme, keyboard
 
   var sequences: (enable: StaticString, restore: StaticString) {
     switch self {
@@ -112,6 +130,7 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
     case .paste: ("\u{1b}[?2004h", "\u{1b}[?2004l")
     case .alternate: ("\u{1b}[?1049h\u{1b}[?25l\u{1b}[0m", "\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l")
     case .grapheme: ("\u{1b}[?2027s\u{1b}[?2027h", "\u{1b}[?2027r")
+    case .keyboard: ("\u{1b}[>1u", "\u{1b}[<u")
     }
   }
 }

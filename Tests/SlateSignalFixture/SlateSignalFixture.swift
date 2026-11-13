@@ -4,6 +4,8 @@ import SlateApplication
 // verify that editing, paste, and clipboard operations survive suspension.
 @main
 struct SlateSignalFixture: ScreenApplication {
+  static var configuration: ScreenApplicationConfiguration { .init(enhancedKeyboard: true) }
+
   private let field = try! TextInput(capacity: 1_024)
   private var focused = false
 
