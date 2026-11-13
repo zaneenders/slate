@@ -4,7 +4,7 @@ public import SlateUI
 /// Uses the same surface rendering and ANSI cell presentation as Screen. This
 /// owner preserves the cursor and repaints every visible cell because another
 /// writer may invalidate the rectangle between draws, so no diff grid is retained.
-/// Owns one fixed cell grid, growable layout storage, and a 4 KiB
+/// Owns one fixed cell grid, fixed layout storage, and a 4 KiB
 /// writer. Each draw repaints at most the configured cell capacity; moving first clears the
 /// previous rectangle. Clearing uses default-background spaces.
 /// It never clears the terminal or another region.
@@ -15,12 +15,13 @@ public import SlateUI
 /// Layout uses local coordinates and the requested size; output clips to the
 /// current viewport. Cells outside that viewport are abandoned on clear/resize.
 /// Call clear explicitly before relinquishing the layer; destruction does no I/O.
-/// Startup, layout capacity growth, first-use Swift runtime metadata, and
+/// Startup, first-use Swift runtime metadata, and
 /// caller-created String storage are outside the steady-state allocation guarantee.
 /// Blocking output latency depends on the caller's descriptor; no tasks or additional retries are added.
 public struct ScreenRegion: ~Copyable, ~Sendable {
   public var maximumSize: TerminalSize { surface.maximumSize }
   public var nodeCapacity: Int { surface.nodeCapacity }
+  public var layoutBudget: LayoutBudget { surface.layoutBudget }
   public var capabilities: TerminalCapabilities { writer.capabilities }
   /// Includes a partially painted region after an output error, so clear or a
   /// subsequent draw can repair it. No more than one region is retained.
@@ -36,10 +37,10 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
 
   public init(
     maximumSize: TerminalSize,
-    capabilities: TerminalCapabilities = .init()
+    capabilities: TerminalCapabilities = .init(), layoutBudget: LayoutBudget = .init()
   ) throws(ScreenError) {
     do throws(SurfaceError) {
-      surface = try Surface(maximumSize: maximumSize)
+      surface = try Surface(maximumSize: maximumSize, layoutBudget: layoutBudget)
     } catch { throw ScreenError(error) }
     writer = ANSIWriter(capabilities: capabilities)
   }

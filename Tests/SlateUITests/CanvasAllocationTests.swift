@@ -12,44 +12,61 @@ import Testing
 @Suite(.serialized)
 struct RenderAllocationTests {
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
-  func layoutAllocationGrowsOnDemandAndReusesRetainedCapacity() throws {
+  func fixedLayoutAllocationAtMaximumCapacityAndExhaustion() throws {
     try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
-    let size = TerminalSize(columns: 1, rows: 1)
-    let drawing = AllocationDrawing()
-    let blocks = Array(repeating: Canvas(drawing), count: 4_094)
-    // Warm compiler/runtime metadata using a different owner so the measured
-    // owner still starts at 64 nodes and must traverse every growth boundary.
-    var warmed = try Surface(maximumSize: size)
-    for _ in 0..<4 { try renderAllocationFrame(&warmed, size: size, blocks: blocks[...]) }
-    var surface = try Surface(maximumSize: size)
+    let size = TerminalSize(columns: Surface.maximumColumns, rows: Surface.maximumRows)
+    let limits = LayoutBudget(
+      nodeCapacity: LayoutBudget.maximumNodeCapacity,
+      maximumBlockVisits: LayoutBudget.maximumBlockVisitsLimit)
+    let drawing = AllocationPointDrawing()
+    let blocks = Array(repeating: Canvas(drawing), count: limits.nodeCapacity)
+    let fitting = blocks.prefix(limits.nodeCapacity - 1)
+    var surface = try Surface(maximumSize: size, layoutBudget: limits)
     let initialBudget = surface.storageBudgetBytes
+    for _ in 0..<4 { try surface.render(size: size) { BlockList(fitting) } }
     cli_test_begin_allocation_count()
     do throws(SurfaceError) {
-      try renderAllocationFrame(&surface, size: size, blocks: blocks[...])
-    } catch {
-      _ = cli_test_end_allocation_count()
-      throw error
-    }
-    let growthCalls = cli_test_end_allocation_count()
-    #expect(growthCalls > 0 && growthCalls <= 12)
-    #expect(surface.nodeCapacity == 4_096)
-    let retainedBudget = surface.storageBudgetBytes
-    #expect(retainedBudget > initialBudget)
-    cli_test_begin_allocation_count()
-    do throws(SurfaceError) {
-      for _ in 0..<8 {
-        try renderAllocationFrame(&surface, size: size, blocks: blocks.prefix(1))
-        try renderAllocationFrame(&surface, size: size, blocks: blocks[...])
+      for _ in 0..<4 {
+        try surface.render(size: size) { BlockList(blocks.prefix(1)) }
+        try surface.render(size: size) { BlockList(fitting) }
       }
     } catch {
       _ = cli_test_end_allocation_count()
       throw error
     }
-    let reuseCalls = cli_test_end_allocation_count()
-    #expect(reuseCalls == 0)
-    #expect(surface.storageBudgetBytes == retainedBudget)
+    let renderCalls = cli_test_end_allocation_count()
+    #expect(renderCalls == 0)
+    #expect(surface.nodeCapacity == limits.nodeCapacity)
+    #expect(surface.storageBudgetBytes == initialBudget)
     #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "x")
-    print("Layout growth: \(growthCalls) allocation calls to reach 4096 nodes; \(reuseCalls) on reuse")
+    _ = rejectFixedAllocationFrame(&surface, size: size, blocks: blocks[...])
+    cli_test_begin_allocation_count()
+    var rejections = 0
+    for _ in 0..<4 {
+      if rejectFixedAllocationFrame(&surface, size: size, blocks: blocks[...]) { rejections += 1 }
+    }
+    let rejectionCalls = cli_test_end_allocation_count()
+    #expect(rejections == 4 && rejectionCalls <= UInt64(rejections) * 2)
+    #expect(surface.storageBudgetBytes == initialBudget)
+    #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "x")
+    print("Fixed layout: \(limits.nodeCapacity) nodes, \(initialBudget) bytes; \(renderCalls) render allocations; \(rejectionCalls) rejection diagnostics")
+  }
+
+  @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  func fixedLayoutAllocationAtVisitExhaustion() throws {
+    try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
+    let size = TerminalSize(columns: 1, rows: 1)
+    // Each custom block and its empty body are separate visits, plus BlockList.
+    let limits = LayoutBudget(nodeCapacity: 2, maximumBlockVisits: LayoutBudget.maximumBlockVisitsLimit)
+    let blocks = Array(repeating: AllocationEmptyBlock(), count: limits.maximumBlockVisits / 2)
+    var surface = try Surface(maximumSize: size, layoutBudget: limits)
+    try surface.render(size: size) { Text("k") }
+    _ = rejectVisitAllocationFrame(&surface, size: size, blocks: blocks[...])
+    cli_test_begin_allocation_count()
+    let rejected = rejectVisitAllocationFrame(&surface, size: size, blocks: blocks[...])
+    let calls = cli_test_end_allocation_count()
+    #expect(rejected && calls <= 2)
+    #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "k")
   }
 
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
@@ -203,6 +220,28 @@ struct RenderAllocationTests {
     #expect(surface.storageBudgetBytes == initialBudget)
   }
 
+}
+
+private struct AllocationEmptyBlock: Block { var body: some Block {} }
+
+@inline(never)
+private func rejectFixedAllocationFrame(
+  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas>
+) -> Bool {
+  do throws(SurfaceError) {
+    try surface.render(size: size) { BlockList(blocks) }
+    return false
+  } catch { return error == .layout(.nodeCapacityExceeded) }
+}
+
+@inline(never)
+private func rejectVisitAllocationFrame(
+  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<AllocationEmptyBlock>
+) -> Bool {
+  do throws(SurfaceError) {
+    try surface.render(size: size) { BlockList(blocks) }
+    return false
+  } catch { return error == .layout(.blockVisitLimitExceeded) }
 }
 
 private final class AllocationDrawing: CanvasDrawing {

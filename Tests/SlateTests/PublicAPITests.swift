@@ -6,7 +6,7 @@ import Testing
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   let size = TerminalSize(columns: 8, rows: 3)
-  var screen = try Screen(maximumSize: size)
+  var screen = try Screen(maximumSize: size, layoutBudget: .init(nodeCapacity: 4_098))
   let lines = [Text("skip"), Text("one"), Text("two")]
   try screen.draw(size: size, to: output) { Column { BlockList(lines[1...]) } }
   #expect(screen.cell(x: 0, y: 0)?.glyph.scalar == "o")
@@ -25,6 +25,48 @@ import Testing
 
 private struct EmptyPublicBlock: Block {
   var body: some Block { if false { Text("unused") } }
+}
+
+@Test func publicLayoutBudgetsPreserveScreensAndRegionsOnNodeOrVisitExhaustion() throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  let size = TerminalSize(columns: 1, rows: 1)
+  let limits = LayoutBudget(nodeCapacity: 2, maximumBlockVisits: 4)
+  var screen = try Screen(maximumSize: size, layoutBudget: limits)
+  try screen.draw(size: size, to: output) { Text("k") }
+  _ = try capture.take()
+  #expect(screen.layoutBudget == limits && screen.nodeCapacity == 2)
+  #expect(throws: ScreenError.layout(.nodeCapacityExceeded)) {
+    try screen.draw(size: size, to: output) {
+      Text("x")
+      Text("y")
+    }
+  }
+  let empty = Array(repeating: EmptyPublicBlock(), count: 4)
+  #expect(throws: ScreenError.layout(.blockVisitLimitExceeded)) {
+    try screen.draw(size: size, to: output) { BlockList(empty[...]) }
+  }
+  #expect(screen.cell(x: 0, y: 0)?.glyph.scalar == "k")
+  #expect(try capture.take().isEmpty)
+
+  var region = try ScreenRegion(maximumSize: size, layoutBudget: limits)
+  let previous = Rect(x: 1, y: 1, width: 1, height: 1)
+  let viewport = TerminalSize(columns: 8, rows: 4)
+  try region.draw(in: previous, clippedTo: viewport, to: output) { Text("k") }
+  _ = try capture.take()
+  #expect(region.layoutBudget == limits && region.nodeCapacity == 2)
+  #expect(throws: ScreenError.layout(.nodeCapacityExceeded)) {
+    try region.draw(in: Rect(width: 1, height: 1), clippedTo: viewport, to: output) {
+      Text("x")
+      Text("y")
+    }
+  }
+  #expect(region.paintedRegion == previous)
+  #expect(try capture.take().isEmpty)
+  #expect(throws: ScreenError.invalidCapacity) { _ = try Screen(layoutBudget: .init(nodeCapacity: 0)) }
+  #expect(throws: ScreenError.invalidCapacity) {
+    _ = try ScreenRegion(maximumSize: size, layoutBudget: .init(maximumBlockVisits: 0))
+  }
 }
 
 @Test func publicBlocksComposeOpaqueModifiersAndConditionalOrEmptyContent() throws {

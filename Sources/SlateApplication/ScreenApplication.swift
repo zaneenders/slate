@@ -30,6 +30,7 @@ public struct ScreenApplicationConfiguration: Sendable {
   public static let maximumPasteBytesLimit = 64 * 1_048_576
 
   public let maximumSize: TerminalSize
+  public let layoutBudget: LayoutBudget
   public let viewportOverflow: ViewportOverflow
   /// Own scoped SGR mouse tracking for each active session, including resume.
   public let mouseTracking: Bool
@@ -43,9 +44,11 @@ public struct ScreenApplicationConfiguration: Sendable {
     viewportOverflow: ViewportOverflow = .clip,
     mouseTracking: Bool = false,
     capabilities: TerminalCapabilities = .init(),
-    maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes
+    maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes,
+    layoutBudget: LayoutBudget = .init()
   ) {
     self.maximumSize = maximumSize
+    self.layoutBudget = layoutBudget
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
     self.capabilities = capabilities
@@ -57,6 +60,7 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
   case screen(ScreenError)
   case terminal(TerminalError)
   case io(IOError)
+  case input(TerminalInputError)
   case poll(errno: Int32)
   case disconnected
   case signalSetup(errno: Int32)
@@ -69,6 +73,8 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
 ///
 /// The first frame and physical resizes render automatically. Invalid input
 /// sequences are ignored; decoded input, including Ctrl-C, belongs to `event`.
+/// Expired APC responses are discarded with bounded recovery; recovery failure
+/// throws `.input(.responseRecoveryExceeded)` and unwinds the terminal scopes.
 /// Managed sessions reserve unpasted Ctrl-Z for suspension. Event callbacks may
 /// not retain frame/paste borrows or start another terminal reader.
 public protocol ScreenApplication: ~Copyable {

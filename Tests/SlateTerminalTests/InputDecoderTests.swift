@@ -185,6 +185,6 @@ private func decodeChunks(_ bytes: [UInt8], boundaries: [Int], outputCapacity: I
     } while offset < end
   }
   #expect(offset == bytes.count)
-  if let event = decoder.flush() { result.append(event) }
+  if let event = decoder.finish() { result.append(event) }
   return (result, commands)
 }

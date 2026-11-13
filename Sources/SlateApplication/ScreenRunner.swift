@@ -12,7 +12,7 @@ import Musl
 /// tasks. Each poll handles at most 64 bytes, reusing 16 event slots until that
 /// batch is consumed. Decoder work is bounded by supplied bytes and event slots;
 /// paste framing can retain five delimiter bytes across input batches.
-/// Cell storage is allocated at startup; layout storage grows on demand.
+/// Cell and layout storage are allocated at startup; traversal is budgeted.
 /// Paste storage is bounded by `configuration.maximumPasteBytes`; copy storage
 /// grows with explicit copy requests. Both retain capacity for reuse.
 /// Other storage is inline; no application borrows survive callbacks or a
@@ -47,7 +47,7 @@ struct ScreenRunner: ~Copyable {
     else { throw .invalidCapacity }
     screen = try Screen(
       maximumSize: configuration.maximumSize,
-      capabilities: configuration.capabilities)
+      capabilities: configuration.capabilities, layoutBudget: configuration.layoutBudget)
     paste = PasteBuffer(maximumBytes: configuration.maximumPasteBytes)
     overflow = configuration.viewportOverflow
   }
@@ -103,7 +103,7 @@ struct ScreenRunner: ~Copyable {
       if number != 0 { return .interrupted(number) }
       if signals.shouldSuspend() { return .suspend }
       do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
-      guard expireEscape(at: clock.now, application: &application) else { break }
+      guard try expireInput(at: clock.now, application: &application) else { break }
       let actualSize: TerminalSize
       do throws(TerminalError) {
         actualSize = try output.terminalSize()
@@ -120,7 +120,7 @@ struct ScreenRunner: ~Copyable {
         throw ScreenApplicationError.poll(errno: error)
       }
       // Deliver an expired Escape before decoding bytes arriving after it.
-      guard expireEscape(at: clock.now, application: &application) else { break }
+      guard try expireInput(at: clock.now, application: &application) else { break }
       if readiness.revents & Int16(POLLERR | POLLNVAL) != 0 { throw ScreenApplicationError.disconnected }
       if readiness.revents & Int16(POLLIN | POLLHUP) != 0 {
         let count: Int
@@ -134,10 +134,10 @@ struct ScreenRunner: ~Copyable {
           throw .io(error)
         }
         if count == 0 {
-          if let event = self.input.flush() { _ = deliver(event, application: &application) }
+          if let event = self.input.finish() { _ = deliver(event, application: &application) }
           break
         }
-        guard receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else { break }
+        guard try receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else { break }
       }
       retries = SystemCallRetryBudget()
       guard performPendingWork(application: &application) else { break }
@@ -171,20 +171,27 @@ struct ScreenRunner: ~Copyable {
 
   mutating func receive<Application: ScreenApplication & ~Copyable>(
     _ bytes: Span<UInt8>, at now: ContinuousClock.Instant, application: inout Application
-  ) -> Bool {
+  ) throws(ScreenApplicationError) -> Bool {
     precondition(bytes.count <= 64)
     guard !bytes.isEmpty else { return true }
     var offset = 0
-    while let event = input.next(in: bytes, offset: &offset, at: now) {
+    while true {
+      let next: InputEvent?
+      do throws(TerminalInputError) {
+        next = try input.next(in: bytes, offset: &offset, at: now)
+      } catch { throw .input(error) }
+      guard let event = next else { break }
       guard deliver(event, application: &application) else { return false }
     }
     return !requestedSuspend
   }
 
-  mutating func expireEscape<Application: ScreenApplication & ~Copyable>(
+  mutating func expireInput<Application: ScreenApplication & ~Copyable>(
     at now: ContinuousClock.Instant, application: inout Application
-  ) -> Bool {
-    guard let event = input.expire(at: now) else { return true }
+  ) throws(ScreenApplicationError) -> Bool {
+    let next: InputEvent?
+    do throws(TerminalInputError) { next = try input.expire(at: now) } catch { throw .input(error) }
+    guard let event = next else { return true }
     return deliver(event, application: &application)
   }
 

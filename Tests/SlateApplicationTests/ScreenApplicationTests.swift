@@ -18,7 +18,7 @@ import Glibc
   var bytes = Array("a\u{1b}[1;2A\u{1b}[<0;2;2M\u{1b}[200~é\u{1b}[201~\u{1b}[200~".utf8)
   bytes.append(0xff)
   bytes.append(contentsOf: "\u{1b}[201~qz".utf8)
-  #expect(!runner.receive(bytes.span, at: .now, application: &application))
+  #expect(try !runner.receive(bytes.span, at: .now, application: &application))
   #expect(application.received == ["key:a", "shift:up", "mouse:1,1", "paste:é", "rejected:invalidUTF8", "key:q"])
 }
 
@@ -57,7 +57,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(!(try capture.take()).isEmpty)
 
   let ignored: InlineArray<2, UInt8> = [0x78, 0xff]
-  #expect(runner.receive(ignored.span, at: now, application: &application))
+  #expect(try runner.receive(ignored.span, at: now, application: &application))
   try runner.draw(application: &application, actualSize: size, to: output)
   try runner.draw(application: &application, actualSize: size, to: output)
   #expect(application.probe.sizes.count == 1)
@@ -65,7 +65,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.keys == [.character("x")])
 
   let redraws: InlineArray<3, UInt8> = [0x72, 0x78, 0x72]
-  #expect(runner.receive(redraws.span, at: now, application: &application))
+  #expect(try runner.receive(redraws.span, at: now, application: &application))
   try runner.draw(application: &application, actualSize: size, to: output)
   #expect(application.probe.sizes.count == 2)
 }
@@ -120,10 +120,10 @@ private struct OrderedEventApplication: ScreenApplication {
   var application = ProbeApplication()
   let now = ContinuousClock().now
   let incomplete: InlineArray<1, UInt8> = [0xc2]
-  #expect(runner.receive(incomplete.span, at: now, application: &application))
+  #expect(try runner.receive(incomplete.span, at: now, application: &application))
   // 65 decoder events (one invalid prefix plus 64 keys) must reuse 16 slots.
   let bytes = InlineArray<64, UInt8>(repeating: 0x61)
-  #expect(runner.receive(bytes.span, at: now, application: &application))
+  #expect(try runner.receive(bytes.span, at: now, application: &application))
   #expect(application.probe.keys == Array(repeating: .character("a"), count: 64))
 }
 
@@ -131,7 +131,7 @@ private struct OrderedEventApplication: ScreenApplication {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let bytes = "x\u{1b}[1;2A\u{1b}[1;3Dqr".utf8Span.span
-  #expect(!runner.receive(bytes, at: .now, application: &application))
+  #expect(try !runner.receive(bytes, at: .now, application: &application))
   #expect(application.probe.keys == [.character("x"), .up, .left, .character("q")])
   #expect(application.probe.modifiers == [[], .shift, .alt, []])
 }
@@ -141,18 +141,18 @@ private struct OrderedEventApplication: ScreenApplication {
   var application = ProbeApplication()
   let now = ContinuousClock().now
   let escape: InlineArray<1, UInt8> = [0x1b]
-  #expect(runner.receive(escape.span, at: now, application: &application))
-  #expect(runner.expireEscape(at: now.advanced(by: .milliseconds(49)), application: &application))
+  #expect(try runner.receive(escape.span, at: now, application: &application))
+  #expect(try runner.expireInput(at: now.advanced(by: .milliseconds(49)), application: &application))
   #expect(application.probe.keys.isEmpty)
   // Empty input must not postpone the original deadline.
-  #expect(runner.receive(Span(), at: now.advanced(by: .milliseconds(49)), application: &application))
-  #expect(runner.expireEscape(at: now.advanced(by: .milliseconds(50)), application: &application))
-  #expect(runner.expireEscape(at: now.advanced(by: .seconds(1)), application: &application))
+  #expect(try runner.receive(Span(), at: now.advanced(by: .milliseconds(49)), application: &application))
+  #expect(try runner.expireInput(at: now.advanced(by: .milliseconds(50)), application: &application))
+  #expect(try runner.expireInput(at: now.advanced(by: .seconds(1)), application: &application))
   #expect(application.probe.keys == [.escape])
 
   application.quitKey = .escape
-  #expect(runner.receive(escape.span, at: now, application: &application))
-  #expect(!runner.expireEscape(at: now.advanced(by: .milliseconds(50)), application: &application))
+  #expect(try runner.receive(escape.span, at: now, application: &application))
+  #expect(try !runner.expireInput(at: now.advanced(by: .milliseconds(50)), application: &application))
   #expect(application.probe.keys == [.escape, .escape])
 }
 
@@ -194,6 +194,39 @@ private struct OrderedEventApplication: ScreenApplication {
   } catch { #expect(error == .screen(.layout(.textTooLong))) }
   expectEqual(try attributes(of: pty.slave), saved)
   try expectApplicationScreenRestored(pty.master)
+}
+
+@Test func applicationFramingFailureRestoresTheTerminalWithoutDeliveringResponseKeys() throws {
+  let pty = try PseudoTerminal()
+  try setApplicationTerminalSize(pty.slave)
+  let saved = try attributes(of: pty.slave)
+  try queueApplicationInput(Array("\u{1b}_qqqq".utf8), to: pty.master)
+  var application = ProbeApplication()
+  #expect(throws: ScreenApplicationError.input(.responseRecoveryExceeded)) {
+    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  }
+  #expect(application.probe.keys.isEmpty)
+  expectEqual(try attributes(of: pty.slave), saved)
+  #expect(fcntl(pty.master, F_GETFD) >= 0)
+  try expectApplicationScreenRestored(pty.master)
+}
+
+@Test func applicationLayoutBudgetsAreValidatedBeforeChangingTerminalModes() throws {
+  let pty = try PseudoTerminal()
+  try setApplicationTerminalSize(pty.slave)
+  let saved = try attributes(of: pty.slave)
+  var application = InvalidLayoutBudgetApplication()
+  #expect(throws: ScreenApplicationError.screen(.invalidCapacity)) {
+    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  }
+  expectEqual(try attributes(of: pty.slave), saved)
+  var readiness = pollfd(fd: pty.master, events: Int16(POLLIN), revents: 0)
+  #expect(unsafe poll(&readiness, 1, 0) == 0)
+}
+
+private struct InvalidLayoutBudgetApplication: ScreenApplication {
+  static var configuration: ScreenApplicationConfiguration { .init(layoutBudget: .init(nodeCapacity: 0)) }
+  func render(in size: TerminalSize) -> some Block { Text("unused") }
 }
 
 #if os(Linux)
@@ -348,7 +381,7 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
     let bytes = Array(("\u{1b}[200~" + body + "\u{1b}[201~j").utf8)
     for start in stride(from: 0, to: bytes.count, by: 64) {
       #expect(
-        runner.receive(bytes.span.extracting(start..<min(start + 64, bytes.count)), at: now, application: &application))
+        try runner.receive(bytes.span.extracting(start..<min(start + 64, bytes.count)), at: now, application: &application))
     }
     #expect(application.probe.keys.last == .character("j"))
     if count == 0 {
@@ -363,11 +396,11 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   #expect(application.probe.pasteErrors.isEmpty)
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count))
   let bad: [UInt8] = Array("\u{1b}[200~".utf8) + [0xff] + Array("\u{1b}[201~".utf8)
-  #expect(runner.receive(bad.span, at: now, application: &application))
+  #expect(try runner.receive(bad.span, at: now, application: &application))
   #expect(application.probe.pasteErrors == [.invalidUTF8])
   #expect(application.probe.pastes.count == expectedPastes)
   let recovered = "\u{1b}[200~café\u{1b}[201~j".utf8Span.span
-  #expect(runner.receive(recovered, at: now, application: &application))
+  #expect(try runner.receive(recovered, at: now, application: &application))
   #expect(application.probe.pastes.last == "café")
   #expect(application.probe.pastes.count == expectedPastes + 1)
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count + 1))
@@ -377,23 +410,23 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   var runner = try ScreenRunner(configuration: .init(maximumPasteBytes: 4))
   var application = ProbeApplication()
   let now = ContinuousClock().now
-  #expect(feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(try feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
   #expect(application.probe.pastes == ["abcd"])
   #expect(application.probe.keys.last == .character("j"))
 
   // The oversized body is drained through its terminator; the following key
   // still arrives and the rejected tail is never replayed as text.
-  #expect(feedPaste("\u{1b}[200~abcde\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(try feedPaste("\u{1b}[200~abcde\u{1b}[201~j", to: &runner, application: &application, at: now))
   #expect(application.probe.pasteErrors == [.tooLarge])
   #expect(application.probe.pastes == ["abcd"])
   #expect(application.probe.keys.last == .character("j"))
 
-  #expect(feedPaste("\u{1b}[200~\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(try feedPaste("\u{1b}[200~\u{1b}[201~j", to: &runner, application: &application, at: now))
   #expect(application.probe.emptyPastes == 1)
   #expect(application.probe.pastes == ["abcd"])
 
   // Reset clears the oversized state and retained storage remains reusable.
-  #expect(feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
+  #expect(try feedPaste("\u{1b}[200~abcd\u{1b}[201~j", to: &runner, application: &application, at: now))
   #expect(application.probe.pastes == ["abcd", "abcd"])
 }
 
@@ -412,11 +445,11 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
 private func feedPaste(
   _ text: String, to runner: inout ScreenRunner, application: inout ProbeApplication,
   at now: ContinuousClock.Instant
-) -> Bool {
+) throws -> Bool {
   let bytes = Array(text.utf8)
   for start in stride(from: 0, to: bytes.count, by: 64) {
     let end = min(start + 64, bytes.count)
-    if !runner.receive(bytes.span.extracting(start..<end), at: now, application: &application) {
+    if try !runner.receive(bytes.span.extracting(start..<end), at: now, application: &application) {
       return false
     }
   }
@@ -547,7 +580,7 @@ private func expectApplicationScreenRestored(_ master: Int32) throws {
   let size = TerminalSize(columns: 4, rows: 2)
   try runner.draw(application: &application, actualSize: size, to: output)
   let response = Array("\u{1b}_extension response\u{1b}\\\u{1b}[?1;2cr".utf8)
-  #expect(runner.receive(response.span, at: .now, application: &application))
+  #expect(try runner.receive(response.span, at: .now, application: &application))
   try runner.draw(application: &application, actualSize: size, to: output)
   #expect(application.probe.keys == [.character("r")])
   let emitted = String(decoding: try capture.take(), as: UTF8.self)

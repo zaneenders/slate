@@ -7,9 +7,8 @@ public enum SurfaceError: Error, Equatable, Sendable {
 }
 
 /// A cell surface independent of presentation, terminal modes, and byte encoding.
-/// Owns one startup-allocated grid and layout storage that doubles from 64 nodes
-/// on demand without a node cap, retaining capacity. Optimized successful rendering
-/// within the retained capacity reuses storage without allocation;
+/// Owns one startup-allocated grid and fixed layout storage. Optimized successful
+/// rendering reuses storage without allocation;
 /// capacity/layout rejection preserves the last frame. Error propagation,
 /// caller-created Strings/drawing work, and first-use runtime metadata are outside
 /// that guarantee. Frame views must end before the next render.
@@ -17,32 +16,34 @@ public struct Surface: ~Copyable, ~Sendable {
   public static let maximumColumns = 512
   public static let maximumRows = 256
   public let maximumSize: TerminalSize
-  /// Current retained layout capacity, including the internal root node.
-  public var nodeCapacity: Int { layout.nodes.capacity }
+  public let layoutBudget: LayoutBudget
+  /// Fixed startup layout capacity, including the internal root node.
+  public var nodeCapacity: Int { layoutBudget.nodeCapacity }
   public private(set) var size = TerminalSize(columns: 0, rows: 0)
   private var cells: RigidArray<Cell>
   private var layout: LayoutTree
 
   /// Current inline owner and retained element storage, excluding allocator
-  /// metadata and caller-owned text. May increase when layout capacity grows.
-  /// Layout payload scales with retained capacity times the node/drawing strides;
-  /// doubling temporarily needs at most 1.5 times the new payload during growth.
+  /// metadata and caller-owned text. Fixed for the lifetime of this surface.
+  /// Layout payload is nodeCapacity * (LayoutNode stride + BlockDrawing? stride).
   public var storageBudgetBytes: Int {
     maximumSize.columns * maximumSize.rows * MemoryLayout<Cell>.stride
-      + layout.nodes.capacity * MemoryLayout<LayoutNode>.stride
-      + layout.drawings.capacity * MemoryLayout<BlockDrawing?>.stride
+      + nodeCapacity * MemoryLayout<LayoutNode>.stride
+      + nodeCapacity * MemoryLayout<BlockDrawing?>.stride
       + MemoryLayout<Self>.stride
   }
 
   public init(
-    maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80)
+    maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
+    layoutBudget: LayoutBudget = .init()
   ) throws(SurfaceError) {
     guard maximumSize.columns > 0 && maximumSize.columns <= Self.maximumColumns,
-      maximumSize.rows > 0 && maximumSize.rows <= Self.maximumRows
+      maximumSize.rows > 0 && maximumSize.rows <= Self.maximumRows, layoutBudget.isValid
     else { throw .invalidCapacity }
     self.maximumSize = maximumSize
+    self.layoutBudget = layoutBudget
     cells = RigidArray(repeating: Cell(), count: maximumSize.columns * maximumSize.rows)
-    layout = LayoutTree()
+    layout = LayoutTree(budget: layoutBudget)
   }
 
   /// A scoped, row-major view for any synchronous presentation backend. A new

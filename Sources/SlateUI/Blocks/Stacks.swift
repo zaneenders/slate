@@ -12,7 +12,7 @@ public struct Row<Content: Block>: Block, ~Sendable {
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .row, alignment: alignment, gap: gap))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -30,7 +30,7 @@ public struct Column<Content: Block>: Block, ~Sendable {
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .column, alignment: alignment, gap: gap))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -53,6 +53,6 @@ public struct Overlay<Content: Block>: Block, ~Sendable {
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .overlay, alignment: alignment))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }

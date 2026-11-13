@@ -21,7 +21,7 @@ import Musl
   try runner.draw(application: &application, actualSize: size, to: output)
   _ = try capture.take()
   let reports = "\u{1b}[<0;2;2M\u{1b}[<32;4;2M\u{1b}[<0;4;2m".utf8Span.span
-  let continues = runner.receive(reports, at: .now, application: &application)
+  let continues = try runner.receive(reports, at: .now, application: &application)
   #expect(continues)
   #expect(
     application.probe.events == [
@@ -34,7 +34,7 @@ import Musl
   #expect(application.probe.frames == 2)
   application.quitOnRelease = true
   let quit = "\u{1b}[<0;4;2mq".utf8Span.span
-  let afterQuit = runner.receive(quit, at: .now, application: &application)
+  let afterQuit = try runner.receive(quit, at: .now, application: &application)
   #expect(!afterQuit && application.probe.keys.isEmpty)
 }
 

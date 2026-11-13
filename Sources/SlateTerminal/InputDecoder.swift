@@ -5,7 +5,7 @@ public enum InputDecodingError: Error, Equatable, Sendable {
   /// An unsupported or malformed CSI, SS3 or APC sequence.
   case unknownSequence
   case sequenceTooLong
-  /// A CSI, SS3 or APC prefix was flushed before its terminator arrived.
+  /// Input ended after a CSI, SS3 or APC prefix, before its terminator arrived.
   case incompleteSequence
 }
 
@@ -37,7 +37,7 @@ public struct InputDecoder: ~Copyable, Sendable {
   public static let maximumSequenceBytes = 32
 
   private enum State: Equatable, Sendable {
-    case ground
+    case ground, finished
     case utf8
     case escape
     case csi
@@ -62,9 +62,9 @@ public struct InputDecoder: ~Copyable, Sendable {
   public init() {}
 
   /// Includes oversized CSI/APC sequences whose tails are being discarded.
-  public var hasPendingInput: Bool { state != .ground }
+  public var hasPendingInput: Bool { state != .ground && state != .finished }
 
-  /// A caller may apply its Escape deadline only while this is true, then flush.
+  /// A caller may apply its Escape deadline only while this is true.
   public var hasPendingEscape: Bool { state == .escape }
 
   public var hasPendingTerminalResponse: Bool {
@@ -81,6 +81,7 @@ public struct InputDecoder: ~Copyable, Sendable {
   public mutating func decode(
     _ bytes: Span<UInt8>, into events: consuming MutableSpan<InputEvent>
   ) -> InputDecodingProgress {
+    precondition(state != .finished, "Cannot decode after end of input")
     var events = consume events
     var bytesConsumed = 0
     var eventsWritten = 0
@@ -107,22 +108,36 @@ public struct InputDecoder: ~Copyable, Sendable {
     return InputDecodingProgress(bytesConsumed: bytesConsumed, eventsWritten: eventsWritten)
   }
 
-  /// Explicit end-of-input or deadline boundary. Returns at most one event and
-  /// resets the decoder for reuse. A lone ESC becomes Escape; truncated UTF-8
+  /// End of input only. Returns at most one event and closes the decoder.
+  /// A lone ESC becomes Escape; truncated UTF-8
   /// becomes invalidUTF8; unfinished CSI/SS3 becomes incompleteSequence. An
   /// oversized sequence was already reported, so its discarded tail emits nil.
-  /// Do not call after each read or merely because a read returned zero.
-  public mutating func flush() -> InputEvent? {
+  /// Do not call for a deadline or merely because a read returned zero. Repeated
+  /// finish calls return nil; decoding after finish violates a precondition.
+  public mutating func finish() -> InputEvent? {
     let event: InputEvent?
     switch state {
-    case .ground, .discardCSI, .discardAPC, .discardAPCEscape: event = nil
+    case .ground, .finished, .discardCSI, .discardAPC, .discardAPCEscape: event = nil
     case .escape: event = .key(.escape)
     case .utf8: event = .invalid(.invalidUTF8)
     case .csi, .ss3, .apc, .apcEscape: event = .invalid(.incompleteSequence)
     case .paste: event = .paste(.cancelled)
     }
-    reset()
+    state = .finished
     return event
+  }
+
+  package mutating func expireEscape() -> InputEvent? {
+    guard state == .escape else { return nil }
+    reset()
+    return .key(.escape)
+  }
+
+  /// Preserve framing, including a partially received ST, while dropping payload.
+  package mutating func discardTerminalResponse() {
+    precondition(hasPendingTerminalResponse)
+    state = state == .apcEscape || state == .discardAPCEscape ? .discardAPCEscape : .discardAPC
+    applicationCommand = ApplicationCommand()
   }
 
   private struct Step {
@@ -141,6 +156,7 @@ public struct InputDecoder: ~Copyable, Sendable {
   @inline(always)
   private mutating func next(_ byte: UInt8) -> Step {
     switch state {
+    case .finished: preconditionFailure("Cannot decode after end of input")
     case .ground:
       return start(byte)
     case .paste:

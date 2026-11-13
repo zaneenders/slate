@@ -114,3 +114,28 @@ import Testing
   try surface.render(size: size) { Text("reused") }
   #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "r")
 }
+
+@Test func focusedInputAlwaysShowsItsCaretAcrossWideGlyphsAndNarrowFields() throws {
+  for text in ["abcdef漢Z", "漢字😀", "e\u{301}漢", "", "a" + String(repeating: "\u{301}", count: 40)] {
+    for width in 1...4 {
+      let input = try TextInput(text)
+      var copy = CopyBuffer()
+      var surface = try Surface(maximumSize: TerminalSize(columns: width, rows: 1))
+      for _ in 0...text.count {
+        try surface.render(size: surface.maximumSize) { InputBox(input) }
+        var caretCells = 0
+        for column in 0..<width {
+          let cell = surface.cell(x: column, y: 0)!
+          if cell.style.underlined { caretCells += 1 }
+          if cell.isContinuation {
+            #expect(column > 0 && surface.cell(x: column - 1, y: 0)?.glyph.columnWidth == 2)
+          }
+        }
+        #expect(caretCells >= 1 && caretCells <= 2)
+        _ = input.handle(.left, copyBuffer: &copy)
+      }
+      try surface.render(size: surface.maximumSize) { InputBox(input, focused: false) }
+      #expect((0..<width).allSatisfy { surface.cell(x: $0, y: 0)?.style.underlined == false })
+    }
+  }
+}

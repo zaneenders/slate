@@ -15,7 +15,7 @@ import Testing
   try runner.draw(application: &application, actualSize: size, to: output)
   #expect(application.probe.calls == 1)
   #expect(try capture.take().isEmpty)
-  #expect(runner.receive("r".utf8Span.span, at: .now, application: &application))
+  #expect(try runner.receive("r".utf8Span.span, at: .now, application: &application))
   try runner.draw(application: &application, actualSize: size, to: output)
   #expect(application.probe.calls == 2)
   #expect(try capture.take().isEmpty)

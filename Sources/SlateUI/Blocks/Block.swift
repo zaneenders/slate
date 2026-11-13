@@ -10,7 +10,7 @@ public protocol Block {
 
 extension Block {
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
-    try body._build(into: &builder)
+    try builder.build(body)
   }
 }
 

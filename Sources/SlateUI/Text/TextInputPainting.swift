@@ -20,11 +20,15 @@ extension TextInput {
     // same bounded grapheme fragments used by the other rendering paths.
     var characters = UnicodeTextIterator(text)
     var cursorColumn = 0
+    var caretWidth = 1
     while let cluster = characters.next() {
-      if cluster.byteRange.upperBound > cursorByteOffset { break }
+      if cluster.byteRange.upperBound > cursorByteOffset {
+        caretWidth = cluster.glyph.columnWidth
+        break
+      }
       cursorColumn += cluster.glyph.columnWidth
     }
-    let firstColumn = focused ? max(0, cursorColumn - area.width + 1) : 0
+    let firstColumn = focused ? max(0, cursorColumn + min(caretWidth, area.width) - area.width) : 0
     var visible = UnicodeTextIterator(text)
     var column = 0
     let selected = selection
@@ -34,19 +38,18 @@ extension TextInput {
       if column >= firstColumn && column + glyph.columnWidth <= firstColumn + area.width {
         var cellStyle = style
         if focused && selected.contains(start) { cellStyle.inverse.toggle() }
-        if focused && start == cursorByteOffset {
-          cellStyle.underlined = true
-          cellStyle.inverse.toggle()
-        }
         let x = area.x + column - firstColumn
         if x < frame.area.right && area.y < frame.area.bottom { frame[x, area.y] = Cell(glyph, style: cellStyle) }
       }
       column += glyph.columnWidth
     }
-    if focused && cursorByteOffset == byteCount {
+    // The caret is independent of glyph painting. A field narrower than its
+    // current glyph uses a styled blank; wide glyphs otherwise remain whole.
+    if focused {
       let x = area.x + cursorColumn - firstColumn
       if x < frame.area.right && area.y < frame.area.bottom {
-        var cell = frame[x, area.y]
+        assert(x >= line.x && x < line.right)
+        var cell = caretWidth > area.width ? Cell(style: style) : frame[x, area.y]
         cell.style.inverse.toggle()
         cell.style.underlined = true
         frame[x, area.y] = cell

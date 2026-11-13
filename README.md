@@ -167,21 +167,38 @@ their own `output.graphemeClustering()` scope.
   a class-bound reference, avoiding per-frame closure contexts and boxed values.
   Allocation guarantees apply to warmed, successful release-mode rendering;
   debug builds and error propagation may allocate.
-- Layout uses `UniqueArray` storage, starting at 64 nodes and doubling on demand
-  without a node limit. Depth remains limited to 32. Applications need no capacity
-  setting. Growth is an explicit allocation exception; smaller frames and failed
-  layouts retain capacity for reuse. `nodeCapacity` reports the current capacity.
-  Canvas shares the drawing table with input fields; its payload costs 16 bytes
-  per node on 64-bit hosts. `storageBudgetBytes` reports current retained storage.
-  Layout memory scales with retained capacity times the node/drawing strides;
-  doubling temporarily needs at most 1.5 times the new payload during growth.
-  Layout work scales with node count, including offscreen and empty blocks;
-  applications own the size and processing cost of their block lists.
+- Layout uses startup-allocated `RigidArray` storage. `LayoutBudget` defaults to
+  4,096 nodes (including the internal root) and 16,384 block visits per frame.
+  Supported maxima are 131,072 nodes and 1,048,576 visits. `Surface`, `Screen`,
+  `ScreenRegion`, and `ScreenApplicationConfiguration` accept `layoutBudget`.
+  Each library-controlled block dispatch costs a visit, including custom bodies,
+  builder pairs, and empty blocks. Containers are limited to 32 levels and build
+  calls to 128 levels; each text/title is limited to 4,096 scalars. Node or visit
+  exhaustion throws `.layout(.nodeCapacityExceeded)` or
+  `.layout(.blockVisitLimitExceeded)` before painting or output, preserving the
+  previous frame. Invalid budgets throw `.invalidCapacity` during initialization.
+  `nodeCapacity` and `storageBudgetBytes` stay fixed. Layout element storage costs
+  nodeCapacity times the sum of the node and drawing-payload strides; Canvas and
+  input fields share the drawing table (16 bytes per slot on 64-bit hosts).
+  On the pinned 64-bit toolchain, both tables total 768 KiB by default and 24 MiB
+  at maximum capacity. Painting cost also scales with the cells touched across layers.
+  Caller computations inside `render`, `body`, and `paint`, caller-owned strings,
+  and source-collection construction remain outside the traversal/allocation bounds.
 - Drawing runs once per nonempty canvas, in block order, after successful layout.
   Viewport or layout failure preserves the last frame and releases temporary references.
 - Each canvas borrows the existing grid: no extra cell buffer or copying. Writes
   clip to its local area. Overwriting half an existing wide glyph also blanks its
   other half, even across the clip edge, while preserving the neighboring style.
+- Focused input fields reserve the current glyph's width when scrolling and draw
+  the caret independently. A one-column field uses a styled blank for a wide glyph.
+- `TerminalInput` expires incomplete APC responses after 250 ms, then discards
+  through their terminator for at most another 250 ms or 4,096 bytes. Recovery
+  exhaustion permanently fails the input owner with `.responseRecoveryExceeded`;
+  `ScreenApplication` reports `.input(.responseRecoveryExceeded)` and restores its
+  terminal modes. Late response contents never become keys. `next` and `expire`
+  throw typed errors; drain each batch before calling `expire`. Use `finish()`
+  only for EOF; it replaces the former decoder/input `flush()` API and closes
+  the owner. Suspension preserves response deadlines rather than renewing them.
 - Bracketed paste retains at most `ScreenApplicationConfiguration.maximumPasteBytes`
   (1 MiB by default, 64 MiB maximum). Oversized pastes are drained through their
   terminator and reported as `.pasteRejected(.tooLarge)`, so their tail never
@@ -204,9 +221,9 @@ swift run -c release document path/to/file
 ```
 
 The document viewer also exercises Canvas with paging, selection, and input strips.
-The macOS allocation probe checks layout growth and reuse, warmed maximum-grid
-rendering, overlays, animation ticks, mouse dragging, color presentation, and
+The macOS allocation probe checks fixed layout capacity and exhaustion, warmed
+maximum-grid rendering, overlays, animation ticks, mouse dragging, color presentation, and
 layout failure with an injected allocator counter and a positive control.
-Successful frames must allocate nothing within retained capacity. Rejected layouts
+Successful frames must allocate nothing after warm-up. Rejected layouts
 allow two Swift Testing diagnostic allocations with the pinned toolchain. Output
 checks use `/dev/null`; they do not measure terminal latency.

@@ -39,10 +39,39 @@ public enum Alignment: Sendable {
 
 public enum LayoutLimits: Sendable {
   public static let maximumDepth = 32
+  /// Bounds the Swift call stack, including custom bodies and builder pairs.
+  public static let maximumBuildDepth = 128
   public static let maximumTextScalars = 4_096
+}
+
+/// Fixed startup storage and per-frame traversal limits. The internal root uses
+/// one node. Visits include primitives, custom bodies, builder pairs, and empty
+/// blocks. Arbitrary work performed inside application callbacks remains caller-owned.
+/// Invalid budgets are rejected by Surface/Screen initialization before allocation.
+public struct LayoutBudget: Equatable, Sendable {
+  // On the pinned 64-bit toolchain, the two tables use 192 bytes per node:
+  // 768 KiB by default and 24 MiB at this maximum, excluding cells and owners.
+  public static let maximumNodeCapacity = 131_072
+  public static let maximumBlockVisitsLimit = 1_048_576
+
+  public let nodeCapacity: Int
+  public let maximumBlockVisits: Int
+
+  public init(nodeCapacity: Int = 4_096, maximumBlockVisits: Int = 16_384) {
+    self.nodeCapacity = nodeCapacity
+    self.maximumBlockVisits = maximumBlockVisits
+  }
+
+  var isValid: Bool {
+    (1...Self.maximumNodeCapacity).contains(nodeCapacity)
+      && (1...Self.maximumBlockVisitsLimit).contains(maximumBlockVisits)
+  }
 }
 
 public enum LayoutError: Error, Equatable, Sendable {
   case depthExceeded
+  case buildDepthExceeded
+  case nodeCapacityExceeded
+  case blockVisitLimitExceeded
   case textTooLong
 }

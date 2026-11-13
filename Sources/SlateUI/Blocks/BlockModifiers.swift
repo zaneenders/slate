@@ -49,7 +49,7 @@ extension Block {
     let parent = try builder.begin(
       LayoutNode(kind: .positioned, positionColumn: column, positionRow: row, width: .fill, height: .fill))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -72,7 +72,7 @@ extension Block {
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .frame, width: width, height: height, alignment: alignment))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -89,7 +89,7 @@ extension Block {
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .padding, horizontalPadding: horizontal, verticalPadding: vertical))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -110,7 +110,7 @@ extension Block {
         kind: .border, text: title, style: style,
         horizontalPadding: 1, verticalPadding: 1))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }
 
@@ -125,6 +125,6 @@ extension Block {
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let parent = try builder.begin(LayoutNode(kind: .background, style: Style(background: color)))
     defer { builder.end(parent) }
-    try content._build(into: &builder)
+    try builder.build(content)
   }
 }

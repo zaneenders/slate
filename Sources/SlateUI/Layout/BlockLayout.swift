@@ -6,7 +6,7 @@ import BasicContainers
   enum Kind: Sendable { case root, row, column, overlay, positioned, frame, padding, border, background, text, drawing }
   var kind: Kind = .root
   // Position coordinates fit before the next 8-byte-aligned field. Drawing
-  // indices use Int, like node indices, so storage growth has no 16-bit ceiling.
+  // indices use Int, like node indices, so configured storage can exceed 65,536.
   var focused = false
   var positionColumn: UInt16 = 0
   var positionRow: UInt16 = 0
@@ -39,27 +39,39 @@ import BasicContainers
 /// Public only because it appears in the protocol's underscored rendering hook;
 /// storage and mutation remain module-internal and frame-scoped.
 public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
-  // Borrow the owners rather than their element storage: growth can relocate
-  // elements without invalidating these frame-scoped references.
-  private var nodes: MutableRef<UniqueArray<LayoutNode>>
-  private var drawings: MutableRef<UniqueArray<BlockDrawing?>>
+  private var nodes: MutableSpan<LayoutNode>
+  private var drawings: MutableSpan<BlockDrawing?>
+  private var remainingBlockVisits: Int
+  private var buildDepth = 0
   private var drawingCount = 0
   private var parent = 0
   private var depth = 0
   private(set) var count = 1
 
   @_lifetime(&nodes, &drawings)
-  init(nodes: inout UniqueArray<LayoutNode>, drawings: inout UniqueArray<BlockDrawing?>) {
+  init(nodes: inout RigidArray<LayoutNode>, drawings: inout RigidArray<BlockDrawing?>, maximumBlockVisits: Int) {
     precondition(nodes.count > 0)
     precondition(drawings.count == nodes.count)
-    self.nodes = MutableRef(&nodes)
-    self.drawings = MutableRef(&drawings)
+    precondition(maximumBlockVisits > 0)
+    self.nodes = nodes.mutableSpan
+    self.drawings = drawings.mutableSpan
+    remainingBlockVisits = maximumBlockVisits
+  }
+
+  /// All library-controlled dispatch passes here, even when no node is emitted.
+  mutating func build<Content: Block>(_ content: borrowing Content) throws(LayoutError) {
+    guard remainingBlockVisits > 0 else { throw .blockVisitLimitExceeded }
+    guard buildDepth < LayoutLimits.maximumBuildDepth else { throw .buildDepthExceeded }
+    remainingBlockVisits -= 1
+    buildDepth += 1
+    defer { buildDepth -= 1 }
+    try content._build(into: &self)
   }
 
   mutating func begin(_ node: LayoutNode) throws(LayoutError) -> Int {
     guard depth < LayoutLimits.maximumDepth else { throw .depthExceeded }
     let previous = parent
-    parent = append(node)
+    parent = try append(node)
     depth += 1
     return previous
   }
@@ -70,23 +82,13 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
     parent = previous
   }
 
-  private mutating func append(_ node: LayoutNode) -> Int {
-    if count == nodes.value.count {
-      // Retain each new high-water mark. This is the only layout-storage
-      // allocation path after initialization; there is no configured node cap.
-      let capacity = nodes.value.count * 2
-      nodes.value.reserveCapacity(capacity)
-      drawings.value.reserveCapacity(capacity)
-      for _ in nodes.value.count..<capacity {
-        nodes.value.append(LayoutNode())
-        drawings.value.append(nil)
-      }
-    }
+  private mutating func append(_ node: LayoutNode) throws(LayoutError) -> Int {
+    guard count < nodes.count else { throw .nodeCapacityExceeded }
     let index = count
-    nodes.value[index] = node
-    let last = nodes.value[parent].lastChild
-    if last >= 0 { nodes.value[last].nextSibling = index } else { nodes.value[parent].firstChild = index }
-    nodes.value[parent].lastChild = index
+    nodes[index] = node
+    let last = nodes[parent].lastChild
+    if last >= 0 { nodes[last].nextSibling = index } else { nodes[parent].firstChild = index }
+    nodes[parent].lastChild = index
     count += 1
     return index
   }
@@ -101,20 +103,20 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
 
   mutating func inputBox(_ input: TextInput, focused: Bool, placeholder: String, style: Style) throws(LayoutError) {
     try validateText(placeholder)
-    _ = append(
+    _ = try append(
       LayoutNode(
         kind: .drawing, focused: focused, drawingIndex: drawingCount,
         width: .fill, text: placeholder, style: style, measuredWidth: 12, measuredHeight: 1))
-    precondition(drawingCount < drawings.value.count)
-    drawings.value[drawingCount] = .input(input)
+    precondition(drawingCount < drawings.count)
+    drawings[drawingCount] = .input(input)
     drawingCount += 1
   }
 
-  mutating func canvas(_ drawing: any CanvasDrawing) {
-    _ = append(
+  mutating func canvas(_ drawing: any CanvasDrawing) throws(LayoutError) {
+    _ = try append(
       LayoutNode(kind: .drawing, drawingIndex: drawingCount, width: .fill, height: .fill))
-    precondition(drawingCount < drawings.value.count)
-    drawings.value[drawingCount] = .canvas(drawing)
+    precondition(drawingCount < drawings.count)
+    drawings[drawingCount] = .canvas(drawing)
     drawingCount += 1
   }
 
@@ -146,7 +148,7 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
         width += cluster.glyph.columnWidth
       }
     }
-    _ = append(
+    _ = try append(
       LayoutNode(
         kind: .text, text: text, style: style,
         measuredWidth: max(maximumWidth, width), measuredHeight: height))
@@ -154,13 +156,16 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
 }
 
 struct LayoutTree: ~Copyable {
-  private(set) var nodes: UniqueArray<LayoutNode>
-  private(set) var drawings: UniqueArray<BlockDrawing?>
+  private(set) var nodes: RigidArray<LayoutNode>
+  private(set) var drawings: RigidArray<BlockDrawing?>
+  private let maximumBlockVisits: Int
   private(set) var count = 1
 
-  init() {
-    nodes = UniqueArray(repeating: LayoutNode(), count: 64)
-    drawings = UniqueArray(repeating: nil, count: 64)
+  init(budget: LayoutBudget) {
+    precondition(budget.isValid)
+    nodes = RigidArray(repeating: LayoutNode(), count: budget.nodeCapacity)
+    drawings = RigidArray(repeating: nil, count: budget.nodeCapacity)
+    maximumBlockVisits = budget.maximumBlockVisits
   }
 
   /// The surface resets after painting or failure; this records every initialized
@@ -170,9 +175,9 @@ struct LayoutTree: ~Copyable {
   ) throws(LayoutError) {
     precondition(count == 1)
     do {
-      var builder = _BlockLayout(nodes: &nodes, drawings: &drawings)
+      var builder = _BlockLayout(nodes: &nodes, drawings: &drawings, maximumBlockVisits: maximumBlockVisits)
       defer { count = builder.count }
-      try content()._build(into: &builder)
+      try builder.build(content())
     }
     resolve(in: area)
   }

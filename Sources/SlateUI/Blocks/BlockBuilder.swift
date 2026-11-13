@@ -26,8 +26,8 @@ public enum BlockBuilder: Sendable {
     self.next = next
   }
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
-    try first._build(into: &builder)
-    try next._build(into: &builder)
+    try builder.build(first)
+    try builder.build(next)
   }
 }
 
@@ -48,8 +48,8 @@ public struct _ConditionalBlock<A: Block, B: Block>: Block, ~Sendable {
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     let storage = storage
     switch storage {
-    case .first(let block): try block._build(into: &builder)
-    case .second(let block): try block._build(into: &builder)
+    case .first(let block): try builder.build(block)
+    case .second(let block): try builder.build(block)
     }
   }
 }
@@ -59,6 +59,6 @@ public struct _ConditionalBlock<A: Block, B: Block>: Block, ~Sendable {
   let content: Content?
   @usableFromInline init(content: Content?) { self.content = content }
   @usableFromInline borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
-    try content?._build(into: &builder)
+    if let content { try builder.build(content) }
   }
 }
