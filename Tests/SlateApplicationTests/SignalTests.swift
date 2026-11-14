@@ -1,6 +1,8 @@
 import CIOTestSupport
+import Dispatch
 import Foundation
 import SlateTestSupport
+import Synchronization
 import Testing
 
 @testable import SlateApplication
@@ -134,36 +136,21 @@ struct SignalOwnershipTests {
   }
 
   @Test func signalsStayMaskedDuringSetupAndTeardownAndKeepTheFirstCause() throws {
-    var original = try readSignalMask()
-    defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &original, nil) }
-    var requested = original
-    try #require(unsafe sigaddset(&requested, SIGALRM) == 0)
-    try #require(unsafe sigdelset(&requested, SIGTERM) == 0)
-    try #require(unsafe sigdelset(&requested, SIGUSR1) == 0)
-    try #require(unsafe pthread_sigmask(SIG_SETMASK, &requested, nil) == 0)
-    do {
-      let owner = try SignalSession(.managed)
-      var mask = try readSignalMask()
-      for number in [SIGTERM, SIGUSR1, SIGTTIN, SIGTTOU, SIGCHLD] {
-        #expect(unsafe sigismember(&mask, number) == 1)
-      }
-      for number in [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP] {
-        #expect(unsafe sigismember(&mask, number) == sigismember(&requested, number))
-      }
-      try #require(raise(SIGTERM) == 0)
-      #expect(owner.termination() == 0)
-      try owner.resumeDelivery()
-      #expect(owner.termination() == SIGTERM)
-      expectSignalMask(try readSignalMask(), requested)
-      owner.protectTeardown()
-      try #require(raise(SIGUSR1) == 0)
-      #expect(owner.termination() == SIGTERM)
-      try owner.resumeDelivery()
-      #expect(owner.termination() == SIGTERM)
+    // Darwin cannot target a dispatch worker with pthread_kill; raise then
+    // falls back to process delivery. Use an ordinary thread for thread-mask
+    // assertions, and report its observations back on the test's own task.
+    let result = Mutex<Result<[SignalMaskObservation], any Error>?>(nil)
+    let finished = DispatchSemaphore(value: 0)
+    Thread.detachNewThread {
+      let observations = Result { try observeSignalMaskDelivery() }
+      result.withLock { $0 = observations }
+      finished.signal()
     }
-    expectSignalMask(try readSignalMask(), requested)
-    do { _ = try SignalSession(.unchanged) }
-    expectSignalMask(try readSignalMask(), requested)
+    finished.wait()
+    let observations = try result.withLock { try $0!.get() }
+    for observation in observations {
+      #expect(observation.actual == observation.expected, "\(observation.operation)")
+    }
   }
 
   @Test func managedSignalDispositionsRestoreWithoutReplacingRuntimeCrashOrChildHandlers() throws {
@@ -188,18 +175,72 @@ struct SignalOwnershipTests {
   }
 }
 
-private func readSignalMask() throws -> sigset_t {
-  var mask = sigset_t()
-  try #require(unsafe pthread_sigmask(SIG_SETMASK, nil, &mask) == 0)
-  return mask
+private struct SignalMaskObservation: Sendable {
+  let operation: String
+  let actual: Int32
+  let expected: Int32
 }
 
-private func expectSignalMask(_ actual: sigset_t, _ expected: sigset_t) {
+private func observeSignalMaskDelivery() throws -> [SignalMaskObservation] {
+  var observations: [SignalMaskObservation] = []
+  var original = try readSignalMask()
+  defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &original, nil) }
+  var requested = original
+  guard unsafe sigaddset(&requested, SIGALRM) == 0,
+    unsafe sigdelset(&requested, SIGTERM) == 0,
+    unsafe sigdelset(&requested, SIGUSR1) == 0
+  else { throw ChildError.system(errno) }
+  let maskError = unsafe pthread_sigmask(SIG_SETMASK, &requested, nil)
+  guard maskError == 0 else { throw ChildError.system(maskError) }
+  do {
+    let owner = try SignalSession(.managed)
+    var mask = try readSignalMask()
+    for number in [SIGTERM, SIGUSR1, SIGTTIN, SIGTTOU, SIGCHLD] {
+      observations.append(
+        .init(
+          operation: "setup blocks signal \(number)", actual: unsafe sigismember(&mask, number), expected: 1))
+    }
+    for number in [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP] {
+      observations.append(
+        .init(
+          operation: "setup preserves fault signal \(number)", actual: unsafe sigismember(&mask, number),
+          expected: unsafe sigismember(&requested, number)))
+    }
+    guard raise(SIGTERM) == 0 else { throw ChildError.system(errno) }
+    observations.append(.init(operation: "setup defers delivery", actual: owner.termination(), expected: 0))
+    try owner.resumeDelivery()
+    observations.append(.init(operation: "resume delivers termination", actual: owner.termination(), expected: SIGTERM))
+    appendMaskObservations(try readSignalMask(), requested, into: &observations)
+    owner.protectTeardown()
+    guard raise(SIGUSR1) == 0 else { throw ChildError.system(errno) }
+    observations.append(.init(operation: "teardown defers delivery", actual: owner.termination(), expected: SIGTERM))
+    try owner.resumeDelivery()
+    observations.append(.init(operation: "resume retains first cause", actual: owner.termination(), expected: SIGTERM))
+  }
+  appendMaskObservations(try readSignalMask(), requested, into: &observations)
+  do { _ = try SignalSession(.unchanged) }
+  appendMaskObservations(try readSignalMask(), requested, into: &observations)
+  return observations
+}
+
+private func appendMaskObservations(
+  _ actual: sigset_t, _ expected: sigset_t, into observations: inout [SignalMaskObservation]
+) {
   var actual = actual
   var expected = expected
   for number in 1..<NSIG {
-    #expect(unsafe sigismember(&actual, number) == sigismember(&expected, number))
+    observations.append(
+      .init(
+        operation: "restored mask for signal \(number)", actual: unsafe sigismember(&actual, number),
+        expected: unsafe sigismember(&expected, number)))
   }
+}
+
+private func readSignalMask() throws -> sigset_t {
+  var mask = sigset_t()
+  let error = unsafe pthread_sigmask(SIG_SETMASK, nil, &mask)
+  guard error == 0 else { throw ChildError.system(error) }
+  return mask
 }
 
 private func readSignalAction(_ number: Int32) throws -> sigaction {
