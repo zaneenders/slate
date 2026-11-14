@@ -25,6 +25,7 @@ struct ScreenRunner: ~Copyable {
   private var paste: PasteBuffer
   private var copyBuffer = CopyBuffer()
   private var ticks = TickSchedule()
+  private let kittyGraphicsQueryID: UInt32?
 
   var capabilities: TerminalCapabilities { screen.capabilities }
 
@@ -32,11 +33,13 @@ struct ScreenRunner: ~Copyable {
     guard configuration.maximumPasteBytes > 0,
       configuration.maximumPasteBytes <= ScreenApplicationConfiguration.maximumPasteBytesLimit
     else { throw .invalidCapacity }
+    guard configuration.kittyGraphicsQueryID != 0 else { throw .invalidCapacity }
     screen = try Screen(
       maximumSize: configuration.maximumSize,
       capabilities: configuration.capabilities, layoutBudget: configuration.layoutBudget)
     paste = PasteBuffer(maximumBytes: configuration.maximumPasteBytes)
     overflow = configuration.viewportOverflow
+    kittyGraphicsQueryID = configuration.kittyGraphicsQueryID
   }
 
   borrowing func viewport(for actual: TerminalSize) throws(ScreenError) -> TerminalSize {
@@ -53,9 +56,10 @@ struct ScreenRunner: ~Copyable {
     }
   }
 
+  @discardableResult
   mutating func draw<Application: ScreenApplication & ~Copyable>(
     application: inout Application, actualSize: TerminalSize, to output: borrowing Output
-  ) throws(ScreenError) {
+  ) throws(ScreenError) -> Bool {
     let size = try viewport(for: actualSize)
     if actualSize != previousActualSize {
       // A physical resize can disturb the display even if the clipped viewport
@@ -63,22 +67,34 @@ struct ScreenRunner: ~Copyable {
       screen.invalidate()
       needsRedraw = true
     }
-    guard needsRedraw else { return }
+    guard needsRedraw else { return false }
     try screen.draw(
       size: size, to: output,
       content: { application.render(in: size) },
       paint: { application.paint(in: &$0) })
     previousActualSize = actualSize
     needsRedraw = false
+    return true
   }
 
   mutating func run<Application: ScreenApplication & ~Copyable>(
     application: inout Application, input: borrowing RawMode, output: borrowing Output,
     signals: borrowing SignalSession
   ) throws(ScreenApplicationError) -> ScreenRunResult {
+    // Setup holds asynchronous signals until every mode guard is ready. Every
+    // exit blocks them again before those guards start restoring the terminal.
+    defer { signals.protectTeardown() }
+    try signals.resumeDelivery()
+    let initialTermination = signals.termination()
+    if initialTermination != 0 { return .interrupted(initialTermination) }
     let clock = ContinuousClock()
     var inputBytes = InlineArray<64, UInt8>(repeating: 0)
     var retries = SystemCallRetryBudget()
+    if let id = kittyGraphicsQueryID {
+      do throws(KittyGraphicsError) {
+        try output.queryKittyGraphics(id: id)
+      } catch { throw .graphics(error) }
+    }
     // This loop intentionally lasts for the application session. Work between
     // polls is bounded by one input batch, one application-bounded work step,
     // one tick, and one frame. Layout work scales with application node count.
@@ -93,9 +109,17 @@ struct ScreenRunner: ~Copyable {
       do throws(TerminalError) {
         actualSize = try output.terminalSize()
       } catch { throw .terminal(error) }
+      let presented: Bool
+      let size: TerminalSize
       do throws(ScreenError) {
-        try draw(application: &application, actualSize: actualSize, to: output)
+        size = try viewport(for: actualSize)
+        presented = try draw(application: &application, actualSize: actualSize, to: output)
       } catch { throw .screen(error) }
+      if presented {
+        do throws(KittyGraphicsError) {
+          try application.presentGraphics(in: size, to: output)
+        } catch { throw .graphics(error) }
+      }
       var readiness = pollfd(fd: input.rawDescriptor, events: Int16(POLLIN), revents: 0)
       let timeout = try pollTimeout(at: clock.now, application: application)
       let ready = unsafe poll(&readiness, 1, timeout)
@@ -189,6 +213,11 @@ struct ScreenRunner: ~Copyable {
     case .modifiedKey(let key, let modifiers):
       update = application.event(.key(key, modifiers: modifiers), copyBuffer: &copyBuffer)
     case .mouse(let event): update = application.event(.mouse(event), copyBuffer: &copyBuffer)
+    case .terminalReply(.applicationCommand):
+      guard let reply = KittyGraphicsReply(input.applicationCommand) else { return true }
+      update = application.event(.kittyGraphicsReply(reply), copyBuffer: &copyBuffer)
+    case .terminalReply(.primaryAttributes):
+      update = application.event(.primaryDeviceAttributes, copyBuffer: &copyBuffer)
     case .paste(.begin):
       paste.reset()
       return true

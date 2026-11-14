@@ -37,6 +37,10 @@ public struct ScreenApplicationConfiguration: Sendable {
   /// Request disambiguated keys, including Super/Command, on terminals that
   /// support the Kitty keyboard protocol. Native terminal shortcuts still win.
   public let enhancedKeyboard: Bool
+  /// Send an explicit Kitty graphics support query once the input session is
+  /// ready. Match this nonzero ID in .kittyGraphicsReply, or fall back when
+  /// .primaryDeviceAttributes arrives first. Nil (default) performs no query.
+  public let kittyGraphicsQueryID: UInt32?
   public let capabilities: TerminalCapabilities
   /// Maximum bracketed-paste payload retained in memory. Oversized pastes are
   /// consumed through their terminator and reported as `.pasteRejected(.tooLarge)`.
@@ -47,6 +51,7 @@ public struct ScreenApplicationConfiguration: Sendable {
     viewportOverflow: ViewportOverflow = .clip,
     mouseTracking: Bool = false,
     enhancedKeyboard: Bool = false,
+    kittyGraphicsQueryID: UInt32? = nil,
     capabilities: TerminalCapabilities = .init(),
     maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes,
     layoutBudget: LayoutBudget = .init()
@@ -56,6 +61,7 @@ public struct ScreenApplicationConfiguration: Sendable {
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
     self.enhancedKeyboard = enhancedKeyboard
+    self.kittyGraphicsQueryID = kittyGraphicsQueryID
     self.capabilities = capabilities
     self.maximumPasteBytes = maximumPasteBytes
   }
@@ -71,6 +77,7 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
   case signalSetup(errno: Int32)
   case interrupted(signal: Int32)
   case invalidTickInterval
+  case graphics(KittyGraphicsError)
 }
 
 /// A synchronous terminal application. State belongs to the application;
@@ -100,7 +107,7 @@ public protocol ScreenApplication: ~Copyable {
   /// Return `.redraw` when progress should be presented or `.quit` to stop.
   /// Do not retain frame borrows or start another terminal reader here.
   mutating func performPendingWork() -> ScreenUpdate
-  /// Receives ticks, keys, mouse input, complete or empty pastes, and paste failures.
+  /// Receives ticks, keys, mouse input, pastes, paste failures, and terminal replies.
   /// Default returns `.none`. Copy requests are prepared synchronously and written
   /// after this input batch.
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate
@@ -108,6 +115,14 @@ public protocol ScreenApplication: ~Copyable {
   /// Draws after block layout, before presentation. The frame cannot escape.
   /// Use this for application-owned editors, charts, or other custom views.
   borrowing func paint(in frame: inout Frame)
+  /// Presents terminal images after a successful cell frame, including resizes.
+  /// Shares the session's output writer; do not start another input reader.
+  /// Upload reusable images once and recreate their placements here as needed.
+  mutating func presentGraphics(in size: TerminalSize, to output: borrowing Output) throws(KittyGraphicsError)
+  /// Releases terminal images before leaving the alternate screen. Called on
+  /// normal exit and during error/signal unwinding, including partial uploads.
+  /// Must tolerate absent images and repeated calls after a cleanup failure.
+  mutating func clearGraphics(to output: borrowing Output) throws(KittyGraphicsError)
 }
 
 extension ScreenApplication where Self: ~Copyable {
@@ -119,6 +134,10 @@ extension ScreenApplication where Self: ~Copyable {
     .none
   }
   public borrowing func paint(in frame: inout Frame) {}
+  public mutating func presentGraphics(
+    in size: TerminalSize, to output: borrowing Output
+  ) throws(KittyGraphicsError) {}
+  public mutating func clearGraphics(to output: borrowing Output) throws(KittyGraphicsError) {}
 
   /// Convenience executable entry point. Ignores SIGPIPE process-wide so a
   /// broken output can unwind the terminal scopes before reporting an error.
@@ -188,10 +207,14 @@ extension ScreenApplication where Self: ~Copyable {
     do throws(ScreenApplicationError) {
       result = try session(runner: &runner, terminal: &terminal, output: output, signals: signals)
     } catch {
+      // Terminal restoration has finished. Release pending requests while the
+      // managed handlers are still installed, then choose the original cause.
+      try? signals.resumeDelivery()
       let number = signals.termination()
       if number != 0 { throw .interrupted(signal: number) }
       throw error
     }
+    try signals.resumeDelivery()
     // A signal can arrive in the final input callback or during restoration.
     // Preserve its exit status even when that callback also requested quit.
     let pendingTermination = signals.termination()
@@ -214,9 +237,15 @@ extension ScreenApplication where Self: ~Copyable {
     do throws(IOError) {
       alternate = try output.alternateScreen()
     } catch { throw .io(error) }
+    // This scope lives inside the alternate-screen owner, so error and managed
+    // signal exits remove images before the main screen becomes visible again.
+    var graphicsNeedCleanup = true
+    defer { if graphicsNeedCleanup { try? clearGraphics(to: output) } }
     let paste: BracketedPaste
     do throws(IOError) { paste = try output.bracketedPaste() } catch { throw .io(error) }
     let result = try runUnicodeSession(runner: &runner, input: raw, output: output, signals: signals)
+    do throws(KittyGraphicsError) { try clearGraphics(to: output) } catch { throw .graphics(error) }
+    graphicsNeedCleanup = false
     do throws(IOError) { try paste.restore() } catch { throw .io(error) }
     do throws(IOError) {
       try alternate.restore()

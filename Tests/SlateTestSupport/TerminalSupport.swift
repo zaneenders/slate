@@ -8,6 +8,19 @@ import Musl
 import Glibc
 #endif
 
+/// Exercise standard asynchronous exit signals against the general application
+/// fixture and the image demo, including Linux's power signal.
+package var terminalTerminationSignals: [Int32] {
+  var signals = [
+    SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGALRM, SIGUSR1, SIGUSR2,
+    SIGVTALRM, SIGPROF, SIGXCPU, SIGXFSZ, SIGIO
+  ]
+  #if os(Linux)
+  signals.append(SIGPWR)
+  #endif
+  return signals
+}
+
 package struct PseudoTerminal: ~Copyable {
   package let master: Int32
   package let slave: Int32

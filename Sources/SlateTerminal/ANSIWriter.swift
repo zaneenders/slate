@@ -50,6 +50,23 @@ struct ANSIWriter: ~Copyable {
     }
   }
 
+  /// Kitty identifiers and pixel dimensions use the full unsigned 32-bit range.
+  mutating func unsignedNumber(_ value: UInt32, to output: borrowing Output) throws(IOError) {
+    var divisor: UInt32 = 1_000_000_000
+    while divisor > 1 && value < divisor { divisor /= 10 }
+    var remainder = value
+    while divisor > 0 {
+      try byte(UInt8(remainder / divisor) + 0x30, to: output)
+      remainder %= divisor
+      divisor /= 10
+    }
+  }
+
+  mutating func signedNumber(_ value: Int32, to output: borrowing Output) throws(IOError) {
+    if value < 0 { try byte(0x2d, to: output) }
+    try unsignedNumber(value.magnitude, to: output)
+  }
+
   mutating func cursor(x: Int, y: Int, to output: borrowing Output) throws(IOError) {
     try literal("\u{1b}[", to: output)
     try number(y + 1, to: output)

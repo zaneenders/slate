@@ -1,13 +1,13 @@
 {
-  "originHash" : "5c5018799973845c186c66530af77e93de8420c12d03e35870c3d6ce6f6049ee",
+  "originHash" : "ea5ae6592bf7be43e51af09934e2a40cf6977928dc27d1a91cd9c4459d321d69",
   "pins" : [
     {
       "identity" : "swift-collections",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-collections.git",
       "state" : {
-        "revision" : "f96b909e1a9e469620bc5037c1e24e00153f376f",
-        "version" : "1.7.5"
+        "revision" : "88754449ab766a739610b660e117762115fabc9c",
+        "version" : "1.7.6"
       }
     },
     {
@@ -17,6 +17,14 @@
       "state" : {
         "revision" : "640e5755b5826f4437eaeedd366fd776737db62c",
         "version" : "1.9.0"
+      }
+    },
+    {
+      "identity" : "swift-zlib",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/zaneenders/swift-zlib.git",
+      "state" : {
+        "revision" : "d2790e2e0bdac0d48dd622a8b97b8c20f8807c1d"
       }
     }
   ],

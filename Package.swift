@@ -23,11 +23,15 @@ let package = Package(
     .library(name: "Slate", targets: ["Slate"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "document", targets: ["SlateDocumentDemo"]),
-    .executable(name: "graphics", targets: ["SlateGraphicsDemo"])
+    .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
+    .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"])
   ],
   dependencies: [
-    .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5"),
-    .package(url: "https://github.com/apple/swift-system.git", from: "1.9.0")
+    .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.6"),
+    .package(url: "https://github.com/apple/swift-system.git", from: "1.9.0"),
+    .package(
+      url: "https://github.com/zaneenders/swift-zlib.git",
+      revision: "d2790e2e0bdac0d48dd622a8b97b8c20f8807c1d")
   ],
   targets: [
     // Demo
@@ -41,6 +45,12 @@ let package = Package(
       name: "SlateGraphicsDemo",
       dependencies: ["Slate"],
       path: "Examples/SlateGraphicsDemo",
+      swiftSettings: swiftSettings
+    ),
+    .executableTarget(
+      name: "SlateKittyGraphicsDemo",
+      dependencies: ["Slate"],
+      path: "Examples/SlateKittyGraphicsDemo",
       swiftSettings: swiftSettings
     ),
     .executableTarget(
@@ -77,7 +87,8 @@ let package = Package(
       dependencies: [
         "SlateUI",
         .product(name: "BasicContainers", package: "swift-collections"),
-        .product(name: "SystemPackage", package: "swift-system")
+        .product(name: "SystemPackage", package: "swift-system"),
+        .product(name: "Zlib", package: "swift-zlib")
       ],
       swiftSettings: swiftSettings
     ),
@@ -117,6 +128,10 @@ let package = Package(
 
     // Tests
     .testTarget(
+      name: "SlateKittyGraphicsDemoTests",
+      dependencies: ["SlateKittyGraphicsDemo", "Slate", "SlateTestSupport", "CIOTestSupport"]
+    ),
+    .testTarget(
       name: "SlateGraphicsDemoTests",
       dependencies: ["SlateGraphicsDemo", "Slate", "CIOTestSupport"],
       swiftSettings: [.enableExperimentalFeature("Lifetimes")]
@@ -135,7 +150,8 @@ let package = Package(
       dependencies: [
         "SlateTerminal",
         "SlateTestSupport",
-        "CIOTestSupport"
+        "CIOTestSupport",
+        .product(name: "Zlib", package: "swift-zlib")
       ]
     ),
     .testTarget(

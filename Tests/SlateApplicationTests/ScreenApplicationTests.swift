@@ -545,7 +545,7 @@ private struct ProbeApplication: ScreenApplication, ~Copyable {
       guard modifiers.isEmpty else { return .none }
       if key == quitKey { return .quit }
       return key == .character("r") ? .redraw : .none
-    case .mouse, .tick: return .none
+    case .mouse, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
     }
   }
 

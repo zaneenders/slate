@@ -193,7 +193,7 @@ final class DocumentFileViewer: CanvasDrawing, ~Sendable {
       }
       return mouse(event)
     case .paste(let text): return search.paste(text, byteCount: source.byteCount)
-    case .pasteEmpty, .pasteRejected, .tick: return .none
+    case .pasteEmpty, .pasteRejected, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
     }
   }
 
@@ -994,7 +994,7 @@ extension DocumentFileViewer {
         }
       case .pasteRejected:
         editNotice = "Paste rejected: invalid UTF-8, incomplete framing, or too large."
-      case .pasteEmpty, .mouse, .tick: return ScreenUpdate.none
+      case .pasteEmpty, .mouse, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return ScreenUpdate.none
       }
       return .redraw
     }
@@ -1047,7 +1047,7 @@ extension DocumentFileViewer {
     case .pasteRejected:
       editNotice = "Paste rejected: invalid UTF-8, incomplete framing, or too large."
       return .redraw
-    case .pasteEmpty, .mouse, .tick: return nil
+    case .pasteEmpty, .mouse, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return nil
     }
   }
 

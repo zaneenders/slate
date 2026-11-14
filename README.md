@@ -21,8 +21,25 @@ to exit. Slate handles terminal setup, cleanup, and resizing.
 Raw-mode keys belong to the application, including **Ctrl-Z**. Legacy Ctrl-Z
 arrives as `.key(.control(.z))`; enhanced keyboard input reports
 `.key(.character("z"), modifiers: .control)`, possibly with lock-state bits.
-Use `modifiers.withoutLocks` when matching shortcuts. Managed signal handling
-ignores `SIGTSTP` for the session and restores its previous disposition on exit.
+Use `modifiers.withoutLocks` when matching shortcuts.
+
+The default executable entry point uses managed signal handling. `HUP`, `INT`,
+`QUIT`, `TERM`, `ALRM`, `USR1`, `USR2`, `VTALRM`, `PROF`, `XCPU`, `XFSZ`, and
+`IO` request orderly teardown; Linux also handles `PWR`. The first termination
+request determines the reported signal. `TSTP`, `TTIN`, and `TTOU` are ignored
+while the session owns the terminal, so job control cannot suspend restoration.
+`PIPE` is ignored so failed writes can unwind normally. Resizing is polled;
+`WINCH` and `CONT` need no callbacks.
+
+The synchronous owner masks asynchronous signals on its thread during terminal
+setup and teardown, then delivers pending signals while managed handlers still
+own them. It restores the caller's mask and every changed disposition on exit.
+Other threads can still receive signals, so handlers only latch a lock-free
+atomic through a compiler-checked `@c` entry point; all cleanup runs in ordinary
+Swift code. `SIGKILL` and `SIGSTOP` cannot be caught or blocked. Synchronous fault
+signals keep their runtime crash handlers; child and realtime dispositions stay
+with the host. Embedding applications retain their signal policy unless they
+request `run(signalHandling: .managed)`.
 
 Run the larger graphics showcase:
 
@@ -222,6 +239,75 @@ non-ASCII glyphs become `?` (plus a space for two-column glyphs), preserving
 layout columns without enabling mode 2027. Manual Unicode presenters coordinate
 their own `output.graphemeClustering()` scope.
 
+## Kitty image graphics
+
+Use `KittyImage` and the `Output` graphics methods explicitly in a terminal that
+supports the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+Raw RGB/RGBA pixels are compressed once with
+[swift-zlib](https://github.com/zaneenders/swift-zlib) as an RFC 1950 zlib stream.
+Prepare images before drawing, upload once, then reuse their IDs for placement:
+
+```swift
+import Slate
+
+let output = try Output()
+let pixels: [UInt8] = [255, 0, 0, 255, 0, 128, 255, 255]
+let image = try KittyImage(pixels: pixels.span, width: 2, height: 1)
+try output.uploadKittyImage(image, id: 1)
+try output.placeKittyImage(id: 1, in: Rect(x: 2, y: 3, width: 20, height: 6))
+// Reuse the image and placement ID to move or resize it without another upload.
+try output.placeKittyImage(id: 1, in: Rect(x: 5, y: 4, width: 16, height: 5))
+try output.deleteKittyPlacement(imageID: 1, placementID: 1) // Keep image data.
+try output.deleteKittyImage(id: 1) // Release placements and image data.
+```
+
+Pixels are tightly packed in row order, without padding; `.rgba` is the default,
+and `.rgb` accepts three bytes per pixel. RGBA uses straight alpha. For encoded
+PNG data use `KittyImage(png: bytes.span)`; Slate checks its signature and sends
+the original bytes for the terminal to decode. Uploads use direct transport in
+chunks of at most 4,096 base64 bytes, so shared files are unnecessary over SSH.
+Placement preserves the cursor, requests no scrolling, and fits the image inside
+the requested cell rectangle. `zIndex` controls stacking; negative values draw
+under text. Image and placement IDs are nonzero `UInt32` values chosen by the app.
+
+These are terminal output primitives, with explicit lifetime and placement;
+`Surface` and block layout continue to own cell graphics. Serialize image commands
+with text presentation, place images after drawing cells, and restore placements
+after screen clears or resizes. Re-uploading an image ID removes its previous
+placements. Cleanup is explicit and destroying an image performs no terminal I/O.
+
+In a `ScreenApplication`, implement `presentGraphics(in:to:)` to upload images
+and place them after each cell frame. Implement `clearGraphics(to:)` to release
+owned image IDs; Slate calls it before leaving the alternate screen on normal
+exit, errors, and managed termination signals. The default executable entry
+point manages signals and raw input, so Ctrl-C can return `.quit` from `event`.
+
+Commands default to quiet replies. Pass `responses: .errors` or `.all` to upload
+or placement methods to receive failures or acknowledgements. `TerminalInput`
+already frames APC replies: after `.terminalReply(.applicationCommand)`, parse
+`KittyGraphicsReply(input.applicationCommand)` before requesting the next event.
+`ScreenApplication` delivers parsed replies as `.kittyGraphicsReply(reply)`.
+The reply owns its bounded message, exposes `imageID`, `placementID`, `isSuccess`,
+and `messageTruncated`, and never turns response text into key events.
+
+For explicit capability detection call `output.queryKittyGraphics(id: queryID)`.
+It sends a one-pixel query followed by a primary device attributes request, without
+storing an image. A matching successful graphics reply indicates support; device
+attributes arriving first indicate no support. Managed applications receive the
+latter as `.primaryDeviceAttributes`. In `ScreenApplication`, configure
+`.init(kittyGraphicsQueryID: queryID)` to send the query once after terminal input
+is ready. Use the existing input reader, match the
+query ID, and apply an application deadline if the terminal sends neither reply.
+Local write success alone does not confirm terminal acceptance. Slate performs
+no probing unless requested and does not inspect the environment.
+
+Run the example in a compatible terminal. Enter, Escape, Ctrl-C, or Q exits;
+resizing repositions the image without another upload:
+
+```sh
+swift run -c release kitty-graphics
+```
+
 ## Bounds and costs
 
 - Allocate drawing owners and reusable buffers before rendering. Canvas stores
@@ -279,6 +365,7 @@ swift test -c release
 Scripts/check-render-allocations.sh
 swift run starter
 swift run -c release graphics
+swift run -c release kitty-graphics
 swift run -c release document path/to/file
 ```
 

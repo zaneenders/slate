@@ -95,7 +95,7 @@ struct SignalOwnershipTests {
       let owner = try SignalSession(.managed)
       let unchanged = try SignalSession(.unchanged)
       #expect(unchanged.enabled == false)
-      expectSignalAction(try readSignalAction(SIGPIPE), saved[5])
+      #expect(signalHandlerAddress(try readSignalAction(SIGPIPE)) == signalHandlerAddress(ignoredContinue))
       #expect(signalHandlerAddress(try readSignalAction(SIGTSTP)) == signalHandlerAddress(ignoredContinue))
       #expect(throws: ScreenApplicationError.signalSetup(errno: EBUSY)) { _ = try SignalSession(.managed) }
 
@@ -112,14 +112,13 @@ struct SignalOwnershipTests {
 
       // More signals than a buffered design could retain still occupy one flag.
       for _ in 0..<4_096 { handler(SIGINT) }
-      handler(SIGCONT)
       #expect(owner.termination() == SIGINT)
-      for number in [SIGINT, SIGTERM, SIGHUP] {
+      for number in [SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2] {
         handler(number)
-        #expect(owner.termination() == number)
+        #expect(owner.termination() == SIGINT)
         #expect(unchanged.termination() == 0)
       }
-      #expect(owner.termination() == SIGHUP)
+      #expect(owner.termination() == SIGINT)
     }
     for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
     do {
@@ -132,6 +131,74 @@ struct SignalOwnershipTests {
       throw ScreenApplicationError.disconnected
     } catch ScreenApplicationError.disconnected {}
     for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
+  }
+
+  @Test func signalsStayMaskedDuringSetupAndTeardownAndKeepTheFirstCause() throws {
+    var original = try readSignalMask()
+    defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &original, nil) }
+    var requested = original
+    try #require(unsafe sigaddset(&requested, SIGALRM) == 0)
+    try #require(unsafe sigdelset(&requested, SIGTERM) == 0)
+    try #require(unsafe sigdelset(&requested, SIGUSR1) == 0)
+    try #require(unsafe pthread_sigmask(SIG_SETMASK, &requested, nil) == 0)
+    do {
+      let owner = try SignalSession(.managed)
+      var mask = try readSignalMask()
+      for number in [SIGTERM, SIGUSR1, SIGTTIN, SIGTTOU, SIGCHLD] {
+        #expect(unsafe sigismember(&mask, number) == 1)
+      }
+      for number in [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP] {
+        #expect(unsafe sigismember(&mask, number) == sigismember(&requested, number))
+      }
+      try #require(raise(SIGTERM) == 0)
+      #expect(owner.termination() == 0)
+      try owner.resumeDelivery()
+      #expect(owner.termination() == SIGTERM)
+      expectSignalMask(try readSignalMask(), requested)
+      owner.protectTeardown()
+      try #require(raise(SIGUSR1) == 0)
+      #expect(owner.termination() == SIGTERM)
+      try owner.resumeDelivery()
+      #expect(owner.termination() == SIGTERM)
+    }
+    expectSignalMask(try readSignalMask(), requested)
+    do { _ = try SignalSession(.unchanged) }
+    expectSignalMask(try readSignalMask(), requested)
+  }
+
+  @Test func managedSignalDispositionsRestoreWithoutReplacingRuntimeCrashOrChildHandlers() throws {
+    let numbers = [
+      SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIGUSR1, SIGUSR2, SIGVTALRM, SIGPROF,
+      SIGXCPU, SIGXFSZ, SIGIO, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE, SIGCONT, SIGWINCH,
+      SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP, SIGCHLD
+    ]
+    let saved = try numbers.map { try readSignalAction($0) }
+    do {
+      let owner = try SignalSession(.managed)
+      for index in numbers.indices
+      where [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGSYS, SIGTRAP, SIGCHLD]
+        .contains(numbers[index])
+      {
+        expectSignalAction(try readSignalAction(numbers[index]), saved[index])
+      }
+      let enabled = owner.enabled
+      #expect(enabled)
+    }
+    for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
+  }
+}
+
+private func readSignalMask() throws -> sigset_t {
+  var mask = sigset_t()
+  try #require(unsafe pthread_sigmask(SIG_SETMASK, nil, &mask) == 0)
+  return mask
+}
+
+private func expectSignalMask(_ actual: sigset_t, _ expected: sigset_t) {
+  var actual = actual
+  var expected = expected
+  for number in 1..<NSIG {
+    #expect(unsafe sigismember(&actual, number) == sigismember(&expected, number))
   }
 }
 
@@ -191,7 +258,7 @@ private struct SignalDuringQuitApplication: ScreenApplication {
   func render(in size: TerminalSize) -> some Block { Text("x") }
 }
 
-@Test(arguments: [SIGINT, SIGTERM, SIGHUP])
+@Test(arguments: terminalTerminationSignals)
 func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -204,6 +271,32 @@ func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   #expect(child.output.contains("\u{1b}[?2027r"))
   #expect(child.output.contains("\u{1b}[<u"))
   #expect(child.output.contains("\u{1b}[?25h\u{1b}[?1049l"))
+}
+
+@Test(arguments: [SIGTTIN, SIGTTOU, SIGPIPE, SIGCONT, SIGWINCH])
+func managedIgnoredSignalsLeaveTheSessionUsable(_ number: Int32) throws {
+  let child = try TerminalChild()
+  try child.awaitOutput("\u{1b}[>1u")
+  try #require(kill(child.pid, number) == 0)
+  try child.send("q")
+  let (kind, value) = try child.awaitState()
+  #expect(kind == 2 && value == 0)
+  expectEqual(try attributes(of: child.pty.slave), child.saved)
+  try child.awaitOutput("\u{1b}[?25h\u{1b}[?1049l")
+}
+
+@Test(arguments: [false, true])
+func signalBurstsDuringTeardownFinishCleanupAndPreserveTheInitialCause(_ hasInitialTermination: Bool) throws {
+  let child = try TerminalChild()
+  try child.awaitOutput("\u{1b}[>1u")
+  try child.send(hasInitialTermination ? "@" : "!")
+  let (kind, value) = try child.awaitState()
+  #expect(kind == 2 && value == 128 + (hasInitialTermination ? SIGTERM : SIGUSR1))
+  expectEqual(try attributes(of: child.pty.slave), child.saved)
+  try child.awaitOutput("\u{1b}[?25h\u{1b}[?1049l")
+  let cleaned = try #require(child.output.range(of: "teardown complete"))
+  let restored = try #require(child.output.range(of: "\u{1b}[?25h\u{1b}[?1049l"))
+  #expect(cleaned.upperBound <= restored.lowerBound)
 }
 
 @Test(arguments: [1, 5, 69, 133, 197])

@@ -18,6 +18,12 @@ public enum ScreenEvent: ~Escapable, ~Sendable {
   case tick(elapsed: Duration)
   case key(InputKey, modifiers: KeyModifiers = [])
   case mouse(MouseEvent)
+  /// A typed Kitty APC reply, delivered through the same reader as keys. Match
+  /// imageID to an explicit query or command before changing application state.
+  case kittyGraphicsReply(KittyGraphicsReply)
+  /// Completes an explicit Kitty support probe when no matching graphics reply
+  /// preceded it. Unsolicited device attributes can be ignored.
+  case primaryDeviceAttributes
   case paste(UTF8Span)
   /// A zero-byte bracketed paste. Some terminals report image-only clipboard
   /// contents this way; Slate does not inspect the clipboard. Applications that
