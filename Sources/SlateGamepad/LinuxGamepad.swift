@@ -4,7 +4,7 @@ import SystemPackage
 
 struct PlatformGamepad: ~Copyable {
   private var descriptor: FileDescriptor?
-  private var hatAxes: UInt8 = 0
+  private var axisFlags: UInt8 = 0
   private var lastDiscovery: ContinuousClock.Instant?
   private(set) var status = GamepadStatus.disconnected
 
@@ -16,7 +16,7 @@ struct PlatformGamepad: ~Copyable {
     }
     guard let descriptor else { return .init() }
     var raw = slate_gamepad_state()
-    let result = unsafe slate_gamepad_read_state(descriptor.rawValue, hatAxes, &raw)
+    let result = unsafe slate_gamepad_read_state(descriptor.rawValue, axisFlags, &raw)
     guard result == 0 else {
       try? descriptor.close()
       self.descriptor = nil
@@ -27,7 +27,9 @@ struct PlatformGamepad: ~Copyable {
     return .init(
       connected: true, buttons: .init(rawValue: raw.buttons),
       leftX: normalizeLinuxAxis(raw.x, minimum: raw.x_minimum, maximum: raw.x_maximum),
-      leftY: -normalizeLinuxAxis(raw.y, minimum: raw.y_minimum, maximum: raw.y_maximum))
+      leftY: -normalizeLinuxAxis(raw.y, minimum: raw.y_minimum, maximum: raw.y_maximum),
+      rightX: normalizeLinuxAxis(raw.right_x, minimum: raw.right_x_minimum, maximum: raw.right_x_maximum),
+      rightY: -normalizeLinuxAxis(raw.right_y, minimum: raw.right_y_minimum, maximum: raw.right_y_maximum))
   }
 
   private mutating func discover() {
@@ -53,7 +55,7 @@ struct PlatformGamepad: ~Copyable {
       var axes: UInt8 = 0
       if unsafe slate_gamepad_probe(candidate.rawValue, &axes) == 0 {
         descriptor = candidate
-        hatAxes = axes
+        axisFlags = axes
         return
       }
       try? candidate.close()

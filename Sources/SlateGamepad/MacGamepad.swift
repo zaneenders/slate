@@ -60,9 +60,13 @@ struct PlatformGamepad: ~Copyable {
     if pad.buttonA.isPressed { buttons.insert(.south) }
     if pad.buttonB.isPressed { buttons.insert(.east) }
     if pad.buttonX.isPressed { buttons.insert(.west) }
+    if pad.buttonY.isPressed { buttons.insert(.north) }
+    if pad.leftShoulder.isPressed { buttons.insert(.leftShoulder) }
+    if pad.rightShoulder.isPressed { buttons.insert(.rightShoulder) }
     return .init(
       connected: true, buttons: buttons,
-      leftX: pad.leftThumbstick.xAxis.value, leftY: pad.leftThumbstick.yAxis.value)
+      leftX: pad.leftThumbstick.xAxis.value, leftY: pad.leftThumbstick.yAxis.value,
+      rightX: pad.rightThumbstick.xAxis.value, rightY: pad.rightThumbstick.yAxis.value)
   }
 
   deinit {

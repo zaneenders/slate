@@ -342,7 +342,7 @@ second while disconnected. The first readable gamepad with south/east buttons
 and ABS_X/Y axes wins; additional controllers wait until it disconnects. D-pad
 hat axes and digital D-pad buttons are supported. The kernel's
 [evdev current-state ioctls](https://www.kernel.org/doc/html/latest/input/event-codes.html)
-take at most five calls per sample, with no retry or event-draining loop; kernel
+take at most seven calls per sample, with no retry or event-draining loop; kernel
 event queue overflow cannot leave held state stuck. A small C target supplies
 ioctl macros unavailable through Swift System; Swift System owns open/close.
 No new package dependency is needed. If access is denied, grant the current
@@ -361,6 +361,64 @@ allocation path: macOS bridges the device list; Linux creates at most 64 bounded
 device paths per scan, holding one candidate descriptor at a time. OS/framework
 storage, initialization, and caller event handlers are outside the verified
 allocation guarantee.
+
+## Controller keyboard lab
+
+```sh
+swift run -c release keyboard
+# Keyboard/mouse only, without opening the native controller reader:
+swift run -c release keyboard --keyboard-only
+```
+
+The new example has three clickable tabs, each with its own 512-character draft:
+
+| Tab | Left stick | Right stick |
+| --- | --- | --- |
+| Flick + predict | Flick through eight ABC/DEF/.../WXYZ groups; return to center to append a group. | East/west chooses a word, north/south chooses first/last. Cross accepts with a space. |
+| Common letters | Flick E/T/A/O/I/N/S/H directly. Hold R1 for the remaining letters and punctuation groups. | In the R1 layer, flick N/E/S/W for the first/second/third/fourth character. |
+| Two-stick chords | Aim at ABC/DEF/.../WXYZ; the group stays selected. | Flick N/E/S/W for a letter. The group is latched when this gesture starts, so moving the left stick cannot change a chord in flight. |
+
+D-pad left/right switches tabs. Cross inserts a space in the literal layouts;
+Square deletes, Circle cancels pending input, Triangle adds a period and space,
+and L1 toggles capitals. Holding a direction never repeats a character. Both
+sticks must return to neutral after reconnects, tab/layer changes, or cancellation.
+The stick engages at 0.55, releases at 0.35, and uses angular hysteresis to reduce
+sector jitter. Center the right stick before starting another chord.
+
+Keyboard and mouse alternatives work in every tab: Tab/F1–F3 switches tabs;
+1–8 selects sectors clockwise from north; arrow keys operate the right wheel;
+Enter accepts/spaces, Backspace deletes, Escape cancels, C toggles caps, M toggles
+the common-letter tab's extra layer, and period inserts punctuation. Click a tab,
+wheel label, suggestion, or action. Ctrl-Q/Ctrl-C quits. Below 62 columns the
+right wheel is hidden; arrow keys remain available. Enlarge the terminal to see
+the complete wheels.
+
+Prediction uses a small built-in ranked vocabulary, capped at 512 words of at
+most 16 letters, and a few explicit previous-word rules. For example, 4663 can
+match good/home/gone/hood; after “go”, home ranks first. It offers completions
+and at most five candidates. Unknown words remain uncommitted; delete a group
+or use the exact Chords tab. This is a deterministic playground vocabulary,
+not a comprehensive English language model.
+
+Mutable text/candidate buffers use three sets of fixed inline storage: each has
+512 ASCII draft bytes, 16 composing groups, and two five-element Int arrays,
+plus fixed counts and flags. `inlineStorageBudgetBytes` reports the buffer
+strides. The shared startup lexicon reserves 512 records and budgets up to 16
+UTF-8 bytes per word; `storageBudgetBytes` reports that bound, excluding array
+headers, owner objects, and allocator metadata. Candidate lookup scans at most
+512 signatures and makes at most five insertion comparisons per match. On the
+tested 64-bit toolchains, these buffer budgets are 1,848 and 24,576 bytes.
+Rendering reuses three Canvas owners and a 24-entry HitMap. Full drafts/words reject input
+before mutation. Startup tokenization/strings and native controller discovery
+may allocate; warmed typing, lookup, tab rendering, and capacity rejection are
+covered by the release allocation probe. Test/debug `snapshot()` explicitly
+allocates and stays outside that guarantee.
+
+`Gamepad.sample(at:)` exposes both sticks, face buttons, and shoulder buttons to
+gesture clients. Choose `sample` or navigation `poll` once per tick; the keyboard
+uses raw samples and does not consume navigation's repeating direction actions.
+Linux reads ABS_RX/RY when both axes exist, otherwise reports a neutral right
+stick. The same macOS main-thread and device-access policies apply.
 
 ## Colors and terminal settings
 

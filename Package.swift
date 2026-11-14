@@ -24,6 +24,7 @@ let package = Package(
     .library(name: "SlateGamepad", targets: ["SlateGamepad"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
+    .executable(name: "keyboard", targets: ["SlateKeyboardDemo"]),
     .executable(name: "document", targets: ["SlateDocumentDemo"]),
     .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
     .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"]),
@@ -44,6 +45,12 @@ let package = Package(
       swiftSettings: swiftSettings
     ),
     // Demo
+    .executableTarget(
+      name: "SlateKeyboardDemo",
+      dependencies: ["Slate", "SlateGamepad", .product(name: "BasicContainers", package: "swift-collections")],
+      path: "Examples/SlateKeyboardDemo",
+      swiftSettings: swiftSettings
+    ),
     .executableTarget(
       name: "SlateNavigationDemo",
       dependencies: ["Slate", "SlateGamepad"],
@@ -164,6 +171,11 @@ let package = Package(
     ),
 
     // Tests
+    .testTarget(
+      name: "SlateKeyboardDemoTests",
+      dependencies: ["SlateKeyboardDemo", "Slate", "SlateGamepad", "SlateTestSupport", "CIOTestSupport"],
+      swiftSettings: [.enableExperimentalFeature("Lifetimes")]
+    ),
     .testTarget(
       name: "SlateGamepadTests",
       dependencies: [

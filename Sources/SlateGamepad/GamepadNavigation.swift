@@ -14,6 +14,10 @@ public struct GamepadButtons: OptionSet, Equatable, Sendable {
   public static let east = Self(rawValue: 1 << 5)
   /// Square on PlayStation, X on Xbox.
   public static let west = Self(rawValue: 1 << 6)
+  /// Triangle on PlayStation, Y on Xbox.
+  public static let north = Self(rawValue: 1 << 7)
+  public static let leftShoulder = Self(rawValue: 1 << 8)
+  public static let rightShoulder = Self(rawValue: 1 << 9)
   static let directions: Self = [.up, .down, .left, .right]
 }
 
@@ -24,12 +28,19 @@ public struct GamepadState: Equatable, Sendable {
   public var buttons: GamepadButtons
   public var leftX: Float
   public var leftY: Float
+  public var rightX: Float
+  public var rightY: Float
 
-  public init(connected: Bool = false, buttons: GamepadButtons = [], leftX: Float = 0, leftY: Float = 0) {
+  public init(
+    connected: Bool = false, buttons: GamepadButtons = [], leftX: Float = 0, leftY: Float = 0,
+    rightX: Float = 0, rightY: Float = 0
+  ) {
     self.connected = connected
     self.buttons = buttons
     self.leftX = leftX
     self.leftY = leftY
+    self.rightX = rightX
+    self.rightY = rightY
   }
 }
 

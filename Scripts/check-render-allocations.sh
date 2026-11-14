@@ -29,7 +29,7 @@ SLATE_ALLOCATION_PROBE=0 swift test -c release --filter Allocation
 if [ "$(uname -s)" = Linux ]; then
   # Isolate each suite so Swift Testing cannot start concurrent process-wide
   # measurements, including toolchains that link all targets into one runner.
-  for filter in RenderAllocationTests terminalColorAllocation graphicsDragAllocation gamepadAllocation; do
+  for filter in RenderAllocationTests terminalColorAllocation graphicsDragAllocation gamepadAllocation keyboardDemoAllocation; do
     SLATE_ALLOCATION_PROBE=1 LD_PRELOAD="$probe_library${LD_PRELOAD:+:$LD_PRELOAD}" \
       swift test -c release --skip-build --filter "$filter"
   done
@@ -43,7 +43,7 @@ platform=$(xcrun --sdk macosx --show-sdk-platform-path)
 
 # Hardened toolchain launchers can strip DYLD_INSERT_LIBRARIES. Launch the test
 # helper directly, with the same Swift Testing and XCTest paths as SwiftPM.
-for target in SlateUITests SlateTerminalTests SlateGraphicsDemoTests SlateGamepadTests; do
+for target in SlateUITests SlateTerminalTests SlateGraphicsDemoTests SlateGamepadTests SlateKeyboardDemoTests; do
   SLATE_ALLOCATION_PROBE=1 DYLD_INSERT_LIBRARIES="$probe_library" \
     DYLD_LIBRARY_PATH="$runtime_path/macosx/testing:$platform/Developer/usr/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
     DYLD_FRAMEWORK_PATH="$platform/Developer/Library/Frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" \

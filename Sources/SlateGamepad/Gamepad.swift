@@ -22,6 +22,12 @@ public struct Gamepad: ~Copyable, ~Sendable {
   /// Sample once per application tick (recommended 16 ms). Sampling can miss a
   /// complete press/release between polls. Late polls emit no catch-up repeats.
   public mutating func poll(at now: ContinuousClock.Instant) -> GamepadActions {
-    navigation.update(backend.sample(at: now), at: now)
+    navigation.update(sample(at: now), at: now)
+  }
+
+  /// Raw input for gestures and application-specific controls. Choose either
+  /// sample or poll for a given update; each call samples the native device.
+  public mutating func sample(at now: ContinuousClock.Instant) -> GamepadState {
+    backend.sample(at: now)
   }
 }
