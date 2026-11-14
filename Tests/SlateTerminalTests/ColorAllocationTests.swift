@@ -1,11 +1,16 @@
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 import CIOTestSupport
-import Darwin
 import Foundation
 import SlateTerminal
 import Testing
 
-/// The macOS probe script injects the counter. Setup, runtime warm-up, and test
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
+/// The allocation probe script injects the counter. Setup, runtime warm-up, and test
 /// diagnostics are outside the measured synchronous release-mode frame loop.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
 func terminalColorAllocationAcrossEveryOutputPolicyAtMaximumSize() throws {

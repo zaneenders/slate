@@ -3,9 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 // Opt-in synchronous allocation probe. Prepare before each measured test on the
-// same thread; returns zero unless the separate interposer dylib was injected.
+// same thread; returns zero unless the separate interposer library was injected.
 // No awaits, test assertions, logging, or nested measurements between begin/end.
 int cli_test_prepare_allocation_counter(void);
 void cli_test_begin_allocation_count(void);

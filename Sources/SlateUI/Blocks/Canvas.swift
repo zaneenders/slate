@@ -13,13 +13,24 @@ public protocol CanvasDrawing: AnyObject {
 /// other half just outside the region, preserving that cell's style.
 /// Painting writes explicit cell styles; a surrounding `background` remains
 /// visible only where drawing leaves cells untouched.
-public struct Canvas: Block, ~Sendable {
+public struct Canvas<Drawing: CanvasDrawing>: Block, ~Sendable {
   public typealias Body = Never
-  private let drawing: any CanvasDrawing
+  private let drawing: Drawing
 
-  public init(_ drawing: any CanvasDrawing) { self.drawing = drawing }
+  public init(_ drawing: Drawing) { self.drawing = drawing }
 
   public borrowing func _build(into builder: inout _BlockLayout) throws(LayoutError) {
     try builder.canvas(drawing)
   }
+}
+
+/// Layout mixes unrelated drawing owners. Erase only here, retaining the
+/// existing class instance with one witness call per paint and no callback box.
+@usableFromInline struct CanvasPayload: ~Sendable {
+  @diagnose(ExistentialType, as: ignored, reason: "Heterogeneous class owners fit inline without per-frame allocation")
+  private let drawing: any CanvasDrawing
+
+  init<Drawing: CanvasDrawing>(_ drawing: Drawing) { self.drawing = drawing }
+
+  func paint(in frame: inout Frame) { drawing.paint(in: &frame) }
 }

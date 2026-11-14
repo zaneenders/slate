@@ -34,8 +34,8 @@ import BasicContainers
 /// or existential boxes are allocated when a block is built.
 @usableFromInline enum BlockDrawing: ~Sendable {
   case input(TextInput)
-  case canvas(any CanvasDrawing)
-  case hitRegion(any HitMapStorage, Int)
+  case canvas(CanvasPayload)
+  case hitRegion(HitMapStorage, Int)
 }
 
 /// Compiler support for block rendering. Custom blocks compose through `body`.
@@ -120,22 +120,22 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
     drawingCount += 1
   }
 
-  mutating func canvas(_ drawing: any CanvasDrawing) throws(LayoutError) {
+  mutating func canvas<Drawing: CanvasDrawing>(_ drawing: Drawing) throws(LayoutError) {
     _ = try append(
       LayoutNode(kind: .drawing, drawingIndex: drawingCount, width: .fill, height: .fill))
     precondition(drawingCount < drawings.count)
-    drawings[drawingCount] = .canvas(drawing)
+    drawings[drawingCount] = .canvas(CanvasPayload(drawing))
     drawingCount += 1
   }
 
   mutating func hitRegion<Content: Block, ID: Hashable>(
     _ content: borrowing Content, id: ID?, map: HitMap<ID>
   ) throws(LayoutError) {
-    try hitMaps.register(map)
-    let record = try map.append(id)
+    try hitMaps.register(map.storage)
+    let record = try map.storage.append(id)
     let previous = try begin(LayoutNode(kind: .hitRegion, drawingIndex: drawingCount))
     defer { end(previous) }
-    drawings[drawingCount] = .hitRegion(map, record)
+    drawings[drawingCount] = .hitRegion(map.storage, record)
     drawingCount += 1
     try build(content)
   }

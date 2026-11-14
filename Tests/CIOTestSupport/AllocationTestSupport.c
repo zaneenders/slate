@@ -1,6 +1,6 @@
 #include "CIOTestSupport.h"
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 #include <assert.h>
 #include <dlfcn.h>
 

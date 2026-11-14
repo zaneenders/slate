@@ -311,7 +311,12 @@ swift run -c release kitty-graphics
 ## Bounds and costs
 
 - Allocate drawing owners and reusable buffers before rendering. Canvas stores
-  a class-bound reference, avoiding per-frame closure contexts and boxed values.
+  its concrete drawing type; `Canvas(owner)` infers it automatically. Explicit
+  type annotations use `Canvas<Owner>` or a generic `Canvas<Drawing>` constrained
+  by `Drawing: CanvasDrawing`. The heterogeneous layout table erases the type once,
+  retaining the existing class instance and dispatching once per paint, without
+  per-frame closure contexts or boxed values. This intentional boundary has a
+  local `ExistentialType` diagnostic annotation; other performance hints stay enabled.
   Allocation guarantees apply to warmed, successful release-mode rendering;
   debug builds and error propagation may allocate.
 - Layout uses startup-allocated `RigidArray` storage. `LayoutBudget` defaults to
@@ -328,8 +333,10 @@ swift run -c release kitty-graphics
   nodeCapacity times the sum of the node and payload strides, plus two fixed lists
   of hit-map owners. Canvas, input fields, and hit regions share the payload table.
   Each `HitMap` separately owns two fixed record buffers and an ID lookup table;
-  its `storageBudgetBytes` reports that storage. Painting cost also scales with
-  the cells touched across layers.
+  its `storageBudgetBytes` reports that storage. One additional startup-owned
+  storage object keeps ID-specific records behind concrete references in layout
+  and the frame lists, avoiding existential witness tables for frame ownership.
+  Painting cost also scales with the cells touched across layers.
   Caller computations inside `render`, `body`, and `paint`, caller-owned strings,
   and source-collection construction remain outside the traversal/allocation bounds.
 - Drawing runs once per nonempty canvas, in block order, after successful layout.
@@ -370,9 +377,10 @@ swift run -c release document path/to/file
 ```
 
 The document viewer also exercises Canvas with paging, selection, and input strips.
-The macOS allocation probe checks fixed layout capacity and exhaustion, warmed
+The macOS and glibc Linux allocation probes check fixed layout capacity and exhaustion, warmed
 maximum-grid rendering, overlays, animation ticks, mouse dragging, color presentation, and
-layout failure with an injected allocator counter and a positive control.
+layout failure with an injected allocator counter and a positive control. They also
+check per-frame construction of mixed canvas drawing types and hit-map ID types.
 Successful frames must allocate nothing after warm-up. Rejected layouts
 allow two Swift Testing diagnostic allocations with the pinned toolchain. Output
 checks use `/dev/null`; they do not measure terminal latency.

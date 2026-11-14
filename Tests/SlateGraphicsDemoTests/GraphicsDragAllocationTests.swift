@@ -1,4 +1,4 @@
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 import CIOTestSupport
 import Foundation
 import Slate

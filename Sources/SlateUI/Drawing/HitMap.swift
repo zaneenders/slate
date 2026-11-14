@@ -24,8 +24,46 @@ private struct HitRecord<ID: Hashable> {
 /// tested front to back, with children taking precedence over enclosing targets.
 /// Rendering replaces the entire snapshot, including when every target is hidden.
 public final class HitMap<ID: Hashable>: ~Sendable {
-  public let capacity: Int
-  public private(set) var count = 0
+  let storage: HitMapRecords<ID>
+  public var capacity: Int { storage.capacity }
+  public var count: Int { storage.count }
+
+  /// Capacity counts targets and mouse blockers. Exhaustion rejects the frame.
+  public init(capacity: Int = 64) { storage = HitMapRecords(capacity: capacity) }
+
+  /// Fixed element storage, excluding the class owners, allocator metadata, and
+  /// storage referenced by caller-owned IDs.
+  public var storageBudgetBytes: Int { storage.storageBudgetBytes }
+
+  public func hitTest(column: Int, row: Int) -> Hit<ID>? {
+    storage.hitTest(column: column, row: row, source: self)
+  }
+
+  /// Bounds before clipping, or nil for an absent/empty target. IDs should be
+  /// unique; repeated IDs resolve to their frontmost registered region.
+  public func bounds(for id: ID) -> Rect? { storage.bounds(for: id) }
+
+  package func capturedHit(_ original: Hit<ID>, column: Int, row: Int) -> Hit<ID>? {
+    guard original.source === self else { return nil }
+    return storage.capturedHit(original, column: column, row: row)
+  }
+}
+
+/// Concrete owner references keep the frame lists to one word per entry. Only
+/// record operations dispatch to ID-specific storage; frame ownership is shared.
+/// Instances are always HitMapRecords, allocated once by their public map.
+@usableFromInline class HitMapStorage: ~Sendable {
+  final var committedFrame: ObjectIdentifier?
+  final var stagingFrame: ObjectIdentifier?
+  func setBounds(_ bounds: Rect, at index: Int) { preconditionFailure("Abstract hit-map storage") }
+  func commit(in viewport: Rect) { preconditionFailure("Abstract hit-map storage") }
+  func discardPending() { preconditionFailure("Abstract hit-map storage") }
+  func clear() { preconditionFailure("Abstract hit-map storage") }
+}
+
+final class HitMapRecords<ID: Hashable>: HitMapStorage, ~Sendable {
+  let capacity: Int
+  private(set) var count = 0
   private var records: RigidArray<HitRecord<ID>?>
   private var pending: RigidArray<HitRecord<ID>?>
   private var indices: RigidArray<Int>
@@ -33,11 +71,9 @@ public final class HitMap<ID: Hashable>: ~Sendable {
   private var viewport = Rect(width: 0, height: 0)
   private var viewportRevision: UInt64 = 0
   private var nextIdentity: UInt64 = 0
-  @usableFromInline var committedFrame: ObjectIdentifier?
-  @usableFromInline var stagingFrame: ObjectIdentifier?
 
   /// Capacity counts targets and mouse blockers. Exhaustion rejects the frame.
-  public init(capacity: Int = 64) {
+  init(capacity: Int) {
     precondition((1...LayoutBudget.maximumNodeCapacity).contains(capacity))
     self.capacity = capacity
     records = RigidArray(repeating: nil, count: capacity)
@@ -49,44 +85,44 @@ public final class HitMap<ID: Hashable>: ~Sendable {
 
   /// Fixed element storage, excluding the class owner, allocator metadata, and
   /// storage referenced by caller-owned IDs.
-  public var storageBudgetBytes: Int {
+  var storageBudgetBytes: Int {
     2 * capacity * MemoryLayout<HitRecord<ID>?>.stride
       + indices.count * MemoryLayout<Int>.stride
   }
 
-  public func hitTest(column: Int, row: Int) -> Hit<ID>? {
+  func hitTest(column: Int, row: Int, source: HitMap<ID>) -> Hit<ID>? {
     guard viewport.contains(column: column, row: row) else { return nil }
     for index in (0..<count).reversed() {
       let record = records[index]!
       guard record.bounds.contains(column: column, row: row) else { continue }
       // A nil ID is an explicit blocker for the remainder of this map.
       guard let id = record.id else { return nil }
-      return hit(record, id: id, column: column, row: row)
+      return hit(record, id: id, column: column, row: row, source: source)
     }
     return nil
   }
 
   /// Bounds before clipping, or nil for an absent/empty target. IDs should be
   /// unique; repeated IDs resolve to their frontmost registered region.
-  public func bounds(for id: ID) -> Rect? {
+  func bounds(for id: ID) -> Rect? {
     guard let index = index(for: id), !records[index]!.bounds.intersection(viewport).isEmpty else { return nil }
     return records[index]!.bounds
   }
 
-  package func capturedHit(_ original: Hit<ID>, column: Int, row: Int) -> Hit<ID>? {
-    guard original.source === self, original.viewportRevision == viewportRevision,
+  func capturedHit(_ original: Hit<ID>, column: Int, row: Int) -> Hit<ID>? {
+    guard original.viewportRevision == viewportRevision,
       let index = index(for: original.id),
       records[index]!.identity == original.identity,
       !records[index]!.bounds.intersection(viewport).isEmpty
     else { return nil }
-    return hit(records[index]!, id: original.id, column: column, row: row)
+    return hit(records[index]!, id: original.id, column: column, row: row, source: original.source)
   }
 
-  private func hit(_ record: HitRecord<ID>, id: ID, column: Int, row: Int) -> Hit<ID> {
+  private func hit(_ record: HitRecord<ID>, id: ID, column: Int, row: Int, source: HitMap<ID>) -> Hit<ID> {
     Hit(
       id: id, bounds: record.bounds, clippedBounds: record.bounds.intersection(viewport),
       column: column - record.bounds.x, row: row - record.bounds.y,
-      identity: record.identity, viewportRevision: viewportRevision, source: self)
+      identity: record.identity, viewportRevision: viewportRevision, source: source)
   }
 
   private func index(for id: ID) -> Int? {
@@ -106,22 +142,10 @@ public final class HitMap<ID: Hashable>: ~Sendable {
     pendingCount += 1
     return index
   }
-}
 
-/// Type-erased operations retain only a startup-owned map, never per-frame boxes.
-@usableFromInline protocol HitMapStorage: AnyObject {
-  var committedFrame: ObjectIdentifier? { get set }
-  var stagingFrame: ObjectIdentifier? { get set }
-  func setBounds(_ bounds: Rect, at index: Int)
-  func commit(in viewport: Rect)
-  func discardPending()
-  func clear()
-}
+  override func setBounds(_ bounds: Rect, at index: Int) { pending[index]!.bounds = bounds }
 
-extension HitMap: HitMapStorage {
-  @usableFromInline func setBounds(_ bounds: Rect, at index: Int) { pending[index]!.bounds = bounds }
-
-  @usableFromInline func commit(in viewport: Rect) {
+  override func commit(in viewport: Rect) {
     if self.viewport != viewport { viewportRevision &+= 1 }
     self.viewport = viewport
     // Resolve stable identities before replacing the old lookup table. This
@@ -151,13 +175,13 @@ extension HitMap: HitMapStorage {
     }
   }
 
-  @usableFromInline func discardPending() {
+  override func discardPending() {
     for index in 0..<pendingCount { pending[index] = nil }
     pendingCount = 0
     stagingFrame = nil
   }
 
-  @usableFromInline func clear() {
+  override func clear() {
     for index in 0..<count { records[index] = nil }
     for slot in 0..<indices.count { indices[slot] = -1 }
     count = 0
@@ -168,8 +192,8 @@ extension HitMap: HitMapStorage {
 /// Two fixed lists let a rejected frame leave every previously committed map
 /// untouched, even when it introduces new maps or omits all old regions.
 final class HitMapFrame: ~Sendable {
-  private var committed: RigidArray<(any HitMapStorage)?>
-  private var pending: RigidArray<(any HitMapStorage)?>
+  private var committed: RigidArray<HitMapStorage?>
+  private var pending: RigidArray<HitMapStorage?>
   private var committedCount = 0
   private var pendingCount = 0
 
@@ -179,10 +203,10 @@ final class HitMapFrame: ~Sendable {
   }
 
   var storageBudgetBytes: Int {
-    2 * committed.count * MemoryLayout<(any HitMapStorage)?>.stride
+    2 * committed.count * MemoryLayout<HitMapStorage?>.stride
   }
 
-  func register(_ map: any HitMapStorage) throws(LayoutError) {
+  func register(_ map: HitMapStorage) throws(LayoutError) {
     let owner = ObjectIdentifier(self)
     guard map.committedFrame == nil || map.committedFrame == owner,
       map.stagingFrame == nil || map.stagingFrame == owner

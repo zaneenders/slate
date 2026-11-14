@@ -1,8 +1,12 @@
-#if canImport(Darwin)
+#if canImport(Darwin) || canImport(Glibc)
 import CIOTestSupport
 import Foundation
 import SlateUI
 import Testing
+
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// Run Scripts/check-render-allocations.sh in an optimized build. The injected
 /// probe counts allocation API calls, not retained heap size. A synchronous
@@ -11,6 +15,46 @@ import Testing
 /// The process-wide probe permits only one active measured region.
 @Suite(.serialized)
 struct RenderAllocationTests {
+  @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  func heterogeneousCanvasAndHitMapAllocation() throws {
+    try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
+    let size = TerminalSize(columns: 6, rows: 2)
+    let fill = AllocationDrawing()
+    let point = AllocationPointDrawing()
+    let integers = HitMap<Int>(capacity: 1)
+    let strings = HitMap<String>(capacity: 1)
+    var surface = try Surface(maximumSize: size)
+    for _ in 0..<4 {
+      try surface.render(size: size) {
+        Row {
+          Canvas(fill).frame(width: .fixed(3)).hitRegion(1, in: integers)
+          Canvas(point).frame(width: .fixed(3)).hitRegion("point", in: strings)
+        }
+      }
+    }
+    cli_test_begin_allocation_count()
+    do throws(SurfaceError) {
+      for _ in 0..<32 {
+        try surface.render(size: size) {
+          Row {
+            Canvas(fill).frame(width: .fixed(3)).hitRegion(1, in: integers)
+            Canvas(point).frame(width: .fixed(3)).hitRegion("point", in: strings)
+          }
+        }
+      }
+    } catch {
+      _ = cli_test_end_allocation_count()
+      throw error
+    }
+    let calls = cli_test_end_allocation_count()
+    #expect(calls == 0)
+    #expect(surface.cell(x: 2, y: 1)?.glyph.scalar == "x")
+    #expect(surface.cell(x: 3, y: 0)?.glyph.scalar == "x")
+    #expect(integers.hitTest(column: 2, row: 1)?.id == 1)
+    #expect(strings.hitTest(column: 5, row: 1)?.id == "point")
+    print("Mixed canvas/hit maps: 32 frames, \(calls) allocation calls")
+  }
+
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
   func hitMapAllocationAcrossRegistrationLookupAndHiddenTargets() throws {
     try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
@@ -258,8 +302,8 @@ struct RenderAllocationTests {
 private struct AllocationEmptyBlock: Block { var body: some Block {} }
 
 @inline(never)
-private func rejectFixedAllocationFrame(
-  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas>
+private func rejectFixedAllocationFrame<Drawing: CanvasDrawing>(
+  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas<Drawing>>
 ) -> Bool {
   do throws(SurfaceError) {
     try surface.render(size: size) { BlockList(blocks) }
@@ -288,8 +332,8 @@ private final class AllocationPointDrawing: CanvasDrawing {
 }
 
 @inline(never)
-private func renderAllocationLayers(
-  _ surface: inout Surface, size: TerminalSize, layers: ArraySlice<Canvas>
+private func renderAllocationLayers<Drawing: CanvasDrawing>(
+  _ surface: inout Surface, size: TerminalSize, layers: ArraySlice<Canvas<Drawing>>
 ) throws(SurfaceError) {
   try surface.render(size: size) { Overlay { BlockList(layers) } }
 }
@@ -321,20 +365,21 @@ private func allocationControl(_ count: Int) -> Int {
   let bytes = Array(repeating: UInt8(1), count: count)
   return bytes.withUnsafeBufferPointer { buffer in
     // C sees the storage so the optimizer cannot remove the allocation.
-    memchr(buffer.baseAddress, 1, buffer.count) == nil ? 0 : buffer.count
+    guard let base = buffer.baseAddress else { return 0 }
+    return memchr(base, 1, buffer.count) == nil ? 0 : buffer.count
   }
 }
 
 @inline(never)
-private func renderAllocationFrame(
-  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas>
+private func renderAllocationFrame<Drawing: CanvasDrawing>(
+  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas<Drawing>>
 ) throws(SurfaceError) {
   try surface.render(size: size) { Row { BlockList(blocks) } }
 }
 
 @inline(never)
-private func rejectAllocationFrame(
-  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas>, invalidText: String
+private func rejectAllocationFrame<Drawing: CanvasDrawing>(
+  _ surface: inout Surface, size: TerminalSize, blocks: ArraySlice<Canvas<Drawing>>, invalidText: String
 ) -> Bool {
   do throws(SurfaceError) {
     try surface.render(size: size) {

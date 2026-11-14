@@ -168,6 +168,41 @@ import Testing
   #expect(hits.hitTest(column: 0, row: 0)?.id == .second)
 }
 
+@Test func heterogeneousHitMapsCommitRollbackAndReleaseTogether() throws {
+  let integers = HitMap<Int>(capacity: 1)
+  let strings = HitMap<String>(capacity: 1)
+  let size = TerminalSize(columns: 8, rows: 1)
+  var surface = try Surface(maximumSize: size)
+  try surface.render(size: size) {
+    Row {
+      Text("one").hitRegion(1, in: integers)
+      Text("two").hitRegion("two", in: strings)
+    }
+  }
+  #expect(integers.hitTest(column: 0, row: 0)?.id == 1)
+  #expect(strings.hitTest(column: 3, row: 0)?.id == "two")
+  #expect(throws: SurfaceError.layout(.hitRegionCapacityExceeded)) {
+    try surface.render(size: size) {
+      Text("new").hitRegion("new", in: strings)
+      Text("new").hitRegion(2, in: integers)
+      Text("overflow").hitRegion(3, in: integers)
+    }
+  }
+  #expect(integers.hitTest(column: 0, row: 0)?.id == 1)
+  #expect(strings.hitTest(column: 3, row: 0)?.id == "two")
+  try surface.render(size: size) { Text("new").hitRegion("new", in: strings) }
+  #expect(integers.count == 0)
+  #expect(strings.hitTest(column: 0, row: 0)?.id == "new")
+  // An omitted map can move to a different surface while the other stays owned.
+  var other = try Surface(maximumSize: size)
+  try other.render(size: size) { Text("moved").hitRegion(2, in: integers) }
+  #expect(integers.hitTest(column: 0, row: 0)?.id == 2)
+  #expect(throws: SurfaceError.layout(.hitMapInUse)) {
+    try other.render(size: size) { Text("busy").hitRegion("busy", in: strings) }
+  }
+  #expect(integers.hitTest(column: 0, row: 0)?.id == 2)
+}
+
 private enum HitTarget: Hashable { case first, second, third, parent }
 private struct EmptyHitBlock: Block { var body: some Block {} }
 

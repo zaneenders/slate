@@ -1,22 +1,41 @@
 #!/bin/sh
 set -eu
 
-if [ "$(uname -s)" != Darwin ]; then
-  echo "The render allocation probe requires macOS." >&2
-  exit 1
-fi
-
 cd "$(dirname "$0")/.."
 
 probe_directory=$(mktemp -d "${TMPDIR:-/tmp}/slate-render-allocations.XXXXXX")
 trap 'rm -rf "$probe_directory"' EXIT HUP INT TERM
-probe_library="$probe_directory/libSlateAllocationProbe.dylib"
-xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -dynamiclib -mmacosx-version-min=27.0 \
-  Tests/CAllocationProbe/AllocationProbe.c -o "$probe_library"
+case "$(uname -s)" in
+  Darwin)
+    probe_library="$probe_directory/libSlateAllocationProbe.dylib"
+    xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -dynamiclib -mmacosx-version-min=27.0 \
+      Tests/CAllocationProbe/AllocationProbe.c -o "$probe_library"
+    ;;
+  Linux)
+    probe_library="$probe_directory/libSlateAllocationProbe.so"
+    cc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
+      Tests/CAllocationProbe/LinuxAllocationProbe.c -o "$probe_library" -ldl -pthread
+    ;;
+  *)
+    echo "The render allocation probe requires macOS or glibc Linux." >&2
+    exit 1
+    ;;
+esac
 
 # The allocation guarantee covers optimized builds. Build before injection so
 # compiler/SwiftPM work is outside the probe process; the probe test skips here.
 SLATE_ALLOCATION_PROBE=0 swift test -c release --filter Allocation
+
+if [ "$(uname -s)" = Linux ]; then
+  # Isolate each suite so Swift Testing cannot start concurrent process-wide
+  # measurements, including toolchains that link all targets into one runner.
+  for filter in RenderAllocationTests terminalColorAllocation graphicsDragAllocation; do
+    SLATE_ALLOCATION_PROBE=1 LD_PRELOAD="$probe_library${LD_PRELOAD:+:$LD_PRELOAD}" \
+      swift test -c release --skip-build --filter "$filter"
+  done
+  exit 0
+fi
+
 products=$(swift build -c release --show-bin-path)
 runtime_path=$(swift -print-target-info | sed -n 's/.*"runtimeResourcePath": "\(.*\)".*/\1/p')
 test_helper="${runtime_path%/lib/swift}/libexec/swift/pm/swiftpm-testing-helper"
