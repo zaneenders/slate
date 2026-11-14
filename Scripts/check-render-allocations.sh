@@ -39,14 +39,22 @@ fi
 products=$(swift build -c release --show-bin-path)
 runtime_path=$(swift -print-target-info | sed -n 's/.*"runtimeResourcePath": "\(.*\)".*/\1/p')
 test_helper="${runtime_path%/lib/swift}/libexec/swift/pm/swiftpm-testing-helper"
-platform=$(xcrun --sdk macosx --show-sdk-platform-path)
+if platform=$(xcrun --sdk macosx --show-sdk-platform-path 2>/dev/null); then
+  testing_libraries="$platform/Developer/usr/lib"
+  testing_frameworks="$platform/Developer/Library/Frameworks"
+else
+  # Command Line Tools ships Testing without an Xcode platform directory.
+  developer_support="$(xcode-select -p)/Library/Developer"
+  testing_libraries="$developer_support/usr/lib"
+  testing_frameworks="$developer_support/Frameworks"
+fi
 
 # Hardened toolchain launchers can strip DYLD_INSERT_LIBRARIES. Launch the test
 # helper directly, with the same Swift Testing and XCTest paths as SwiftPM.
 for target in SlateUITests SlateTerminalTests SlateGraphicsDemoTests SlateGamepadTests SlateKeyboardDemoTests; do
   SLATE_ALLOCATION_PROBE=1 DYLD_INSERT_LIBRARIES="$probe_library" \
-    DYLD_LIBRARY_PATH="$runtime_path/macosx/testing:$platform/Developer/usr/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-    DYLD_FRAMEWORK_PATH="$platform/Developer/Library/Frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" \
+    DYLD_LIBRARY_PATH="$runtime_path/macosx/testing:$testing_libraries${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+    DYLD_FRAMEWORK_PATH="$testing_frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" \
     "$test_helper" --test-bundle-path "$products/$target.xctest/Contents/MacOS/$target" \
       --testing-library swift-testing --filter Allocation
 done
