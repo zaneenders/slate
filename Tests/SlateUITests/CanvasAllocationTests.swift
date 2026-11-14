@@ -16,6 +16,33 @@ import Glibc
 @Suite(.serialized)
 struct RenderAllocationTests {
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  func spatialFocusAllocationAcrossRegistrationAndGroupNavigation() throws {
+    try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
+    let focus = FocusState<Int>(capacity: 8, initial: 1)
+    let size = TerminalSize(columns: 20, rows: 4)
+    var surface = try Surface(maximumSize: size)
+    let content = AllocationFocusContent(focus: focus)
+    for _ in 0..<4 { try surface.render(size: size) { content } }
+    let budget = focus.storageBudgetBytes + surface.storageBudgetBytes
+    cli_test_begin_allocation_count()
+    do throws(SurfaceError) {
+      for _ in 0..<32 {
+        try surface.render(size: size) { content }
+        _ = focus.move(.right)
+        _ = focus.move(.down)
+        _ = focus.move(.left)
+        _ = focus.move(.up)
+      }
+    } catch {
+      _ = cli_test_end_allocation_count()
+      throw error
+    }
+    let calls = cli_test_end_allocation_count()
+    #expect(calls == 0 && focus.focusedID == 1)
+    #expect(focus.storageBudgetBytes + surface.storageBudgetBytes == budget)
+  }
+
+  @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
   func heterogeneousCanvasAndHitMapAllocation() throws {
     try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
     let size = TerminalSize(columns: 6, rows: 2)
@@ -358,6 +385,22 @@ private func rejectPositionAllocationLayers<Layer: Block>(
     }
     return false
   } catch { return error == .layout(.textTooLong) }
+}
+
+private struct AllocationFocusContent: Block {
+  let focus: FocusState<Int>
+  var body: some Block {
+    Column(gap: 1) {
+      Row {
+        Text("one").frame(width: .fill).focusTarget(1, in: focus)
+        Text("two").frame(width: .fill).focusTarget(2, in: focus)
+      }.navigationGroup(in: focus)
+      Row {
+        Text("three").frame(width: .fill).focusTarget(3, in: focus)
+        Text("four").frame(width: .fill).focusTarget(4, in: focus)
+      }.navigationGroup(in: focus)
+    }
+  }
 }
 
 @inline(never)

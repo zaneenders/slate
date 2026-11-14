@@ -140,6 +140,21 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
     try build(content)
   }
 
+  mutating func focusRegion<Content: Block, ID: Hashable>(
+    _ content: borrowing Content, id: ID?, storage: FocusRecords<ID>, enabled: Bool
+  ) throws(LayoutError) {
+    try hitMaps.register(storage)
+    let record = try storage.append(id, enabled: enabled)
+    let group = storage.stagingGroup
+    if id == nil { storage.stagingGroup = record }
+    defer { storage.stagingGroup = group }
+    let previous = try begin(LayoutNode(kind: .hitRegion, drawingIndex: drawingCount))
+    defer { end(previous) }
+    drawings[drawingCount] = .hitRegion(storage, record)
+    drawingCount += 1
+    try build(content)
+  }
+
   mutating func text(_ text: String, style: Style) throws(LayoutError) {
     var width = 0
     var maximumWidth = 0

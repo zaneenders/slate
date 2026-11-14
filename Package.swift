@@ -22,6 +22,7 @@ let package = Package(
   products: [
     .library(name: "Slate", targets: ["Slate"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
+    .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
     .executable(name: "document", targets: ["SlateDocumentDemo"]),
     .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
     .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"]),
@@ -42,6 +43,12 @@ let package = Package(
       swiftSettings: swiftSettings
     ),
     // Demo
+    .executableTarget(
+      name: "SlateNavigationDemo",
+      dependencies: ["Slate"],
+      path: "Examples/SlateNavigationDemo",
+      swiftSettings: swiftSettings
+    ),
     .executableTarget(
       name: "SlateStarter",
       dependencies: ["Slate"],
@@ -144,6 +151,10 @@ let package = Package(
     ),
 
     // Tests
+    .testTarget(
+      name: "SlateNavigationDemoTests",
+      dependencies: ["SlateNavigationDemo", "Slate", "SlateTestSupport"]
+    ),
     .testTarget(
       name: "SlateKittyGraphicsDemoTests",
       dependencies: ["SlateKittyGraphicsDemo", "Slate", "SlateTestSupport", "CIOTestSupport"]

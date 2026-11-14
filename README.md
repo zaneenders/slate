@@ -211,6 +211,86 @@ terminal output failure may leave a partially presented frame. For `ScreenRegion
 convert terminal coordinates to region-local coordinates before calling
 `hitTest(column:row:)`.
 
+## Spatial keyboard navigation
+
+Try Slate Studio, the navigation and visual playground:
+
+```sh
+swift run -c release navigation
+```
+
+Open a sidebar page with Enter or a click:
+
+| Page | Explore |
+| --- | --- |
+| Overview | Animated wave, bar, and heatmap drawings; Enter a card to change styles, Space to pause. |
+| Sources | A sample file grid, colored code previews, and an editable input. |
+| Tests | Suite selection and a simulated run with live progress that continues across pages. |
+| Docs | Browsable guides and a Unicode type specimen. |
+| Color lab | Six accent swatches, a remixable RGB spectrum, paper/midnight themes, and a scratchpad. |
+| Gallery | Three procedural artworks: Aurora, Orbit, and Dunes. Enter the image to cycle scenes. |
+
+Each page keeps its state when you switch away, and the active page stays marked
+in the sidebar while focus moves through its controls. Project actions and test
+results are demo fixtures; they do not execute build or test commands.
+
+The gallery probes Kitty graphics support through the existing input reader. On
+supporting terminals, it prepares 256 × 160 RGB images once and reuses uploads;
+otherwise it draws the same artwork with colored half-block cells. Switch between
+Auto and Cells to compare. Image placements follow committed layout bounds on
+resize and disappear when leaving the gallery; image data is released on exit.
+The demo needs no image files, network access, or external image libraries.
+
+Arrows follow the visible groups. Enter activates a control or edits an input;
+Escape leaves editing, and Q/Escape quits while navigating. Ctrl-Q always quits.
+Click a control to focus it, and resize below 54 columns to stack the panels
+vertically. The same resolved geometry drives keyboard and mouse focus after
+reflow.
+
+`FocusState<ID>` owns selection and fixed-capacity layout records. Use unique target
+IDs and mark targets
+and semantic groups explicitly:
+
+```swift
+private let focus = FocusState<Field>(capacity: 16, initial: .name)
+
+Row {
+  InputBox(name, focused: isEditing && focus.isFocused(.name))
+    .focusTarget(.name, in: focus)
+  InputBox(search, focused: isEditing && focus.isFocused(.search))
+    .focusTarget(.search, in: focus)
+}.navigationGroup(in: focus)
+
+// In the application event handler:
+if focus.move(.right) { return .redraw }
+```
+
+Directional candidates must extend past the focused target's edge in that
+direction. A narrow button below a full-width row does not count as left or right
+just because its center is offset; partially overlapping neighbors remain eligible.
+Navigation searches the current group before climbing to an ancestor. It prefers
+aligned regions over diagonal ones, then distance; entry into a neighboring group
+prefers a target along the same row or column. Crossing a group boundary first
+checks the group rectangles: Down cannot enter a panel beside the sidebar just
+because one of its controls is lower. When the panels stack after reflow, Down
+can enter the panel underneath. Ties follow layout order, and edges
+do not wrap. With no selection, the first arrow selects the first eligible target.
+Groups nest, retain their children's sizing, and consume one registration each.
+Capacity counts both groups and targets; exhaustion rejects the frame with
+`.layout(.focusCapacityExceeded)`. Registration and navigation reuse fixed storage.
+
+`focus(_:)` selects an ID, `focus(column:row:)` selects the frontmost eligible
+target, and `clear()` removes selection. Disabled, omitted, and fully clipped
+targets lose eligibility; removing the selected target clears focus. Groups and
+targets commit with the surface after successful rendering, so failed layouts
+preserve the previous geometry and selection. A state belongs to one live surface;
+sharing it throws `.layout(.focusStateInUse)`. As with hit maps, terminal output
+failure can leave a rendered geometry snapshot ahead of the physical screen.
+
+Applications choose highlights, key bindings, editing, and activation. Arrows are
+ordinary input events; `FocusState` never takes them away from an editor. The demo
+uses an explicit Enter/Escape interaction mode to make the two roles visible.
+
 ## Colors and terminal settings
 
 Use `Color.rgb(red, green, blue)` with byte channels for explicit color. Select

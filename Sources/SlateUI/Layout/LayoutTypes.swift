@@ -77,4 +77,7 @@ public enum LayoutError: Error, Equatable, Sendable {
   case hitRegionCapacityExceeded
   /// A hit map can belong to only one live surface at a time.
   case hitMapInUse
+  case focusCapacityExceeded
+  /// Focus registrations belong to one live surface at a time.
+  case focusStateInUse
 }

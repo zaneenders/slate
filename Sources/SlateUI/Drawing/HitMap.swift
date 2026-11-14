@@ -51,10 +51,11 @@ public final class HitMap<ID: Hashable>: ~Sendable {
 
 /// Concrete owner references keep the frame lists to one word per entry. Only
 /// record operations dispatch to ID-specific storage; frame ownership is shared.
-/// Instances are always HitMapRecords, allocated once by their public map.
+/// Hit and focus records are allocated once by their public owners.
 @usableFromInline class HitMapStorage: ~Sendable {
   final var committedFrame: ObjectIdentifier?
   final var stagingFrame: ObjectIdentifier?
+  var ownershipError: LayoutError { .hitMapInUse }
   func setBounds(_ bounds: Rect, at index: Int) { preconditionFailure("Abstract hit-map storage") }
   func commit(in viewport: Rect) { preconditionFailure("Abstract hit-map storage") }
   func discardPending() { preconditionFailure("Abstract hit-map storage") }
@@ -210,7 +211,7 @@ final class HitMapFrame: ~Sendable {
     let owner = ObjectIdentifier(self)
     guard map.committedFrame == nil || map.committedFrame == owner,
       map.stagingFrame == nil || map.stagingFrame == owner
-    else { throw .hitMapInUse }
+    else { throw map.ownershipError }
     if map.stagingFrame == owner { return }
     precondition(pendingCount < pending.count)
     pending[pendingCount] = map
