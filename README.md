@@ -213,39 +213,19 @@ convert terminal coordinates to region-local coordinates before calling
 
 ## Spatial keyboard navigation
 
-Try Slate Studio, the navigation and visual playground:
+The navigation example demonstrates spatial focus, explicit text editing,
+mouse selection, and a reusable animated canvas:
 
 ```sh
 swift run -c release navigation
 ```
 
-Open a sidebar page with Enter or a click:
-
-| Page | Explore |
-| --- | --- |
-| Overview | Animated wave, bar, and heatmap drawings; Enter a card to change styles, Space to pause. |
-| Sources | A sample file grid, colored code previews, and an editable input. |
-| Tests | Suite selection and a simulated run with live progress that continues across pages. |
-| Docs | Browsable guides and a Unicode type specimen. |
-| Color lab | Six accent swatches, a remixable RGB spectrum, paper/midnight themes, and a scratchpad. |
-| Gallery | Three procedural artworks: Aurora, Orbit, and Dunes. Enter the image to cycle scenes. |
-
-Each page keeps its state when you switch away, and the active page stays marked
-in the sidebar while focus moves through its controls. Project actions and test
-results are demo fixtures; they do not execute build or test commands.
-
-The gallery probes Kitty graphics support through the existing input reader. On
-supporting terminals, it prepares 256 × 160 RGB images once and reuses uploads;
-otherwise it draws the same artwork with colored half-block cells. Switch between
-Auto and Cells to compare. Image placements follow committed layout bounds on
-resize and disappear when leaving the gallery; image data is released on exit.
-The demo needs no image files, network access, or external image libraries.
-
-Arrows follow the visible groups. Enter activates a control or edits an input;
-Escape leaves editing, and Q/Escape quits while navigating. Ctrl-Q always quits.
-Click a control to focus it, and resize below 54 columns to stack the panels
-vertically. The same resolved geometry drives keyboard and mouse focus after
-reflow.
+Choose Cyan or Magenta to change the drawing, or Pause to stop its animation.
+Arrows move focus through the Controls and Preview groups. Enter activates a
+control or starts editing; Enter/Escape finishes editing. Q/Escape quits while
+navigating, and Ctrl-Q always quits. Click a control to activate it.
+Below 54 columns the panels stack vertically; the same resolved geometry drives
+keyboard and mouse focus after reflow.
 
 `FocusState<ID>` owns selection and fixed-capacity layout records. Use unique target
 IDs and mark targets
@@ -305,13 +285,13 @@ swift run -c release navigation --controller
 | --- | --- |
 | D-pad / left stick | Move spatial focus; move the caret while editing. |
 | Cross | Activate the focused control, or enter/finish editing. |
-| Circle | Leave editing, then return focus to the current page's sidebar item. |
-| Square | Pause/resume the Overview animation. |
+| Circle | Leave editing and return focus to Cyan. |
+| Square | Pause/resume the animation. |
 
 Use Q or Ctrl-Q to quit. Circle never quits. Without `--controller`, the demo
 keeps its keyboard/mouse behavior and does not open a controller reader.
-With the flag it polls every 16 ms, including pages without animation, while
-animations and simulated tests retain their 100 ms update cadence.
+With the flag it polls every 16 ms, including while paused. Animation updates
+at most once per tick after accumulating 100 ms.
 
 `Gamepad` is a noncopyable owner. Keep one for the session and call
 `poll(at: ContinuousClock.now)` from each tick. Its result is an inline
@@ -365,108 +345,52 @@ descriptor; at most three descriptors are open during that scan. OS/framework
 storage, initialization, and caller event handlers are outside the verified
 allocation guarantee.
 
-## Controller keyboard lab
+## Controller keyboard
 
 ```sh
 swift run -c release keyboard
-# Start with the live DualSense control map:
-swift run -c release keyboard --controls
 # Keyboard/mouse only, without opening the native controller reader:
 swift run -c release keyboard --keyboard-only
 ```
 
-The new example has three clickable tabs, each with its own 512-character draft:
+This compact chord keyboard uses Slate's `TextInput` and `HitMap`. Select one
+of eight letter groups with the left stick, number keys 1–8, or a click.
+The right stick chooses the first/second/third/fourth letter at north/east/south/west
+and types it when released. Arrow keys and the four on-screen letter buttons
+provide the same choices. Three-letter groups leave the fourth position empty.
+A right-stick gesture keeps the group it started with even if the left stick moves.
 
-| Tab | Left stick | Right stick |
-| --- | --- | --- |
-| Flick + predict | Flick through eight ABC/DEF/.../WXYZ groups; return to center to append a group. | East/west chooses a word, north/south chooses first/last. Cross accepts with a space. |
-| Common letters | Flick E/T/A/O/I/N/S/H directly. Hold R1 for the remaining letters and punctuation groups. | In the R1 layer, flick N/E/S/W for the first/second/third/fourth character. |
-| Two-stick chords | Aim at ABC/DEF/.../WXYZ; the group stays selected. | Flick N/E/S/W for a letter. The group is latched when this gesture starts, so moving the left stick cannot change a chord in flight. |
-
-D-pad left/right switches tabs. Cross inserts a space in the literal layouts;
-Square deletes, Circle cancels pending input, Triangle adds a period and space,
-and L1 toggles capitals. The complete DualSense bindings are below. Holding a direction never repeats a character. Both
-sticks must return to neutral after reconnects, tab/layer changes, or cancellation.
-The stick engages at 0.55, releases at 0.35, and uses angular hysteresis to reduce
-sector jitter. Center the right stick before starting another chord.
-
-Keyboard and mouse alternatives work in every tab: Tab/F1–F3 switches tabs;
-1–8 selects sectors clockwise from north; arrow keys operate the right wheel;
-Enter accepts/spaces, Backspace deletes, Escape cancels, C toggles caps, M toggles
-the common-letter tab's extra layer, and period inserts punctuation. Click a tab,
-wheel label, suggestion, or action. Ctrl-Q/Ctrl-C quits. Below 62 columns the
-right wheel is hidden; arrow keys remain available. Enlarge the terminal to see
-the complete wheels.
-
-Prediction uses a small built-in ranked vocabulary, capped at 512 words of at
-most 16 letters, and a few explicit previous-word rules. For example, 4663 can
-match good/home/gone/hood; after “go”, home ranks first. It offers completions
-and at most five candidates. Unknown words remain uncommitted; delete a group
-or use the exact Chords tab. This is a deterministic playground vocabulary,
-not a comprehensive English language model.
-
-Mutable text/candidate buffers use three sets of fixed inline storage: each has
-512 ASCII draft bytes, 16 composing groups, and two five-element Int arrays,
-plus fixed counts and flags. `inlineStorageBudgetBytes` reports the buffer
-strides. The shared startup lexicon reserves 512 records and budgets up to 16
-UTF-8 bytes per word; `storageBudgetBytes` reports that bound, excluding array
-headers, owner objects, and allocator metadata. Candidate lookup scans at most
-512 signatures and makes at most five insertion comparisons per match. On the
-tested 64-bit toolchains, these buffer budgets are 1,848 and 24,576 bytes.
-Rendering reuses four Canvas owners and a 24-entry HitMap. Full drafts/words reject input
-before mutation. Startup tokenization/strings and native controller discovery
-may allocate; warmed typing, lookup, tab rendering, and capacity rejection are
-covered by the release allocation probe. Test/debug `snapshot()` explicitly
-allocates and stays outside that guarantee.
-
-`Gamepad.sample(at:)` exposes both sticks, face buttons, and shoulder buttons to
-gesture clients. Choose `sample` or navigation `poll` once per tick; the keyboard
-uses raw samples and does not consume navigation's repeating direction actions.
-Linux reads ABS_RX/RY when both axes exist, otherwise reports a neutral right
-stick. The same macOS main-thread and device-access policies apply.
-
-### Complete DualSense input map
-
-Open **Options** (or H/F4) for a live map of all 19 button directions/controls,
-both stick axes, analog triggers, and the two touchpad positions. Pressed,
-released, and not-exposed controls have distinct indicators. Typing and copying
-are suspended in that view; Options/H/Escape returns. D-pad up/down scrolls on
-small viewports. Touch positions are diagnostic data; they do not type letters.
-
-| PS5 control | Keyboard lab action |
+| Controller control | Action |
 | --- | --- |
-| Left stick | The active tab's letter/group wheel. |
-| Right stick | The active tab's word/letter wheel. |
-| D-pad left / right | Previous / next tab. |
-| D-pad up / down | Right wheel north / south: first/last prediction, or first/third letter in a selected literal group. |
-| Cross / R2 / R3 | Accept the current prediction and a space, or insert a literal space. |
-| Circle / L3 | Cancel pending input; preserve the committed draft. |
-| Square | Delete one composing group or committed character. |
-| Triangle | Commit a prediction if present, then add a period and space. |
-| L1 | Toggle capitals. |
-| R1 (held) | Extra letters/punctuation in Common letters. |
-| L2 | Delete the composing word, or the last committed word and trailing spaces. |
-| Create | Copy the committed draft through terminal OSC 52. Terminal clipboard policy still applies. |
-| Options | Open/close the live control map. |
-| PS | Return to the Predictive tab, preserving drafts. |
-| Touchpad click | Pause/resume typing. |
-| Microphone mute | System audio control; the native APIs/drivers used here do not expose a DualSense key event. |
+| Left stick | Select abc, def, ghi, jkl, mno, pqrs, tuv, or wxyz clockwise from north. |
+| Right stick | Choose a letter; release to type once. |
+| Cross | Insert a space. |
+| Square | Delete the previous character. |
+| Circle | Cancel the pending gesture and clear the selected group. |
+| L1 | Toggle capitals for controller and on-screen letter input. |
+| Create | Copy the draft through terminal OSC 52. |
 
-Keyboard alternatives add H/F4 for the control map, P for pause, and Y for copy.
-Buttons operate on press edges. Trigger values are normalized to 0...1 with
-press/release thresholds of 0.55/0.45; reconnect arming requires both below 0.1,
+Ordinary keys and pasted text edit the draft directly. Enter inserts a space,
+Escape cancels the pending gesture, and Ctrl-Q quits. Text editing and clipboard
+shortcuts use `TextInput`. The draft holds at most 512 UTF-8 bytes; rejected input
+leaves it unchanged. The release allocation probe covers warmed controller typing,
+capacity rejection, rendering, and maximum-size clipboard copies.
+
+`Gamepad.sample(at:)` exposes both sticks, buttons, analog triggers, and touchpad
+state. Choose `sample` or navigation `poll` once per tick; this example uses raw
+samples rather than repeating navigation actions. Holding a stick never repeats
+characters. New connections require neutral controls; cancellation requires a
+neutral stick before its next gesture. Buttons operate on press edges.
+
+`GamepadState` includes `leftTrigger`, `rightTrigger`, `supportedButtons`,
+`features`, `primaryTouch`, and `secondaryTouch`. `GamepadButtons` uses UInt32
+and provides PlayStation aliases such as `.cross`, `.l2`, `.l3`, `.options`,
+`.create`, and `.ps`. Trigger values are normalized to 0...1 with press/release
+thresholds of 0.55/0.45. Reconnect arming requires both triggers below 0.1,
 neutral sticks, released buttons, and released contacts where available.
-
-The public `GamepadState` now includes `leftTrigger`, `rightTrigger`,
-`supportedButtons`, `features`, `primaryTouch`, and `secondaryTouch`.
-`GamepadButtons` uses UInt32 and provides PlayStation aliases such as `.cross`,
-`.l2`, `.l3`, `.options`, `.create`, and `.ps`. A snapshot occupies
-`MemoryLayout<GamepadState>.stride` bytes; samples, trigger latches, and two contact
-slots have fixed storage (64 bytes per snapshot on the tested 64-bit targets).
-The control map budgets 19 times `MemoryLayout<Control>.stride` plus one snapshot;
-text literals and owner headers are separate from these inline records.
-Clipboard requests may allocate up to the bounded 512-character payload on first
-use/growth; warmed maximum-size copying is covered by the allocation probe.
+Samples and two contact slots have fixed storage, 64 bytes per snapshot on the
+tested 64-bit targets. Clipboard requests may allocate on first use/growth;
+warmed maximum-size copying is covered by the allocation probe.
 
 macOS uses Apple's [DualSense profile](https://developer.apple.com/documentation/gamecontroller/gcdualsensegamepad).
 It exposes touchpad click and two coordinate pairs, but its direction pads lack
@@ -492,7 +416,7 @@ Native Linux reads use fixed key masks, eight axis records, and three two-slot
 MT query buffers; at most 15 ioctls per complete sample, without retries or event
 queues. Tests inject bounded ioctl fixtures to verify all mappings, digital
 fallback, identity pairing, centered contacts, and atomic failures at every query
-step. Release probes cover full snapshots, control-map rendering, and maximum
+step. Release probes cover full snapshots, keyboard rendering, and maximum
 clipboard payloads. Native discovery/framework allocations remain outside the
 warmed processing guarantee. This maps input controls; motion sensors and
 rumble/adaptive-trigger output are separate features.

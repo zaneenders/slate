@@ -189,9 +189,9 @@ private func observeSignalMaskDelivery() throws -> [SignalMaskObservation] {
   guard unsafe sigaddset(&requested, SIGALRM) == 0,
     unsafe sigdelset(&requested, SIGTERM) == 0,
     unsafe sigdelset(&requested, SIGUSR1) == 0
-  else { throw ChildError.system(errno) }
+  else { throw TerminalChildError.system(errno) }
   let maskError = unsafe pthread_sigmask(SIG_SETMASK, &requested, nil)
-  guard maskError == 0 else { throw ChildError.system(maskError) }
+  guard maskError == 0 else { throw TerminalChildError.system(maskError) }
   do {
     let owner = try SignalSession(.managed)
     var mask = try readSignalMask()
@@ -206,13 +206,13 @@ private func observeSignalMaskDelivery() throws -> [SignalMaskObservation] {
           operation: "setup preserves fault signal \(number)", actual: unsafe sigismember(&mask, number),
           expected: unsafe sigismember(&requested, number)))
     }
-    guard raise(SIGTERM) == 0 else { throw ChildError.system(errno) }
+    guard raise(SIGTERM) == 0 else { throw TerminalChildError.system(errno) }
     observations.append(.init(operation: "setup defers delivery", actual: owner.termination(), expected: 0))
     try owner.resumeDelivery()
     observations.append(.init(operation: "resume delivers termination", actual: owner.termination(), expected: SIGTERM))
     appendMaskObservations(try readSignalMask(), requested, into: &observations)
     owner.protectTeardown()
-    guard raise(SIGUSR1) == 0 else { throw ChildError.system(errno) }
+    guard raise(SIGUSR1) == 0 else { throw TerminalChildError.system(errno) }
     observations.append(.init(operation: "teardown defers delivery", actual: owner.termination(), expected: SIGTERM))
     try owner.resumeDelivery()
     observations.append(.init(operation: "resume retains first cause", actual: owner.termination(), expected: SIGTERM))
@@ -239,7 +239,7 @@ private func appendMaskObservations(
 private func readSignalMask() throws -> sigset_t {
   var mask = sigset_t()
   let error = unsafe pthread_sigmask(SIG_SETMASK, nil, &mask)
-  guard error == 0 else { throw ChildError.system(error) }
+  guard error == 0 else { throw TerminalChildError.system(error) }
   return mask
 }
 
@@ -388,96 +388,4 @@ func managedSIGTSTPLeavesRawModeAndPasteFramingActive(_ keyboard: Int) throws {
   #expect(kind == 2 && value == 0)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[<u")
-}
-
-private enum ChildError: Error {
-  case timeout(String)
-  case system(Int32)
-  case outputCapacity
-}
-
-private final class TerminalChild {
-  let pty: PseudoTerminal
-  let saved: termios
-  let pid: Int32
-  var reaped = false
-  var output = ""
-
-  init() throws {
-    pty = try PseudoTerminal()
-    saved = try attributes(of: pty.slave)
-    var size = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
-    try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
-    for descriptor in [pty.master, pty.slave] {
-      try #require(fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0)
-    }
-    #if DEBUG
-    let configuration = "debug"
-    #else
-    let configuration = "release"
-    #endif
-    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let executable = root.appendingPathComponent(".build/\(configuration)/SlateSignalFixture").path
-    var spawned: Int32 = -1
-    let slave = pty.slave
-    let error = executable.withCString { unsafe cli_test_spawn_terminal($0, slave, &spawned) }
-    guard error == 0 else { throw ChildError.system(error) }
-    pid = spawned
-  }
-
-  func send(_ text: String) throws {
-    let output = try Output(fileDescriptor: pty.master)
-    try output.writeAll(text.utf8Span.span)
-  }
-
-  func drain() throws {
-    var buffer = InlineArray<4_096, UInt8>(repeating: 0)
-    var readiness = pollfd(fd: pty.master, events: Int16(POLLIN), revents: 0)
-    let ready = unsafe poll(&readiness, 1, 0)
-    guard ready > 0 && readiness.revents & Int16(POLLIN) != 0 else { return }
-    let input = try Input(fileDescriptor: pty.master)
-    let count = try input.read(into: buffer.mutableSpan)
-    guard output.utf8.count + count <= 256 * 1_024 else { throw ChildError.outputCapacity }
-    output += buffer.span.extracting(first: count).withUnsafeBufferPointer {
-      unsafe String(decoding: $0, as: UTF8.self)
-    }
-  }
-
-  func awaitOutput(_ expected: String) throws {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(3))
-    while clock.now < deadline {
-      try drain()
-      if output.contains(expected) { return }
-      usleep(1_000)
-    }
-    throw ChildError.timeout("output: \(expected)")
-  }
-
-  func awaitState() throws -> (Int32, Int32) {
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: .seconds(3))
-    while clock.now < deadline {
-      try drain()
-      var value: Int32 = 0
-      let kind = unsafe cli_test_wait_terminal(pid, &value)
-      if kind > 0 {
-        if kind == 2 || kind == 3 { reaped = true }
-        return (kind, value)
-      }
-      if kind < 0 { throw ChildError.system(-kind) }
-      usleep(1_000)
-    }
-    throw ChildError.timeout("child state")
-  }
-
-  deinit {
-    if !reaped {
-      _ = kill(pid, SIGKILL)
-      // A killed child cannot remain suspended. No Swift runs in the child here.
-      var status: Int32 = 0
-      _ = unsafe waitpid(pid, &status, 0)
-    }
-  }
 }

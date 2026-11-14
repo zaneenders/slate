@@ -53,7 +53,7 @@ import Musl
     } catch {
       #expect(failLayout && error == .screen(.layout(.textTooLong)))
     }
-    let received = try mouseSessionOutput(pty.master)
+    let received = try terminalOutput(from: pty.master)
     #expect(received.contains("\u{1b}[?1006h\u{1b}[?1003h"))
     #expect(received.contains("\u{1b}[?1003l\u{1b}[?1006l"))
     let disable = try #require(received.range(of: "\u{1b}[?1003l"))
@@ -71,7 +71,7 @@ import Musl
   try output.writeAll("q".utf8Span.span)
   var application = NoMouseApplication()
   try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
-  let received = try mouseSessionOutput(pty.master)
+  let received = try terminalOutput(from: pty.master)
   #expect(!received.contains("\u{1b}[?1003") && !received.contains("\u{1b}[?1006"))
 }
 
@@ -119,22 +119,4 @@ private struct NoMouseApplication: ScreenApplication {
     default: return .none
     }
   }
-}
-
-private func mouseSessionOutput(_ descriptor: Int32) throws -> String {
-  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
-  let input = try Input(fileDescriptor: descriptor)
-  var result = ""
-  for _ in 0..<16 {
-    var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-    try #require(unsafe poll(&readiness, 1, 100) == 1)
-    let count = try input.read(into: bytes.mutableSpan)
-    try #require(count > 0)
-    result += bytes.span.extracting(first: count).withUnsafeBufferPointer {
-      unsafe String(decoding: $0, as: UTF8.self)
-    }
-    if result.contains("\u{1b}[?1049l") { return result }
-  }
-  Issue.record("Session output exceeded the read budget")
-  return result
 }

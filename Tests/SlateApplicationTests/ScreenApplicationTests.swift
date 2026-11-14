@@ -581,22 +581,7 @@ private func queueApplicationInput(_ bytes: [UInt8], to descriptor: Int32) throw
 }
 
 private func expectApplicationScreenRestored(_ master: Int32) throws {
-  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
-  let input = try Input(fileDescriptor: master)
-  var received = ""
-  // PTYs can split writes into separate reads. Input queued before raw mode can
-  // also be echoed; only the complete restoration sequence matters here.
-  for _ in 0..<16 {
-    var readiness = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
-    try #require(unsafe poll(&readiness, 1, 100) == 1)
-    let count = try input.read(into: bytes.mutableSpan)
-    try #require(count > 0)
-    received += bytes.span.extracting(first: count).withUnsafeBufferPointer {
-      unsafe String(decoding: $0, as: UTF8.self)
-    }
-    if received.contains("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l") { return }
-  }
-  Issue.record("Alternate-screen restoration exceeded the output budget")
+  #expect(try terminalOutput(from: master).contains("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l"))
 }
 
 @Test func applicationIgnoresTerminalRepliesAndEmitsOnlyCellOutput() throws {

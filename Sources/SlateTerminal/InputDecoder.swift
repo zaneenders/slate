@@ -300,23 +300,10 @@ public struct InputDecoder: ~Copyable, Sendable {
     var modifier = 1
     var hasModifier = false
     if sequenceByteCount > 3 {
-      guard state == .csi else { return nil }
-      var sawDigit = false
-      for index in 2..<(sequenceByteCount - 1) {
-        let byte = sequence[index]
-        if byte == 0x3b, !hasModifier, sawDigit {
-          hasModifier = true
-          modifier = 0
-          sawDigit = false
-        } else if (0x30...0x39).contains(byte) {
-          if hasModifier { modifier = modifier * 10 + Int(byte - 0x30) } else { first = first * 10 + Int(byte - 0x30) }
-          guard first <= 24, modifier <= 256 else { return nil }
-          sawDigit = true
-        } else {
-          return nil
-        }
-      }
-      guard sawDigit else { return nil }
+      guard state == .csi, let fields = decimalFields(from: 2, limits: [24, 256, 0]) else { return nil }
+      first = fields.values[0]
+      hasModifier = fields.count == 2
+      modifier = hasModifier ? fields.values[1] : 1
     }
     guard (1...256).contains(modifier) else { return nil }
     var modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
@@ -372,30 +359,10 @@ public struct InputDecoder: ~Copyable, Sendable {
   /// enhancements (alternate keys, release events and associated text) are not
   /// requested, so accepting their extra fields would lose input information.
   private borrowing func unicodeKeyEvent() -> InputEvent? {
-    var codepoint: UInt32 = 0
-    var modifier: UInt32 = 1
-    var hasModifier = false
-    var sawDigit = false
-    for index in 2..<(sequenceByteCount - 1) {
-      let byte = sequence[index]
-      if byte == 0x3b, !hasModifier, sawDigit {
-        hasModifier = true
-        modifier = 0
-        sawDigit = false
-      } else if (0x30...0x39).contains(byte) {
-        if hasModifier {
-          modifier = modifier * 10 + UInt32(byte - 0x30)
-          guard modifier <= 256 else { return nil }
-        } else {
-          codepoint = codepoint * 10 + UInt32(byte - 0x30)
-          guard codepoint <= 0x10ffff else { return nil }
-        }
-        sawDigit = true
-      } else {
-        return nil
-      }
-    }
-    guard sawDigit, (1...256).contains(modifier) else { return nil }
+    guard let fields = decimalFields(from: 2, limits: [0x10ffff, 256, 0]) else { return nil }
+    let codepoint = UInt32(fields.values[0])
+    let modifier = fields.count == 2 ? fields.values[1] : 1
+    guard (1...256).contains(modifier) else { return nil }
     let key: InputKey
     switch codepoint {
     case 9: key = .tab
@@ -438,24 +405,9 @@ public struct InputDecoder: ~Copyable, Sendable {
   @inline(never)
   private borrowing func mouseEvent(final: UInt8) -> InputEvent? {
     guard final == 0x4d || final == 0x6d else { return nil }
-    var fields = InlineArray<3, Int>(repeating: 0)
-    var field = 0
-    var sawDigit = false
-    for index in 3..<(sequenceByteCount - 1) {
-      let byte = sequence[index]
-      if byte == 0x3b, field < 2, sawDigit {
-        field += 1
-        sawDigit = false
-      } else if (0x30...0x39).contains(byte) {
-        // Check on every digit, before another multiplication can overflow.
-        fields[field] = fields[field] * 10 + Int(byte - 0x30)
-        guard fields[field] <= (field == 0 ? 127 : 65_535) else { return nil }
-        sawDigit = true
-      } else {
-        return nil
-      }
-    }
-    guard field == 2, sawDigit, fields[1] > 0, fields[2] > 0 else { return nil }
+    guard let parsed = decimalFields(from: 3, limits: [127, 65_535, 65_535]), parsed.count == 3 else { return nil }
+    let fields = parsed.values
+    guard fields[1] > 0, fields[2] > 0 else { return nil }
     let code = fields[0]
     let button: MouseButton
     switch code & 3 {
@@ -485,6 +437,30 @@ public struct InputDecoder: ~Copyable, Sendable {
         action: action, button: code & 64 != 0 ? .none : button,
         column: fields[1] - 1, row: fields[2] - 1,
         modifiers: KeyModifiers(rawValue: UInt8((code >> 2) & 7))))
+  }
+
+  // A zero limit disables that field. Per-digit bounds keep multiplication safe
+  // while callers retain their protocol-specific arity and zero-value rules.
+  private borrowing func decimalFields(
+    from start: Int, limits: InlineArray<3, Int>
+  ) -> (values: InlineArray<3, Int>, count: Int)? {
+    var values = InlineArray<3, Int>(repeating: 0)
+    var field = 0
+    var sawDigit = false
+    for index in start..<(sequenceByteCount - 1) {
+      let byte = sequence[index]
+      if byte == 0x3b, sawDigit, field < 2, limits[field + 1] > 0 {
+        field += 1
+        sawDigit = false
+      } else if (0x30...0x39).contains(byte) {
+        values[field] = values[field] * 10 + Int(byte - 0x30)
+        guard values[field] <= limits[field] else { return nil }
+        sawDigit = true
+      } else {
+        return nil
+      }
+    }
+    return sawDigit ? (values, field + 1) : nil
   }
 
   private mutating func continuePaste(_ byte: UInt8) -> Step {

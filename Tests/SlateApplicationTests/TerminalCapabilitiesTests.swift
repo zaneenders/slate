@@ -30,7 +30,7 @@ import Musl
       #expect(failLayout && error == .screen(.layout(.textTooLong)))
     }
     expectEqual(try attributes(of: pty.slave), saved)
-    let bytes = try capabilitySessionOutput(pty.master)
+    let bytes = try terminalOutput(from: pty.master)
     #expect(!bytes.contains("\u{1b}[?2027"))
     #expect(bytes.contains("\u{1b}[?2004l") && bytes.contains("\u{1b}[?1049l"))
     if !failLayout { #expect(bytes.contains("38;2;1;2;3m? ?")) }
@@ -52,22 +52,4 @@ private struct ASCIIApplication: ScreenApplication {
   }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate { .quit }
-}
-
-private func capabilitySessionOutput(_ descriptor: Int32) throws -> String {
-  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
-  let input = try Input(fileDescriptor: descriptor)
-  var result = ""
-  for _ in 0..<16 {
-    var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-    try #require(unsafe poll(&readiness, 1, 100) == 1)
-    let count = try input.read(into: bytes.mutableSpan)
-    try #require(count > 0)
-    result += bytes.span.extracting(first: count).withUnsafeBufferPointer {
-      unsafe String(decoding: $0, as: UTF8.self)
-    }
-    if result.contains("\u{1b}[?1049l") { return result }
-  }
-  Issue.record("Session output exceeded the read budget")
-  return result
 }

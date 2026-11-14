@@ -59,18 +59,9 @@ struct StickFlick {
 
 enum KeyboardLetters {
   static let groups = ["abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"]
-  static let groupLabels = ["ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ"]
-  static let common: InlineArray<8, UInt8> = [101, 116, 97, 111, 105, 110, 115, 104]
-  static let extras = ["bcd", "fgj", "klm", "pqr", "uvw", "xyz", ".,?", "!'-"]
-  static let extraLabels = ["BCD", "FGJ", "KLM", "PQR", "UVW", "XYZ", ". , ?", "! ' -"]
-  static func prepare() {
-    // Force immutable lookup arrays to initialize before the input/render loop.
-    precondition(groups.count == 8 && groupLabels.count == 8 && extras.count == 8 && extraLabels.count == 8)
-  }
-  static func letter(group: Int, sector: Int, extras: Bool) -> UInt8? {
-    precondition((0..<8).contains(group))
-    guard sector % 2 == 0 && (0..<8).contains(sector) else { return nil }
-    let text = (extras ? Self.extras[group] : groups[group]).utf8Span
+  static func letter(group: Int, sector: Int) -> UInt8? {
+    guard (0..<8).contains(group), (0..<8).contains(sector), sector % 2 == 0 else { return nil }
+    let text = groups[group].utf8Span
     let index = sector / 2
     return index < text.count ? text.span[index] : nil
   }

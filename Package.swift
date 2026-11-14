@@ -46,7 +46,7 @@ let package = Package(
     // Demo
     .executableTarget(
       name: "SlateKeyboardDemo",
-      dependencies: ["Slate", "SlateGamepad", .product(name: "BasicContainers", package: "swift-collections")],
+      dependencies: ["Slate", "SlateGamepad"],
       path: "Examples/SlateKeyboardDemo",
       swiftSettings: swiftSettings
     ),
@@ -155,6 +155,7 @@ let package = Package(
     ),
     .target(
       name: "SlateTestSupport",
+      dependencies: ["SlateTerminal", "CIOTestSupport"],
       path: "Tests/SlateTestSupport"
     ),
     .target(
