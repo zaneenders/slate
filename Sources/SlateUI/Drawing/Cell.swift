@@ -133,15 +133,17 @@ public struct Glyph: Equatable, Sendable {
     unsafe UTF8Span(unchecked: bytes.span.extracting(first: Int(count)))
   }
 
-  /// Zero-width continuation is an internal cell marker, never terminal output.
-  package static var continuation: Glyph {
+  /// Zero-width trailing marker for a wide glyph in a prepared grid. It is
+  /// never terminal output; Frame creates live continuations when painting.
+  public static var continuation: Glyph {
     var result = Glyph.space
     result.count = 0
     result.columns = 0
     return result
   }
 
-  @usableFromInline package static func scalarColumns(_ scalar: Unicode.Scalar) -> Int? {
+  /// Scalar width before grapheme composition; nil rejects unsupported controls.
+  public static func scalarColumns(_ scalar: Unicode.Scalar) -> Int? {
     let value = scalar.value
     if (0x20...0x7e).contains(value) { return 1 }
     let properties = scalar.properties
@@ -177,7 +179,7 @@ public struct Cell: Equatable, Sendable {
   public var style: Style
   @inlinable public var isContinuation: Bool { glyph.columnWidth == 0 }
 
-  static func continuation(style: Style) -> Cell { Cell(.continuation, style: style) }
+  public static func continuation(style: Style) -> Cell { Cell(.continuation, style: style) }
 
   @inlinable public init(_ glyph: Glyph = .space, style: Style = Style()) {
     self.glyph = glyph

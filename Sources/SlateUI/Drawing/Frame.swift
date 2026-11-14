@@ -30,7 +30,7 @@ public struct Frame: ~Copyable, ~Escapable, ~Sendable {
 
   /// Borrows the existing grid; only wide-glyph footprint cleanup may touch a
   /// neighboring cell outside the local drawing area. No scratch grid is needed.
-  mutating func withRegion(_ region: Rect, paint: (inout Frame) -> Void) {
+  public mutating func withRegion(_ region: Rect, paint: (inout Frame) -> Void) {
     let clipped = area.intersection(region)
     guard !clipped.isEmpty else { return }
     let offset = originOffset + clipped.y * rowStride + clipped.x

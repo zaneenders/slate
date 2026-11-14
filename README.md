@@ -120,7 +120,7 @@ delivers one tick rather than catching up missed updates.
 Polling rounds up to whole milliseconds, and callbacks or I/O can delay delivery.
 Ticks request no rendering unless the handler returns `.redraw`. Pending work
 remains independent: use `hasPendingWork` and `performPendingWork()` for bounded
-cooperative processing, such as indexing a file.
+cooperative processing.
 
 ## Layers
 
@@ -673,10 +673,20 @@ Scripts/check-render-allocations.sh
 swift run starter
 swift run -c release graphics
 swift run -c release kitty-graphics
-swift run -c release document path/to/file
 ```
 
-The document viewer also exercises Canvas with paging, selection, and input strips.
+Document storage, file paging, search, editing, and saving belong to Scribe in
+`shape-tree/packages/scribe`. The former `document` executable and its tests,
+`DocumentBuffer`, `TextDocumentSource`, and `TextViewport` have moved there.
+Applications using those types should import `ScribeEditor`. Slate retains the
+shared drawing, Unicode, text input, clipboard, and terminal APIs.
+
+Custom drawing can borrow a local subregion with `frame.withRegion(_:paint:)`.
+`TextInput.paint(in:frame:focused:placeholder:style:)` draws a field inside a
+canvas. Streaming consumers can reuse `IncrementalUTF8Decoder`,
+`UnicodeGraphemeRecognizer`, and `UnicodeGraphemeBuffer`, including owned Unicode
+checkpoints, without depending on an editor or file-storage implementation.
+
 The macOS and glibc Linux allocation probes check fixed layout capacity and exhaustion, warmed
 maximum-grid rendering, overlays, animation ticks, mouse dragging, color presentation, and
 layout failure with an injected allocator counter and a positive control. They also
@@ -715,13 +725,4 @@ byte counts come from actual draws. Compare repeated release runs on the same
 machine; the two timings are separate samples, and `/dev/null` excludes terminal
 emulator/SSH latency.
 
-The document load probe and gigabyte save test are opt-in. Set
-`SLATE_LARGE_DOCUMENT_PATH` to a fixture; otherwise they use the ignored
-`pi_hex_1b.txt` at the repository root. The save test requires at least 1 GB.
-
-```sh
-SLATE_RUN_LOAD_BENCHMARK=1 SLATE_LARGE_DOCUMENT_PATH=/path/to/file \
-  swift test -c release --filter loadTimingProbe
-SLATE_RUN_LARGE_FILE_TESTS=1 SLATE_LARGE_DOCUMENT_PATH=/path/to/gigabyte-file \
-  swift test -c release --filter largeDocumentWrite
-```
+Scribe owns the document load probe and opt-in gigabyte save test as well.

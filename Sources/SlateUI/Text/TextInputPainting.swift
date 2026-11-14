@@ -1,5 +1,5 @@
 extension TextInput {
-  func paint(in area: Rect, frame: inout Frame, focused: Bool, placeholder: String, style: Style) {
+  public func paint(in area: Rect, frame: inout Frame, focused: Bool, placeholder: String, style: Style) {
     withText { text in
       paint(text, in: area, frame: &frame, focused: focused, placeholder: placeholder, style: style)
     }

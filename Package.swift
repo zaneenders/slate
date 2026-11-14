@@ -25,7 +25,6 @@ let package = Package(
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
     .executable(name: "keyboard", targets: ["SlateKeyboardDemo"]),
-    .executable(name: "document", targets: ["SlateDocumentDemo"]),
     .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
     .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"]),
     .executable(name: "render-benchmark", targets: ["SlateRenderBenchmark"])
@@ -73,17 +72,6 @@ let package = Package(
       name: "SlateKittyGraphicsDemo",
       dependencies: ["Slate"],
       path: "Examples/SlateKittyGraphicsDemo",
-      swiftSettings: swiftSettings
-    ),
-    .executableTarget(
-      name: "SlateDocumentDemo",
-      dependencies: [
-        "Slate",
-        .product(name: "BasicContainers", package: "swift-collections"),
-        .product(name: "_RopeModule", package: "swift-collections"),
-        .product(name: "SystemPackage", package: "swift-system")
-      ],
-      path: "Examples/SlateDocumentDemo",
       swiftSettings: swiftSettings
     ),
     // Libraries: application lifecycle -> terminal extensions/backend -> UI composition and drawing.
@@ -202,11 +190,6 @@ let package = Package(
     .testTarget(
       name: "SlateGraphicsDemoTests",
       dependencies: ["SlateGraphicsDemo", "Slate", "CIOTestSupport"],
-      swiftSettings: [.enableExperimentalFeature("Lifetimes")]
-    ),
-    .testTarget(
-      name: "SlateDocumentDemoTests",
-      dependencies: ["SlateDocumentDemo", "Slate"],
       swiftSettings: [.enableExperimentalFeature("Lifetimes")]
     ),
     .testTarget(

@@ -2,8 +2,8 @@
 /// reads, and file validation. Callers own byte offsets and recovery policy.
 /// Invalid input resets the scalar; a rejected continuation is not consumed by
 /// callers that need to reconsider it as a fresh terminal byte.
-@usableFromInline package struct IncrementalUTF8Decoder: ~Copyable, Sendable {
-  @usableFromInline package enum Progress: Equatable, Sendable {
+public struct IncrementalUTF8Decoder: ~Copyable, Sendable {
+  public enum Progress: Equatable, Sendable {
     case pending
     case scalar(Unicode.Scalar)
     case invalid
@@ -14,18 +14,18 @@
   @usableFromInline var lower: UInt8
   @usableFromInline var upper: UInt8
 
-  @inlinable package init() {
+  @inlinable public init() {
     value = 0
     remaining = 0
     lower = 0x80
     upper = 0xbf
   }
-  @inlinable package var isComplete: Bool { remaining == 0 }
+  @inlinable public var isComplete: Bool { remaining == 0 }
 
-  // ABI visibility on this package-only type lets Swift serialize the body
+  // ABI visibility on the decoder storage lets Swift serialize the body
   // across targets without unsafe package-wide CMO flags. Keep byte dispatch
   // inline so file validation can discard unused scalar values.
-  @inlinable @inline(__always) package mutating func append(_ byte: UInt8) -> Progress {
+  @inlinable @inline(__always) public mutating func append(_ byte: UInt8) -> Progress {
     if remaining > 0 {
       guard byte >= lower && byte <= upper else {
         reset()
@@ -57,5 +57,5 @@
     return .pending
   }
 
-  @inlinable package mutating func reset() { remaining = 0 }
+  @inlinable public mutating func reset() { remaining = 0 }
 }
