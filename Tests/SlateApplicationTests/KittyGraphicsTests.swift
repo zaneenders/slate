@@ -22,10 +22,7 @@ import Glibc
   try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
   #expect(application.received == ["31:OK", "attributes", "q"])
   expectEqual(try attributes(of: pty.slave), saved)
-  let input = try Input(fileDescriptor: pty.master)
-  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
-  let count = try input.read(into: bytes.mutableSpan)
-  let text = bytes.span.extracting(first: count).withUnsafeBufferPointer { unsafe String(decoding: $0, as: UTF8.self) }
+  let text = try terminalOutput(from: pty.master)
   #expect(text.contains("\u{1b}_Ga=q,t=d,f=24,s=1,v=1,i=31;AAAA\u{1b}\\\u{1b}[c"))
   #expect(text.contains("\u{1b}[?1049l"))
 }

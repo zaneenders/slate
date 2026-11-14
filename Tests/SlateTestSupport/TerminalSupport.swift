@@ -43,6 +43,41 @@ package struct PseudoTerminal: ~Copyable {
 
 private enum TestError: Error {
   case system(Int32)
+  case outputCapacity
+  case outputTimeout
+}
+
+/// Collects bounded PTY output through terminal restoration. Reads may split
+/// writes arbitrarily, including an initial echo separated from application I/O.
+package func terminalOutput(from descriptor: Int32) throws -> String {
+  let clock = ContinuousClock()
+  let deadline = clock.now.advanced(by: .seconds(3))
+  var result: [UInt8] = []
+  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
+  while clock.now < deadline {
+    var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+    let ready = unsafe poll(&readiness, 1, 20)
+    if ready < 0 {
+      if errno == EINTR { continue }
+      throw TestError.system(errno)
+    }
+    if ready == 0 { continue }
+    guard readiness.revents & Int16(POLLIN) != 0 else { throw TestError.system(EIO) }
+    let count: Int
+    do {
+      var storage = bytes.mutableSpan
+      count = storage.withUnsafeMutableBufferPointer {
+        unsafe read(descriptor, $0.baseAddress, $0.count)
+      }
+    }
+    if count < 0 && errno == EINTR { continue }
+    guard count > 0 else { throw TestError.system(count < 0 ? errno : EIO) }
+    guard result.count + count <= 256 * 1_024 else { throw TestError.outputCapacity }
+    for index in 0..<count { result.append(bytes[index]) }
+    let text = String(decoding: result, as: UTF8.self)
+    if text.contains("\u{1b}[?1049l") { return text }
+  }
+  throw TestError.outputTimeout
 }
 
 package func attributes(of descriptor: Int32) throws -> termios {

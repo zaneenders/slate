@@ -51,10 +51,7 @@ private func graphicsLifecycleTerminal() throws -> PseudoTerminal {
 }
 
 private func expectGraphicsCleanupBeforeScreenRestore(on descriptor: Int32) throws {
-  let input = try Input(fileDescriptor: descriptor)
-  var bytes = InlineArray<4_096, UInt8>(repeating: 0)
-  let count = try input.read(into: bytes.mutableSpan)
-  let text = bytes.span.extracting(first: count).withUnsafeBufferPointer { unsafe String(decoding: $0, as: UTF8.self) }
+  let text = try terminalOutput(from: descriptor)
   // The cleanup command must precede the final cursor and main-screen restore.
   let deletion = try #require(text.range(of: "\u{1b}_Ga=d,d=I,i=123,q=2\u{1b}\\"))
   let restored = try #require(text.range(of: "\u{1b}[?25h\u{1b}[?1049l"))
