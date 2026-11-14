@@ -30,6 +30,10 @@ public struct Rect: Equatable, Sendable {
   @inlinable public var bottom: Int { y + height }
   @inlinable public var isEmpty: Bool { width == 0 || height == 0 }
 
+  @inlinable public func contains(column: Int, row: Int) -> Bool {
+    column >= x && column < right && row >= y && row < bottom
+  }
+
   @inlinable public func intersection(_ other: Rect) -> Rect {
     let left = max(x, other.x)
     let top = max(y, other.y)

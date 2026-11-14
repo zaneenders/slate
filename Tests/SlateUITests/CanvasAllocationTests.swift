@@ -12,6 +12,37 @@ import Testing
 @Suite(.serialized)
 struct RenderAllocationTests {
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  func hitMapAllocationAcrossRegistrationLookupAndHiddenTargets() throws {
+    try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
+    let size = TerminalSize(columns: 80, rows: 24)
+    let hits = HitMap<Int>(capacity: 64)
+    let blocks = (0..<64).map { Text("target").hitRegion($0, in: hits) }
+    var surface = try Surface(maximumSize: size)
+    for _ in 0..<4 {
+      try surface.render(size: size) { BlockList(blocks[...]) }
+      _ = hits.hitTest(column: 0, row: 0)
+      _ = hits.bounds(for: 63)
+      try surface.render(size: size) { Text("hidden") }
+    }
+    let budget = surface.storageBudgetBytes + hits.storageBudgetBytes
+    cli_test_begin_allocation_count()
+    do throws(SurfaceError) {
+      for _ in 0..<32 {
+        try surface.render(size: size) { BlockList(blocks[...]) }
+        _ = hits.hitTest(column: 0, row: 0)
+        _ = hits.bounds(for: 63)
+        try surface.render(size: size) { Text("hidden") }
+      }
+    } catch {
+      _ = cli_test_end_allocation_count()
+      throw error
+    }
+    let calls = cli_test_end_allocation_count()
+    #expect(calls == 0 && hits.count == 0)
+    #expect(surface.storageBudgetBytes + hits.storageBudgetBytes == budget)
+  }
+
+  @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
   func fixedLayoutAllocationAtMaximumCapacityAndExhaustion() throws {
     try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
     let size = TerminalSize(columns: Surface.maximumColumns, rows: Surface.maximumRows)
@@ -49,7 +80,9 @@ struct RenderAllocationTests {
     #expect(rejections == 4 && rejectionCalls <= UInt64(rejections) * 2)
     #expect(surface.storageBudgetBytes == initialBudget)
     #expect(surface.cell(x: 0, y: 0)?.glyph.scalar == "x")
-    print("Fixed layout: \(limits.nodeCapacity) nodes, \(initialBudget) bytes; \(renderCalls) render allocations; \(rejectionCalls) rejection diagnostics")
+    print(
+      "Fixed layout: \(limits.nodeCapacity) nodes, \(initialBudget) bytes; \(renderCalls) render allocations; \(rejectionCalls) rejection diagnostics"
+    )
   }
 
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))

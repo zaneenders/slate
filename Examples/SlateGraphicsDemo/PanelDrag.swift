@@ -5,6 +5,9 @@ import Slate
 final class PanelDrag: ~Sendable {
   static let width = 30
   static let height = 7
+  enum Target: Hashable { case panel }
+  let hits = HitMap<Target>(capacity: 1)
+  private var capture = MouseCapture<Target>()
 
   private struct Offset {
     var column: Int
@@ -17,7 +20,7 @@ final class PanelDrag: ~Sendable {
   private(set) var container = Rect(width: 0, height: 0)
   private(set) var bounds = Rect(width: 0, height: 0)
 
-  var isDragging: Bool { grab != nil }
+  var isDragging: Bool { capture.target != nil }
   var column: Int { bounds.x - container.x }
   var row: Int { bounds.y - container.y }
 
@@ -37,26 +40,28 @@ final class PanelDrag: ~Sendable {
     if position != nil { position = Offset(column: column, row: row) }
   }
 
-  func cancel() { grab = nil }
+  func cancel() {
+    grab = nil
+    capture.end()
+  }
 
   func handle(_ event: MouseEvent) -> ScreenUpdate {
     switch event.action {
     case .press:
       cancel()
-      if event.button == .left && !bounds.isEmpty && event.row == bounds.y
-        && event.column >= bounds.x && event.column < bounds.right
-      {
-        grab = Offset(column: event.column - bounds.x, row: event.row - bounds.y)
+      if event.button == .left, let hit = hits.hitTest(event), hit.row == 0 {
+        capture.begin(hit, in: hits)
+        grab = Offset(column: hit.column, row: hit.row)
       }
       return .none
     case .move:
-      guard event.button == .left else {
+      guard capture.route(event) != nil else {
         cancel()
         return .none
       }
       return move(to: event)
     case .release:
-      let update = event.button == .left || event.button == .none ? move(to: event) : .none
+      let update = capture.route(event) != nil ? move(to: event) : .none
       cancel()
       return update
     case .scrollUp, .scrollDown, .scrollLeft, .scrollRight:

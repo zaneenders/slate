@@ -3,9 +3,10 @@ import Testing
 
 @testable import SlateGraphicsDemo
 
-@Test func panelDragStartsCenteredAndOnlyCapturesItsTitleBar() {
+@Test func panelDragStartsCenteredAndOnlyCapturesItsTitleBar() throws {
   let drag = PanelDrag()
-  drag.prepare(in: .init(columns: 80, rows: 24))
+  var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
   #expect(drag.bounds == Rect(x: 25, y: 8, width: 30, height: 7))
   for event in [
     MouseEvent(action: .press, button: .right, column: 30, row: 8),
@@ -22,9 +23,10 @@ import Testing
   #expect(drag.bounds == Rect(x: 25, y: 8, width: 30, height: 7))
 }
 
-@Test func panelDragPreservesGrabOffsetAndAppliesFinalReleasePosition() {
+@Test func panelDragPreservesGrabOffsetAndAppliesFinalReleasePosition() throws {
   let drag = PanelDrag()
-  drag.prepare(in: .init(columns: 80, rows: 24))
+  var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
   _ = drag.handle(.init(action: .press, button: .left, column: 30, row: 8))
   #expect(drag.handle(.init(action: .move, button: .left, column: 14, row: 5)) == .redraw)
   #expect(drag.bounds == Rect(x: 9, y: 5, width: 30, height: 7))
@@ -35,9 +37,10 @@ import Testing
   #expect(drag.handle(.init(action: .move, button: .left, column: 20, row: 5)) == .none)
 }
 
-@Test func panelDragClampsWholePanelAndRecoversFromMissingRelease() {
+@Test func panelDragClampsWholePanelAndRecoversFromMissingRelease() throws {
   let drag = PanelDrag()
-  drag.prepare(in: .init(columns: 80, rows: 24))
+  var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
   _ = drag.handle(.init(action: .press, button: .left, column: 30, row: 8))
   #expect(drag.handle(.init(action: .move, button: .left, column: 65_534, row: 65_534)) == .redraw)
   #expect(drag.bounds == Rect(x: 49, y: 14, width: 30, height: 7))
@@ -47,32 +50,42 @@ import Testing
   #expect(!drag.isDragging)
   #expect(drag.handle(.init(action: .move, button: .left, column: 40, row: 12)) == .none)
   #expect(drag.bounds == Rect(x: 1, y: 3, width: 30, height: 7))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
   _ = drag.handle(.init(action: .press, button: .left, column: 4, row: 3))
   #expect(drag.handle(.init(action: .release, column: 20, row: 10)) == .redraw)
   #expect(!drag.isDragging)
   #expect(drag.bounds == Rect(x: 17, y: 10, width: 30, height: 7))
 }
 
-@Test func panelDragResizeCancelsCaptureAndClampsRememberedPosition() {
+@Test func panelDragResizeCancelsCaptureAndClampsRememberedPosition() throws {
   let drag = PanelDrag()
-  drag.prepare(in: .init(columns: 80, rows: 24))
-  drag.prepare(in: .init(columns: 100, rows: 40))
+  var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
+  try preparePanelDrag(drag, in: .init(columns: 100, rows: 40), surface: &surface)
   #expect(drag.bounds == Rect(x: 35, y: 16, width: 30, height: 7))
   _ = drag.handle(.init(action: .press, button: .left, column: 40, row: 16))
   _ = drag.handle(.init(action: .move, button: .left, column: 90, row: 30))
-  drag.prepare(in: .init(columns: 80, rows: 24))
+  try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
   #expect(!drag.isDragging)
   #expect(drag.bounds == Rect(x: 49, y: 14, width: 30, height: 7))
-  drag.prepare(in: .init(columns: 100, rows: 40))
+  try preparePanelDrag(drag, in: .init(columns: 100, rows: 40), surface: &surface)
   #expect(drag.bounds == Rect(x: 49, y: 14, width: 30, height: 7))
   for size in [TerminalSize(columns: 10, rows: 10), .init(columns: 0, rows: 0), .init(columns: 1, rows: 1)] {
-    drag.prepare(in: size)
+    try preparePanelDrag(drag, in: size, surface: &surface)
     #expect(drag.bounds.right <= drag.container.right)
     #expect(drag.bounds.bottom <= drag.container.bottom)
     #expect(!drag.isDragging)
   }
   #expect(drag.handle(.init(action: .press, button: .left, column: 1, row: 1)) == .none)
   #expect(!drag.isDragging)
+}
+
+private func preparePanelDrag(_ drag: PanelDrag, in size: TerminalSize, surface: inout Surface) throws {
+  drag.prepare(in: size)
+  try surface.render(size: size) {
+    Text("").frame(width: .fixed(drag.bounds.width), height: .fixed(drag.bounds.height))
+      .hitRegion(.panel, in: drag.hits).position(column: drag.bounds.x, row: drag.bounds.y)
+  }
 }
 
 @Test func graphicsDemoHidingCancelsDragAndReopeningRetainsPosition() throws {

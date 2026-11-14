@@ -136,8 +136,60 @@ Coordinates must be `0...65_535`. Content keeps its requested size, clipped to
 the parent; its origin is clamped so it stays inside. The position wrapper fills
 its layout slot and adds one node without allocating another grid. Applications
 own mouse handling: enable `mouseTracking` in the configuration and handle
-`.mouse` events. The showcase uses one startup-owned drag state with no event
-queue, preserving the grab offset and cancelling capture on hide or resize.
+`.mouse` events.
+
+## Mouse hit regions
+
+Create a `HitMap` once and tag interactive blocks. Layout records their resolved
+bounds, so hit-testing follows padding, borders, alignment, positioning, and resizing:
+
+```swift
+enum Target: Hashable { case save, panel }
+private let hits = HitMap<Target>(capacity: 32)
+private var capture = MouseCapture<Target>()
+
+// Inside render:
+Text("Save").padding(1).border().hitRegion(.save, in: hits)
+
+// Inside event's .mouse case:
+if let hit = hits.hitTest(mouse), mouse.action == .press, mouse.button == .left {
+  switch hit.id {
+  case .save: return save()
+  case .panel: capture.begin(hit, in: hits)
+  }
+}
+```
+
+`hit.column` and `hit.row` are local to `hit.bounds`; `clippedBounds` intersects
+the surface viewport. Apply `hitRegion` after padding/border to include them,
+and before `position` to target the content rather than the positioner's full slot.
+Hit regions add one layout node and preserve their child's sizing. For custom
+blocks emitting several siblings, the modifier groups them in one overlay region,
+like `background` or `border`.
+
+The frontmost registered region wins, with nested targets taking precedence over
+their enclosing target. Untagged decoration passes through. Use
+`.blocksMouse(in: hits)` on a panel to block targets behind its full rectangle;
+nested targets inside it still work. Blocking applies within the same map.
+IDs should be unique; repeated IDs use the frontmost registration for bounds and capture.
+
+After starting a drag, call `capture.route(mouse)` before ordinary hit-testing.
+It returns the captured target even outside its bounds, using its latest geometry;
+local coordinates can be negative. Release returns the final position and ends
+capture. A new press or movement without the captured button cancels it. Hidden
+or empty targets and viewport changes also invalidate capture, even if the same
+ID reappears before the next event. Keep the initial grab offset in application
+state. The graphics showcase demonstrates dragging by the panel's top row.
+
+Maps have fixed startup capacity, including blockers. Exhaustion throws
+`.layout(.hitRegionCapacityExceeded)` and preserves both the previous frame and
+every map's previous snapshot. Successful surface renders replace all registered
+regions, clearing omitted targets and maps. One map belongs to one live surface;
+sharing it throws `.layout(.hitMapInUse)`. Surface destruction releases that
+ownership and clears the snapshot. Maps describe successful **surface renders**;
+terminal output failure may leave a partially presented frame. For `ScreenRegion`,
+convert terminal coordinates to region-local coordinates before calling
+`hitTest(column:row:)`.
 
 ## Colors and terminal settings
 
@@ -184,10 +236,11 @@ their own `output.graphemeClustering()` scope.
   `.layout(.blockVisitLimitExceeded)` before painting or output, preserving the
   previous frame. Invalid budgets throw `.invalidCapacity` during initialization.
   `nodeCapacity` and `storageBudgetBytes` stay fixed. Layout element storage costs
-  nodeCapacity times the sum of the node and drawing-payload strides; Canvas and
-  input fields share the drawing table (16 bytes per slot on 64-bit hosts).
-  On the pinned 64-bit toolchain, both tables total 768 KiB by default and 24 MiB
-  at maximum capacity. Painting cost also scales with the cells touched across layers.
+  nodeCapacity times the sum of the node and payload strides, plus two fixed lists
+  of hit-map owners. Canvas, input fields, and hit regions share the payload table.
+  Each `HitMap` separately owns two fixed record buffers and an ID lookup table;
+  its `storageBudgetBytes` reports that storage. Painting cost also scales with
+  the cells touched across layers.
   Caller computations inside `render`, `body`, and `paint`, caller-owned strings,
   and source-collection construction remain outside the traversal/allocation bounds.
 - Drawing runs once per nonempty canvas, in block order, after successful layout.

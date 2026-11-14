@@ -83,6 +83,7 @@ struct SlateGraphicsDemo: ScreenApplication {
           }
           .padding(1).border("Overlay", style: Palette.border)
           .background(Palette.panel).frame(width: .fixed(PanelDrag.width), height: .fixed(PanelDrag.height))
+          .hitRegion(.panel, in: panelDrag.hits)
           .position(column: panelDrag.column, row: panelDrag.row)
         }
       }.frame(width: .fill, height: .fill)

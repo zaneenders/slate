@@ -49,8 +49,8 @@ public enum LayoutLimits: Sendable {
 /// blocks. Arbitrary work performed inside application callbacks remains caller-owned.
 /// Invalid budgets are rejected by Surface/Screen initialization before allocation.
 public struct LayoutBudget: Equatable, Sendable {
-  // On the pinned 64-bit toolchain, the two tables use 192 bytes per node:
-  // 768 KiB by default and 24 MiB at this maximum, excluding cells and owners.
+  // Surface reports the node/payload tables and fixed hit-map owner lists in
+  // storageBudgetBytes. Application-owned HitMaps report their own storage.
   public static let maximumNodeCapacity = 131_072
   public static let maximumBlockVisitsLimit = 1_048_576
 
@@ -74,4 +74,7 @@ public enum LayoutError: Error, Equatable, Sendable {
   case nodeCapacityExceeded
   case blockVisitLimitExceeded
   case textTooLong
+  case hitRegionCapacityExceeded
+  /// A hit map can belong to only one live surface at a time.
+  case hitMapInUse
 }

@@ -25,11 +25,12 @@ public struct Surface: ~Copyable, ~Sendable {
 
   /// Current inline owner and retained element storage, excluding allocator
   /// metadata and caller-owned text. Fixed for the lifetime of this surface.
-  /// Layout payload is nodeCapacity * (LayoutNode stride + BlockDrawing? stride).
+  /// Layout includes node/payload tables and two fixed hit-map owner lists.
   public var storageBudgetBytes: Int {
     maximumSize.columns * maximumSize.rows * MemoryLayout<Cell>.stride
       + nodeCapacity * MemoryLayout<LayoutNode>.stride
       + nodeCapacity * MemoryLayout<BlockDrawing?>.stride
+      + layout.hitMaps.storageBudgetBytes
       + MemoryLayout<Self>.stride
   }
 
@@ -83,6 +84,7 @@ public struct Surface: ~Copyable, ~Sendable {
       paint(&frame)
     }
     self.size = size
+    layout.hitMaps.commit(in: Rect(width: size.columns, height: size.rows))
   }
 
   public mutating func render(
@@ -96,6 +98,7 @@ public struct Surface: ~Copyable, ~Sendable {
       render(&frame)
     }
     self.size = size
+    layout.hitMaps.commit(in: Rect(width: size.columns, height: size.rows))
   }
 
   private borrowing func validate(_ size: TerminalSize) throws(SurfaceError) {

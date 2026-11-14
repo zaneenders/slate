@@ -3,7 +3,9 @@ import BasicContainers
 // Optimized presenters need the metadata for Surface's generic storage.
 // Keep it ABI-visible while layout nodes remain internal to SlateUI.
 @usableFromInline struct LayoutNode: Sendable {
-  enum Kind: Sendable { case root, row, column, overlay, positioned, frame, padding, border, background, text, drawing }
+  enum Kind: Sendable {
+    case root, row, column, overlay, positioned, frame, padding, border, background, text, drawing, hitRegion
+  }
   var kind: Kind = .root
   // Position coordinates fit before the next 8-byte-aligned field. Drawing
   // indices use Int, like node indices, so configured storage can exceed 65,536.
@@ -33,6 +35,7 @@ import BasicContainers
 @usableFromInline enum BlockDrawing: ~Sendable {
   case input(TextInput)
   case canvas(any CanvasDrawing)
+  case hitRegion(any HitMapStorage, Int)
 }
 
 /// Compiler support for block rendering. Custom blocks compose through `body`.
@@ -41,6 +44,7 @@ import BasicContainers
 public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
   private var nodes: MutableSpan<LayoutNode>
   private var drawings: MutableSpan<BlockDrawing?>
+  private let hitMaps: HitMapFrame
   private var remainingBlockVisits: Int
   private var buildDepth = 0
   private var drawingCount = 0
@@ -49,12 +53,16 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
   private(set) var count = 1
 
   @_lifetime(&nodes, &drawings)
-  init(nodes: inout RigidArray<LayoutNode>, drawings: inout RigidArray<BlockDrawing?>, maximumBlockVisits: Int) {
+  init(
+    nodes: inout RigidArray<LayoutNode>, drawings: inout RigidArray<BlockDrawing?>,
+    hitMaps: HitMapFrame, maximumBlockVisits: Int
+  ) {
     precondition(nodes.count > 0)
     precondition(drawings.count == nodes.count)
     precondition(maximumBlockVisits > 0)
     self.nodes = nodes.mutableSpan
     self.drawings = drawings.mutableSpan
+    self.hitMaps = hitMaps
     remainingBlockVisits = maximumBlockVisits
   }
 
@@ -120,6 +128,18 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
     drawingCount += 1
   }
 
+  mutating func hitRegion<Content: Block, ID: Hashable>(
+    _ content: borrowing Content, id: ID?, map: HitMap<ID>
+  ) throws(LayoutError) {
+    try hitMaps.register(map)
+    let record = try map.append(id)
+    let previous = try begin(LayoutNode(kind: .hitRegion, drawingIndex: drawingCount))
+    defer { end(previous) }
+    drawings[drawingCount] = .hitRegion(map, record)
+    drawingCount += 1
+    try build(content)
+  }
+
   mutating func text(_ text: String, style: Style) throws(LayoutError) {
     var width = 0
     var maximumWidth = 0
@@ -158,6 +178,7 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
 struct LayoutTree: ~Copyable {
   private(set) var nodes: RigidArray<LayoutNode>
   private(set) var drawings: RigidArray<BlockDrawing?>
+  let hitMaps: HitMapFrame
   private let maximumBlockVisits: Int
   private(set) var count = 1
 
@@ -165,6 +186,7 @@ struct LayoutTree: ~Copyable {
     precondition(budget.isValid)
     nodes = RigidArray(repeating: LayoutNode(), count: budget.nodeCapacity)
     drawings = RigidArray(repeating: nil, count: budget.nodeCapacity)
+    hitMaps = HitMapFrame(capacity: budget.nodeCapacity)
     maximumBlockVisits = budget.maximumBlockVisits
   }
 
@@ -175,14 +197,22 @@ struct LayoutTree: ~Copyable {
   ) throws(LayoutError) {
     precondition(count == 1)
     do {
-      var builder = _BlockLayout(nodes: &nodes, drawings: &drawings, maximumBlockVisits: maximumBlockVisits)
+      var builder = _BlockLayout(
+        nodes: &nodes, drawings: &drawings, hitMaps: hitMaps,
+        maximumBlockVisits: maximumBlockVisits)
       defer { count = builder.count }
       try builder.build(content())
     }
     resolve(in: area)
+    for index in 0..<count where nodes[index].kind == .hitRegion {
+      if case .hitRegion(let map, let record) = drawings[nodes[index].drawingIndex]! {
+        map.setBounds(nodes[index].region, at: record)
+      }
+    }
   }
 
   mutating func reset() {
+    hitMaps.discardPending()
     // Also clears partially built trees after a build error, releasing caller text.
     for index in 0..<count { nodes[index] = LayoutNode() }
     // A contiguous prefix is populated, including a partially failed build.
@@ -198,6 +228,15 @@ struct LayoutTree: ~Copyable {
     for index in (0..<count).reversed() {
       let node = nodes[index]
       if node.kind == .text || node.kind == .drawing { continue }
+      if node.kind == .hitRegion && node.firstChild < 0 {
+        nodes[index].width = .fixed(0)
+        nodes[index].height = .fixed(0)
+      }
+      if node.kind == .hitRegion, node.firstChild >= 0, node.firstChild == node.lastChild {
+        let child = nodes[node.firstChild]
+        nodes[index].width = child.width
+        nodes[index].height = child.height
+      }
       var child = node.firstChild
       var width = 0
       var height = 0
@@ -229,6 +268,9 @@ struct LayoutTree: ~Copyable {
         placeChildren(of: index)
       } else if node.kind == .positioned {
         placePositionedChildren(of: index)
+      } else if node.kind == .hitRegion, node.firstChild >= 0, node.firstChild == node.lastChild {
+        nodes[node.firstChild].region = node.region
+        nodes[node.firstChild].inheritedBackground = node.inheritedBackground
       } else {
         let inner = node.region.inset(horizontal: node.horizontalPadding, vertical: node.verticalPadding)
         var child = node.firstChild
@@ -245,7 +287,14 @@ struct LayoutTree: ~Copyable {
 
   private mutating func place(_ index: Int, in slot: Rect, alignment: Alignment, expandContainers: Bool) {
     let node = nodes[index]
-    let expand = expandContainers && node.kind != .text && node.kind != .drawing
+    var sizing = index
+    while nodes[sizing].kind == .hitRegion, nodes[sizing].firstChild >= 0,
+      nodes[sizing].firstChild == nodes[sizing].lastChild
+    {
+      sizing = nodes[sizing].firstChild
+    }
+    let kind = nodes[sizing].kind
+    let expand = expandContainers && kind != .text && kind != .drawing
     let width =
       expand && node.width == .fit ? slot.width : node.width.resolved(node.measuredWidth, available: slot.width)
     let height =

@@ -13,6 +13,7 @@ extension LayoutTree {
           input.paint(in: node.region, frame: &frame, focused: node.focused, placeholder: node.text, style: style)
         case .canvas(let drawing):
           frame.withRegion(node.region) { drawing.paint(in: &$0) }
+        case .hitRegion: break
         }
       case .text: frame.text(node.text, in: node.region, style: style)
       case .border: frame.border(node.region, title: node.text, style: style)
