@@ -379,10 +379,6 @@ swift run -c release kitty-graphics
 ## Development
 
 Regular tests generate their own fixtures and need no local document files.
-GitHub Actions runs debug/release tests, allocation checks, and rendering
-benchmarks on Ubuntu 24.04 and the [Xcode 27 macOS image](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md),
-using Swift 6.4.2. Benchmark JSON and the toolchain version are retained as CI artifacts;
-timing measurements have no machine-dependent pass/fail threshold.
 
 ```sh
 swift test
