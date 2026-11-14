@@ -1,9 +1,10 @@
 import Slate
+import SlateGamepad
 
 /// A studio for exploring layout, spatial focus, text, color, and images.
 /// All activity data and test runs are deterministic demo fixtures.
 @main
-struct SlateNavigationDemo: ScreenApplication {
+struct SlateNavigationDemo: ~Copyable, ScreenApplication {
   let focus = FocusState<NavigationTarget>(capacity: 40, initial: .overview)
   let input = try! TextInput("Edit me", capacity: 128)
   let scratchpad = try! TextInput("A note that stays here", capacity: 128)
@@ -33,6 +34,9 @@ struct SlateNavigationDemo: ScreenApplication {
   var placedImageID: UInt32?
   private var pageNeedsLayout = false
   private var deferredDirection: FocusDirection?
+  var controllerEnabled = CommandLine.arguments.contains("--controller")
+  private var gamepad = Gamepad()
+  private var animationElapsed = Duration.zero
 
   var palette: StudioPalette { StudioPalette(light: lightTheme) }
   static var configuration: ScreenApplicationConfiguration {
@@ -41,7 +45,8 @@ struct SlateNavigationDemo: ScreenApplication {
       capabilities: .init(color: .trueColor, unicode: .grapheme))
   }
   var tickInterval: Duration? {
-    (page == .overview && animating) || runningTests ? .milliseconds(100) : nil
+    if controllerEnabled { return .milliseconds(16) }
+    return (page == .overview && animating) || runningTests ? .milliseconds(100) : nil
   }
   var hasPendingWork: Bool { deferredDirection != nil && !pageNeedsLayout }
 
@@ -55,8 +60,12 @@ struct SlateNavigationDemo: ScreenApplication {
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
     switch event {
-    case .tick:
-      var changed = false
+    case .tick(let elapsed):
+      var changed = pollController(copyBuffer: &copyBuffer)
+      // Controller polling stays responsive without accelerating the animations.
+      animationElapsed += elapsed
+      guard animationElapsed >= .milliseconds(100) else { return changed ? .redraw : .none }
+      animationElapsed = animationElapsed < .milliseconds(200) ? animationElapsed - .milliseconds(100) : .zero
       if page == .overview && animating {
         signal.phase = (signal.phase + 2) % 64
         changed = true
@@ -107,6 +116,64 @@ struct SlateNavigationDemo: ScreenApplication {
       }
       return .redraw
     default: return .none
+    }
+  }
+
+  private mutating func pollController(copyBuffer: inout CopyBuffer) -> Bool {
+    guard controllerEnabled else { return false }
+    let previousStatus = gamepad.status
+    let actions = gamepad.poll(at: .now)
+    var changed = previousStatus != gamepad.status
+    for index in 0..<actions.count {
+      if handleController(actions[index], copyBuffer: &copyBuffer) == .redraw { changed = true }
+    }
+    return changed
+  }
+
+  mutating func handleController(_ action: GamepadAction, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    switch action {
+    case .move(let direction):
+      let key: InputKey
+      switch direction {
+      case .up: key = .up
+      case .down: key = .down
+      case .left: key = .left
+      case .right: key = .right
+      }
+      return handle(key, modifiers: [], copyBuffer: &copyBuffer)
+    case .activate: return handle(.enter, modifiers: [], copyBuffer: &copyBuffer)
+    case .back:
+      deferredDirection = nil
+      if editing {
+        editing = false
+        lastAction = "Navigation mode"
+      } else {
+        let sidebar: NavigationTarget
+        switch page {
+        case .overview: sidebar = .overview
+        case .sources: sidebar = .sources
+        case .tests: sidebar = .tests
+        case .docs: sidebar = .docs
+        case .tools: sidebar = .tools
+        case .gallery: sidebar = .gallery
+        }
+        _ = focus.focus(sidebar)
+        lastAction = "Choose a page with the D-pad or left stick"
+      }
+      return .redraw
+    case .pause:
+      guard page == .overview && !editing else { return .none }
+      animating.toggle()
+      return .redraw
+    }
+  }
+
+  private var controllerHint: String {
+    switch gamepad.status {
+    case .connected: return "PAD / D-pad or stick focus / Cross explore / Circle back / Square pause"
+    case .disconnected: return "PAD / waiting for a controller"
+    case .permissionDenied: return "PAD / input device access denied / see README"
+    case .unavailable: return "PAD / device unavailable / retrying"
     }
   }
 
@@ -280,6 +347,9 @@ struct SlateNavigationDemo: ScreenApplication {
       }
       Column {
         Text(lastAction, style: Style(foreground: palette.muted, background: palette.background))
+        if controllerEnabled {
+          Text(controllerHint, style: Style(foreground: accent, background: palette.background))
+        }
         Text(
           editing ? "EDIT / Esc navigate / Ctrl-Q quit" : "↑↓←→ focus / Enter explore / Q quit",
           style: Style(foreground: palette.text, background: palette.background))

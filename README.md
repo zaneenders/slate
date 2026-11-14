@@ -291,6 +291,77 @@ Applications choose highlights, key bindings, editing, and activation. Arrows ar
 ordinary input events; `FocusState` never takes them away from an editor. The demo
 uses an explicit Enter/Escape interaction mode to make the two roles visible.
 
+## Optional gamepad navigation
+
+The separate `SlateGamepad` library product supports macOS and Linux. Add it to
+your executable's dependencies and `import SlateGamepad`; `import Slate` does
+not include or depend on it. Try the navigation demo with a connected controller:
+
+```sh
+swift run -c release navigation --controller
+```
+
+| PS5 control | Action |
+| --- | --- |
+| D-pad / left stick | Move spatial focus; move the caret while editing. |
+| Cross | Activate the focused control, or enter/finish editing. |
+| Circle | Leave editing, then return focus to the current page's sidebar item. |
+| Square | Pause/resume the Overview animation. |
+
+Use Q or Ctrl-Q to quit. Circle never quits. Without `--controller`, the demo
+keeps its keyboard/mouse behavior and does not open a controller reader.
+With the flag it polls every 16 ms, including pages without animation, while
+animations and simulated tests retain their 100 ms update cadence.
+
+`Gamepad` is a noncopyable owner. Keep one for the session and call
+`poll(at: ContinuousClock.now)` from each tick. Its result is an inline
+`GamepadActions` batch: iterate `0..<actions.count`, then handle `.move(direction)`,
+`.activate`, `.back`, and `.pause` in application code. Movement uses the existing
+`FocusDirection` type. `status` distinguishes connected, disconnected, Linux
+permission denial, and other device errors. `GamepadNavigation.update(_:at:)`
+also accepts synthetic `GamepadState` values for testing or other input sources.
+
+Directions repeat after 350 ms, then every 100 ms. Late polls emit at most one
+repeat. Stick engagement starts at 0.55, releases below 0.35, and chooses the
+dominant axis (vertical on ties). The D-pad takes precedence; opposing directions
+cancel. Buttons activate on press edges. A new connection requires neutral
+controls before accepting input, and disconnect clears held controls/repeats.
+Sampling can miss a complete press/release between polls.
+
+On macOS, Apple's [GameController framework](https://developer.apple.com/documentation/gamecontroller)
+provides extended gamepad profiles, including DualSense. Poll on the main thread;
+each sample services one ready default run-loop source without waiting. Discovery
+checks at most 16 controllers every 250 ms; unplug detection can take that long.
+Only one active reader per process is supported. It enables background controller
+input for the terminal process and restores the previous process-wide setting
+when destroyed. Framework queues, device lists, and run-loop callbacks are owned
+by macOS and are outside Slate's allocation/work bounds.
+
+On Linux, the reader scans `/dev/input/event0` through `event63` at most once per
+second while disconnected. The first readable gamepad with south/east buttons
+and ABS_X/Y axes wins; additional controllers wait until it disconnects. D-pad
+hat axes and digital D-pad buttons are supported. The kernel's
+[evdev current-state ioctls](https://www.kernel.org/doc/html/latest/input/event-codes.html)
+take at most five calls per sample, with no retry or event-draining loop; kernel
+event queue overflow cannot leave held state stuck. A small C target supplies
+ioctl macros unavailable through Swift System; Swift System owns open/close.
+No new package dependency is needed. If access is denied, grant the current
+user read access to the controller's event node through your distribution's
+device/session rules. Keyboard navigation remains available during retries.
+
+The translator and action batch use fixed inline storage, budgeted by
+`MemoryLayout<GamepadNavigation>.stride + MemoryLayout<GamepadActions>.stride`.
+This is 32 + 16 = 48 bytes on the tested macOS/Linux 64-bit toolchains.
+There is no queue or capacity growth: a sample can emit at most two button actions
+and one move, filling its three inline slots. Callers cannot insert into the
+batch; an internal bound violation traps. Missed samples/repeats are dropped.
+The allocation probe verifies warmed release translation at maximum action load,
+held/repeat boundaries, and reconnects. Native discovery is an explicitly allowed
+allocation path: macOS bridges the device list; Linux creates at most 64 bounded
+device paths per scan, holding one candidate descriptor at a time. OS/framework
+storage, initialization, and caller event handlers are outside the verified
+allocation guarantee.
+
 ## Colors and terminal settings
 
 Use `Color.rgb(red, green, blue)` with byte channels for explicit color. Select

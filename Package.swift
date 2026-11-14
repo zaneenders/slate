@@ -21,6 +21,7 @@ let package = Package(
   platforms: [.macOS(.v27)],
   products: [
     .library(name: "Slate", targets: ["Slate"]),
+    .library(name: "SlateGamepad", targets: ["SlateGamepad"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
     .executable(name: "document", targets: ["SlateDocumentDemo"]),
@@ -45,7 +46,7 @@ let package = Package(
     // Demo
     .executableTarget(
       name: "SlateNavigationDemo",
-      dependencies: ["Slate"],
+      dependencies: ["Slate", "SlateGamepad"],
       path: "Examples/SlateNavigationDemo",
       swiftSettings: swiftSettings
     ),
@@ -79,6 +80,18 @@ let package = Package(
       swiftSettings: swiftSettings
     ),
     // Libraries: application lifecycle -> terminal extensions/backend -> UI composition and drawing.
+    .target(
+      name: "SlateGamepad",
+      dependencies: [
+        "SlateUI",
+        .target(name: "CLinuxGamepad", condition: .when(platforms: [.linux])),
+        .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.linux]))
+      ],
+      swiftSettings: swiftSettings,
+      linkerSettings: [.linkedFramework("GameController", .when(platforms: [.macOS]))]
+    ),
+    // Only Linux ioctl macros need a C boundary; ownership stays in Swift.
+    .target(name: "CLinuxGamepad"),
     .target(
       name: "Slate",
       dependencies: [
@@ -152,8 +165,17 @@ let package = Package(
 
     // Tests
     .testTarget(
+      name: "SlateGamepadTests",
+      dependencies: [
+        "SlateGamepad", "CIOTestSupport",
+        .target(name: "CLinuxGamepad", condition: .when(platforms: [.linux])),
+        .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.linux]))
+      ],
+      swiftSettings: [.enableExperimentalFeature("Lifetimes")]
+    ),
+    .testTarget(
       name: "SlateNavigationDemoTests",
-      dependencies: ["SlateNavigationDemo", "Slate", "SlateTestSupport"]
+      dependencies: ["SlateNavigationDemo", "Slate", "SlateGamepad", "SlateTestSupport"]
     ),
     .testTarget(
       name: "SlateKittyGraphicsDemoTests",
