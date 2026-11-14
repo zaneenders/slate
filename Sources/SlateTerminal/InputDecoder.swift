@@ -283,7 +283,9 @@ public struct InputDecoder: ~Copyable, Sendable {
       return Step(.terminalReply(.primaryAttributes))
     }
     let key: InputEvent?
-    if state == .csi, sequence[2] == 0x3c {
+    if state == .csi, byte == 0x75 {
+      key = unicodeKeyEvent()
+    } else if state == .csi, sequence[2] == 0x3c {
       key = mouseEvent(final: byte)
     } else {
       key = sequenceEvent(final: byte)
@@ -308,7 +310,7 @@ public struct InputDecoder: ~Copyable, Sendable {
           sawDigit = false
         } else if (0x30...0x39).contains(byte) {
           if hasModifier { modifier = modifier * 10 + Int(byte - 0x30) } else { first = first * 10 + Int(byte - 0x30) }
-          guard first <= 24, modifier <= 8 else { return nil }
+          guard first <= 24, modifier <= 256 else { return nil }
           sawDigit = true
         } else {
           return nil
@@ -316,7 +318,7 @@ public struct InputDecoder: ~Copyable, Sendable {
       }
       guard sawDigit else { return nil }
     }
-    guard (1...8).contains(modifier) else { return nil }
+    guard (1...256).contains(modifier) else { return nil }
     var modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
     let key: InputKey
     if final != 0x7e {
@@ -363,6 +365,72 @@ public struct InputDecoder: ~Copyable, Sendable {
       default: return nil
       }
     }
+    return modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
+  }
+
+  /// CSI u keys from Kitty's disambiguate-escape-codes enhancement. Other
+  /// enhancements (alternate keys, release events and associated text) are not
+  /// requested, so accepting their extra fields would lose input information.
+  private borrowing func unicodeKeyEvent() -> InputEvent? {
+    var codepoint: UInt32 = 0
+    var modifier: UInt32 = 1
+    var hasModifier = false
+    var sawDigit = false
+    for index in 2..<(sequenceByteCount - 1) {
+      let byte = sequence[index]
+      if byte == 0x3b, !hasModifier, sawDigit {
+        hasModifier = true
+        modifier = 0
+        sawDigit = false
+      } else if (0x30...0x39).contains(byte) {
+        if hasModifier {
+          modifier = modifier * 10 + UInt32(byte - 0x30)
+          guard modifier <= 256 else { return nil }
+        } else {
+          codepoint = codepoint * 10 + UInt32(byte - 0x30)
+          guard codepoint <= 0x10ffff else { return nil }
+        }
+        sawDigit = true
+      } else {
+        return nil
+      }
+    }
+    guard sawDigit, (1...256).contains(modifier) else { return nil }
+    let key: InputKey
+    switch codepoint {
+    case 9: key = .tab
+    case 13: key = .enter
+    case 27: key = .escape
+    case 127: key = .backspace
+    // Disambiguation gives keypad keys distinct codes. Preserve their ordinary
+    // equivalents in InputKey, which does not distinguish keypad locations.
+    case 57399...57408: key = .character(Unicode.Scalar(UInt8(codepoint - 57399 + 48)))
+    case 57409: key = .character(".")
+    case 57410: key = .character("/")
+    case 57411: key = .character("*")
+    case 57412: key = .character("-")
+    case 57413: key = .character("+")
+    case 57414: key = .enter
+    case 57415: key = .character("=")
+    case 57416: key = .character(",")
+    case 57417: key = .left
+    case 57418: key = .right
+    case 57419: key = .up
+    case 57420: key = .down
+    case 57421: key = .pageUp
+    case 57422: key = .pageDown
+    case 57423: key = .home
+    case 57424: key = .end
+    case 57425: key = .insert
+    case 57426: key = .delete
+    case 0x20...0x7e, 0xa0...0xd7ff, 0xe000...0x10ffff:
+      guard let scalar = Unicode.Scalar(codepoint), !(57344...63743).contains(codepoint) else {
+        return nil
+      }
+      key = .character(scalar)
+    default: return nil
+    }
+    let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
     return modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
   }
 

@@ -18,6 +18,12 @@ Edit `render` to change the screen and `event` to change how it responds to inpu
 Return `.redraw` after changing state, `.none` when nothing changes, or `.quit`
 to exit. Slate handles terminal setup, cleanup, and resizing.
 
+Raw-mode keys belong to the application, including **Ctrl-Z**. Legacy Ctrl-Z
+arrives as `.key(.control(.z))`; enhanced keyboard input reports
+`.key(.character("z"), modifiers: .control)`, possibly with lock-state bits.
+Use `modifiers.withoutLocks` when matching shortcuts. Managed signal handling
+ignores `SIGTSTP` for the session and restores its previous disposition on exit.
+
 Run the larger graphics showcase:
 
 ```sh
@@ -89,9 +95,9 @@ mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer
 }
 ```
 
-The runner owns scheduling. Changing the interval or resuming a suspended session
-starts a fresh interval; intervals must be positive. Elapsed time includes delays,
-and a late iteration delivers one tick rather than catching up missed updates.
+The runner owns scheduling. Changing the interval starts a fresh interval;
+intervals must be positive. Elapsed time includes delays, and a late iteration
+delivers one tick rather than catching up missed updates.
 Polling rounds up to whole milliseconds, and callbacks or I/O can delay delivery.
 Ticks request no rendering unless the handler returns `.redraw`. Pending work
 remains independent: use `hasPendingWork` and `performPendingWork()` for bounded

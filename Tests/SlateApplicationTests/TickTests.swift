@@ -54,10 +54,6 @@ import Glibc
   #expect(try runner.pollTimeout(at: paused.advanced(by: .milliseconds(17)), application: application) == 32)
   #expect(try runner.tick(at: paused.advanced(by: .milliseconds(49)), application: &application))
   #expect(application.probe.elapsed == [.milliseconds(16), .milliseconds(32)])
-  runner.resume()
-  #expect(try runner.pollTimeout(at: paused.advanced(by: .seconds(2)), application: application) == 32)
-  #expect(try runner.tick(at: paused.advanced(by: .seconds(2)), application: &application))
-  #expect(application.probe.elapsed.count == 2)
 }
 
 @Test func tickPollingRoundsUpAndHandlesHugeOrInvalidIntervals() throws {

@@ -15,8 +15,7 @@ import Musl
 /// Cell and layout storage are allocated at startup; traversal is budgeted.
 /// Paste storage is bounded by `configuration.maximumPasteBytes`; copy storage
 /// grows with explicit copy requests. Both retain capacity for reuse.
-/// Other storage is inline; no application borrows survive callbacks or a
-/// suspend/resume cycle.
+/// Other storage is inline; no application borrows survive callbacks.
 struct ScreenRunner: ~Copyable {
   private var screen: Screen
   private let overflow: ScreenApplicationConfiguration.ViewportOverflow
@@ -25,21 +24,9 @@ struct ScreenRunner: ~Copyable {
   private var needsRedraw = true
   private var paste: PasteBuffer
   private var copyBuffer = CopyBuffer()
-  private var handlesSuspension = false
-  private var requestedSuspend = false
   private var ticks = TickSchedule()
 
   var capabilities: TerminalCapabilities { screen.capabilities }
-
-  mutating func resume() {
-    screen.invalidate()
-    previousActualSize = nil
-    needsRedraw = true
-    requestedSuspend = false
-    ticks.reset()
-    // Preserve incomplete paste framing across suspension: its tail is data.
-    input.resume(at: ContinuousClock().now)
-  }
 
   init(configuration: ScreenApplicationConfiguration) throws(ScreenError) {
     guard configuration.maximumPasteBytes > 0,
@@ -89,7 +76,6 @@ struct ScreenRunner: ~Copyable {
     application: inout Application, input: borrowing RawMode, output: borrowing Output,
     signals: borrowing SignalSession
   ) throws(ScreenApplicationError) -> ScreenRunResult {
-    handlesSuspension = signals.enabled
     let clock = ContinuousClock()
     var inputBytes = InlineArray<64, UInt8>(repeating: 0)
     var retries = SystemCallRetryBudget()
@@ -101,7 +87,6 @@ struct ScreenRunner: ~Copyable {
     while true {
       let number = signals.termination()
       if number != 0 { return .interrupted(number) }
-      if signals.shouldSuspend() { return .suspend }
       do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
       guard try expireInput(at: clock.now, application: &application) else { break }
       let actualSize: TerminalSize
@@ -144,7 +129,7 @@ struct ScreenRunner: ~Copyable {
       guard try tick(at: clock.now, application: &application) else { break }
     }
     do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
-    return requestedSuspend ? .suspend : .quit
+    return .quit
   }
 
   mutating func pollTimeout<Application: ScreenApplication & ~Copyable>(
@@ -183,7 +168,7 @@ struct ScreenRunner: ~Copyable {
       guard let event = next else { break }
       guard deliver(event, application: &application) else { return false }
     }
-    return !requestedSuspend
+    return true
   }
 
   mutating func expireInput<Application: ScreenApplication & ~Copyable>(
@@ -200,9 +185,6 @@ struct ScreenRunner: ~Copyable {
   ) -> Bool {
     let update: ScreenUpdate
     switch event {
-    case .key(.control(.z)) where handlesSuspension:
-      requestedSuspend = true
-      return true
     case .key(let key): update = application.event(.key(key), copyBuffer: &copyBuffer)
     case .modifiedKey(let key, let modifiers):
       update = application.event(.key(key, modifiers: modifiers), copyBuffer: &copyBuffer)
@@ -241,9 +223,7 @@ struct ScreenRunner: ~Copyable {
     case .redraw:
       needsRedraw = true
       return true
-    case .quit:
-      requestedSuspend = false
-      return false
+    case .quit: return false
     }
   }
 }

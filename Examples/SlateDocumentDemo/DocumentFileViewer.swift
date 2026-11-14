@@ -166,6 +166,7 @@ final class DocumentFileViewer: CanvasDrawing, ~Sendable {
     if let update = editingEvent(event, copyBuffer: &copyBuffer) { return update }
     switch event {
     case .key(let key, let modifiers):
+      let modifiers = modifiers.withoutLocks
       if !helpVisible && !preparationFailed,
         let update = search.handle(
           key, modifiers: modifiers, copyBuffer: &copyBuffer, firstByte: firstByte, byteCount: source.byteCount)
@@ -224,6 +225,7 @@ final class DocumentFileViewer: CanvasDrawing, ~Sendable {
   }
 
   func handle(_ key: InputKey, modifiers: KeyModifiers) -> ScreenUpdate {
+    let modifiers = modifiers.withoutLocks
     let cancelledDrag = mouseCapture.isScrollbar
     mouseCapture = .idle
     selectionScrollPending = false
@@ -1005,6 +1007,7 @@ extension DocumentFileViewer {
       return .redraw
     case .key(.control(.q), _), .key(.control(.c), _): return requestQuit()
     case .key(let key, let modifiers):
+      let modifiers = modifiers.withoutLocks
       if modifiers == .control && (key == .character("q") || key == .character("c")) { return requestQuit() }
       guard modifiers.isEmpty || modifiers == .shift else { return ScreenUpdate.none }
       switch key {

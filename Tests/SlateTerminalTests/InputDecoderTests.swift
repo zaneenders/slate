@@ -31,7 +31,7 @@ import Testing
     (.f7, 18), (.f8, 19), (.f9, 20), (.f10, 21), (.f11, 23), (.f12, 24)
   ]
   for (key, parameter) in keys {
-    for modifier in 1...8 {
+    for modifier in 1...256 {
       let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
       let event: InputEvent = modifiers.isEmpty ? .key(.function(key)) : .modifiedKey(.function(key), modifiers)
       expectEverySplit(Array("\u{1b}[\(parameter);\(modifier)~q".utf8), events: [event, .key(.character("q"))])
@@ -43,7 +43,7 @@ import Testing
   for (key, final) in [(FunctionKey.f1, "P"), (.f2, "Q"), (.f3, "R"), (.f4, "S")] {
     expectEverySplit(Array("\u{1b}O\(final)".utf8), events: [.key(.function(key))])
     expectEverySplit(Array("\u{1b}[\(final)".utf8), events: [.key(.function(key))])
-    for modifier in 1...8 {
+    for modifier in 1...256 {
       let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
       let event: InputEvent = modifiers.isEmpty ? .key(.function(key)) : .modifiedKey(.function(key), modifiers)
       expectEverySplit(Array("\u{1b}[1;\(modifier)\(final)".utf8), events: [event])
@@ -51,11 +51,26 @@ import Testing
   }
 }
 
+@Test func decoderPreservesEnhancedModifiersOnNavigationKeysAtEverySplit() {
+  let keys: [(InputKey, Int, String)] = [
+    (.up, 1, "A"), (.down, 1, "B"), (.right, 1, "C"), (.left, 1, "D"),
+    (.home, 1, "H"), (.end, 1, "F"), (.insert, 2, "~"), (.delete, 3, "~"),
+    (.pageUp, 5, "~"), (.pageDown, 6, "~")
+  ]
+  for (key, parameter, final) in keys {
+    for modifier in [9, 65, 73, 129, 133, 193, 256] {
+      expectEverySplit(
+        Array("\u{1b}[\(parameter);\(modifier)\(final)q".utf8),
+        events: [.modifiedKey(key, KeyModifiers(rawValue: UInt8(modifier - 1))), .key(.character("q"))])
+    }
+  }
+}
+
 @Test func decoderRejectsUnsupportedFunctionSequencesAndRecoversAtEverySplit() {
   for sequence in [
     "\u{1b}[0~", "\u{1b}[10~", "\u{1b}[16~", "\u{1b}[22~", "\u{1b}[25~", "\u{1b}[255~",
-    "\u{1b}[57376u", "\u{1b}[57398u", "\u{1b}[57399u",
-    "\u{1b}[11;0~", "\u{1b}[24;9~", "\u{1b}[1;0P", "\u{1b}[1;9S", "\u{1b}[2P"
+    "\u{1b}[57376u", "\u{1b}[57398u", "\u{1b}[57427u",
+    "\u{1b}[11;0~", "\u{1b}[24;257~", "\u{1b}[1;0P", "\u{1b}[1;257S", "\u{1b}[2P"
   ] {
     expectEverySplit(Array((sequence + "q").utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
   }
@@ -144,6 +159,44 @@ private func expectEverySplit(_ bytes: [UInt8], events: [InputEvent], commands: 
   }
   let decoded = decodeChunks(bytes, boundaries: Array(0...bytes.count), outputCapacity: 1)
   #expect(decoded.events == events && decoded.commands == commands)
+}
+
+@Test func decoderPreservesSuperCommandAndControlInUnicodeKeyReports() {
+  for (codepoint, key) in [(99, InputKey.character("c")), (118, .character("v")), (233, .character("é"))] {
+    for modifier in [1, 5, 9, 73, 201] {
+      let modifiers = KeyModifiers(rawValue: UInt8(modifier - 1))
+      let event: InputEvent = modifiers.isEmpty ? .key(key) : .modifiedKey(key, modifiers)
+      expectEverySplit(Array("\u{1b}[\(codepoint);\(modifier)uq".utf8), events: [event, .key(.character("q"))])
+    }
+  }
+  for (codepoint, key) in [(9, InputKey.tab), (13, .enter), (27, .escape), (127, .backspace)] {
+    expectEverySplit(Array("\u{1b}[\(codepoint)u".utf8), events: [.key(key)])
+  }
+  #expect(KeyModifiers.command == .super)
+}
+
+@Test func decoderRejectsMalformedUnicodeKeyReportsWithoutTypingTheirTails() {
+  for body in ["", ";9", "99;", "99;0", "99;257", "1114112;9", "55296;9", "99;9;0", "99;9:3", "99::99;9", "0;9"] {
+    expectEverySplit(Array("\u{1b}[\(body)uq".utf8), events: [.invalid(.unknownSequence), .key(.character("q"))])
+  }
+}
+
+@Test func decoderMapsKeypadReportsToTheirOrdinaryKeysAtEverySplit() {
+  let keys: [InputKey] = [
+    .character("0"), .character("1"), .character("2"), .character("3"), .character("4"),
+    .character("5"), .character("6"), .character("7"), .character("8"), .character("9"),
+    .character("."), .character("/"), .character("*"), .character("-"), .character("+"),
+    .enter, .character("="), .character(","), .left, .right, .up, .down,
+    .pageUp, .pageDown, .home, .end, .insert, .delete
+  ]
+  for (offset, key) in keys.enumerated() {
+    expectEverySplit(Array("\u{1b}[\(57399 + offset)uq".utf8), events: [.key(key), .key(.character("q"))])
+    for modifier in [2, 5, 9, 129, 256] {
+      expectEverySplit(
+        Array("\u{1b}[\(57399 + offset);\(modifier)uq".utf8),
+        events: [.modifiedKey(key, KeyModifiers(rawValue: UInt8(modifier - 1))), .key(.character("q"))])
+    }
+  }
 }
 
 @Test func decoderFramesPasteAcrossEverySplitWithoutInterpretingItsContents() {

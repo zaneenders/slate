@@ -108,4 +108,13 @@ public struct KeyModifiers: OptionSet, Equatable, Sendable {
   public static let shift = Self(rawValue: 1)
   public static let alt = Self(rawValue: 2)
   public static let control = Self(rawValue: 4)
+  /// The Super/Windows key on Linux and Command key on macOS.
+  public static let `super` = Self(rawValue: 8)
+  public static let command = Self.super
+  public static let capsLock = Self(rawValue: 64)
+  public static let numLock = Self(rawValue: 128)
+
+  /// Modifiers used for shortcut matching, without Caps Lock or Num Lock state.
+  /// Key events retain those lock bits so applications can inspect them.
+  public var withoutLocks: Self { subtracting([.capsLock, .numLock]) }
 }

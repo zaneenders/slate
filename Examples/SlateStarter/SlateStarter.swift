@@ -21,6 +21,7 @@ struct SlateStarter: ScreenApplication {
     case .key(.escape, _), .key(.control(.c), _):
       return .quit
     case .key(let key, let modifiers):
+      if key == .character("c") && modifiers.withoutLocks == .control { return .quit }
       switch input.handle(key, modifiers: modifiers, copyBuffer: &copyBuffer) {
       case .submit:
         // Take a snapshot only when Enter is pressed.

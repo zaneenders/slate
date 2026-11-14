@@ -12,6 +12,7 @@ public enum ScreenSignalHandling: Sendable {
   /// Embedding applications retain their signal policy.
   case unchanged
   /// One process-wide owner; restores previous dispositions on all scoped exits.
+  /// SIGTSTP is ignored for the duration of the session.
   case managed
 }
 
@@ -28,9 +29,8 @@ struct SignalSession: ~Copyable {
       // Finish lazy global initialization before publishing the handler. These
       // process-lifetime atomics are never destroyed or replaced between owners.
       signalState.termination.store(0, ordering: .relaxed)
-      signalState.suspension.store(false, ordering: .relaxed)
-      var handler = signalAction()
       for index in managedSignals.indices {
+        var handler = signalAction(for: managedSignals[index])
         var previous = sigaction()
         if unsafe sigaction(managedSignals[index], &handler, &previous) != 0 {
           let error = errno
@@ -49,34 +49,6 @@ struct SignalSession: ~Copyable {
     enabled ? signalState.termination.load(ordering: .relaxed) : 0
   }
 
-  borrowing func shouldSuspend() -> Bool {
-    enabled && signalState.suspension.exchange(false, ordering: .relaxed)
-  }
-
-  borrowing func suspend() throws(ScreenApplicationError) {
-    precondition(enabled)
-    if termination() != 0 { return }
-    var stop = sigaction()
-    #if canImport(Darwin)
-    unsafe stop.__sigaction_u.__sa_handler = SIG_DFL
-    #elseif canImport(Musl)
-    unsafe stop.__sa_handler.sa_handler = SIG_DFL
-    #else
-    unsafe stop.__sigaction_handler.sa_handler = SIG_DFL
-    #endif
-    precondition(unsafe sigemptyset(&stop.sa_mask) == 0)
-    guard unsafe sigaction(SIGTSTP, &stop, nil) == 0 else {
-      throw .signalSetup(errno: errno)
-    }
-    // Orphaned process groups may ignore SIGTSTP. Resume returns here; the
-    // runner then re-enters terminal modes and invalidates its frame.
-    let result = raise(SIGTSTP)
-    var error = result == 0 ? 0 : errno
-    var handler = signalAction()
-    if unsafe sigaction(SIGTSTP, &handler, nil) != 0 && error == 0 { error = errno }
-    guard error == 0 else { throw .signalSetup(errno: error) }
-  }
-
   deinit {
     if enabled {
       restoreSignalActions(savedActions, count: managedSignals.count)
@@ -87,23 +59,18 @@ struct SignalSession: ~Copyable {
 
 private let managedSignals: InlineArray<5, Int32> = [SIGINT, SIGTERM, SIGHUP, SIGTSTP, SIGCONT]
 
-/// One owner and two coalescing flags, with no queue or capacity growth. Each
-/// session saves exactly five dispositions inline. Only the flags are accessed
-/// in signal context; 32-bit and Boolean atomic operations are lock-free.
+/// One owner and one coalescing termination flag, with no queue or capacity
+/// growth. Each session saves exactly five dispositions inline. Only the
+/// termination flag is accessed in signal context; 32-bit atomics are lock-free.
 private struct SignalState: ~Copyable, Sendable {
   let owned = Atomic(false)
   let termination = Atomic<Int32>(0)
-  let suspension = Atomic(false)
 
   // Verify that the callback body cannot allocate, lock, or perform ARC. Global
   // initialization is forced by acquisition before any handler is installed.
   @_noLocks
   borrowing func record(_ number: Int32) {
-    if number == SIGTSTP {
-      suspension.store(true, ordering: .relaxed)
-    } else if number == SIGCONT {
-      suspension.store(false, ordering: .relaxed)
-    } else {
+    if number == SIGINT || number == SIGTERM || number == SIGHUP {
       termination.store(number, ordering: .relaxed)
     }
   }
@@ -116,14 +83,14 @@ private func recordSignal(_ number: Int32) {
   signalState.record(number)
 }
 
-private func signalAction() -> sigaction {
+private func signalAction(for number: Int32) -> sigaction {
   var result = sigaction()
   #if canImport(Darwin)
-  unsafe result.__sigaction_u.__sa_handler = recordSignal
+  unsafe result.__sigaction_u.__sa_handler = number == SIGTSTP ? SIG_IGN : recordSignal
   #elseif canImport(Musl)
-  unsafe result.__sa_handler.sa_handler = recordSignal
+  unsafe result.__sa_handler.sa_handler = number == SIGTSTP ? SIG_IGN : recordSignal
   #else
-  unsafe result.__sigaction_handler.sa_handler = recordSignal
+  unsafe result.__sigaction_handler.sa_handler = number == SIGTSTP ? SIG_IGN : recordSignal
   #endif
   precondition(unsafe sigemptyset(&result.sa_mask) == 0)
   for number in managedSignals {
@@ -143,6 +110,6 @@ private func restoreSignalActions(_ saved: borrowing InlineArray<5, sigaction>, 
 }
 
 enum ScreenRunResult {
-  case quit, suspend
+  case quit
   case interrupted(Int32)
 }

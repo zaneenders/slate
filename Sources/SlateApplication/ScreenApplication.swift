@@ -32,8 +32,11 @@ public struct ScreenApplicationConfiguration: Sendable {
   public let maximumSize: TerminalSize
   public let layoutBudget: LayoutBudget
   public let viewportOverflow: ViewportOverflow
-  /// Own scoped SGR mouse tracking for each active session, including resume.
+  /// Own scoped SGR mouse tracking for the active session.
   public let mouseTracking: Bool
+  /// Request disambiguated keys, including Super/Command, on terminals that
+  /// support the Kitty keyboard protocol. Native terminal shortcuts still win.
+  public let enhancedKeyboard: Bool
   public let capabilities: TerminalCapabilities
   /// Maximum bracketed-paste payload retained in memory. Oversized pastes are
   /// consumed through their terminator and reported as `.pasteRejected(.tooLarge)`.
@@ -43,6 +46,7 @@ public struct ScreenApplicationConfiguration: Sendable {
     maximumSize: TerminalSize = TerminalSize(columns: 240, rows: 80),
     viewportOverflow: ViewportOverflow = .clip,
     mouseTracking: Bool = false,
+    enhancedKeyboard: Bool = false,
     capabilities: TerminalCapabilities = .init(),
     maximumPasteBytes: Int = ScreenApplicationConfiguration.defaultMaximumPasteBytes,
     layoutBudget: LayoutBudget = .init()
@@ -51,6 +55,7 @@ public struct ScreenApplicationConfiguration: Sendable {
     self.layoutBudget = layoutBudget
     self.viewportOverflow = viewportOverflow
     self.mouseTracking = mouseTracking
+    self.enhancedKeyboard = enhancedKeyboard
     self.capabilities = capabilities
     self.maximumPasteBytes = maximumPasteBytes
   }
@@ -75,8 +80,10 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
 /// sequences are ignored; decoded input, including Ctrl-C, belongs to `event`.
 /// Expired APC responses are discarded with bounded recovery; recovery failure
 /// throws `.input(.responseRecoveryExceeded)` and unwinds the terminal scopes.
-/// Managed sessions reserve unpasted Ctrl-Z for suspension. Event callbacks may
-/// not retain frame/paste borrows or start another terminal reader.
+/// All decoded keys, including Ctrl-Z, belong to `event` and can be rebound.
+/// Managed sessions ignore SIGTSTP while keeping Ctrl-Z available as input.
+/// Event callbacks may not retain frame/paste borrows or start another terminal
+/// reader.
 public protocol ScreenApplication: ~Copyable {
   associatedtype Content: Block
   init()
@@ -175,28 +182,23 @@ extension ScreenApplication where Self: ~Copyable {
 
     let signals = try SignalSession(signalHandling)
 
-    while true {
+    let number = signals.termination()
+    if number != 0 { throw .interrupted(signal: number) }
+    let result: ScreenRunResult
+    do throws(ScreenApplicationError) {
+      result = try session(runner: &runner, terminal: &terminal, output: output, signals: signals)
+    } catch {
       let number = signals.termination()
       if number != 0 { throw .interrupted(signal: number) }
-      let result: ScreenRunResult
-      do throws(ScreenApplicationError) {
-        result = try session(runner: &runner, terminal: &terminal, output: output, signals: signals)
-      } catch {
-        let number = signals.termination()
-        if number != 0 { throw .interrupted(signal: number) }
-        throw error
-      }
-      // A signal can arrive in the final input callback or during restoration.
-      // Preserve its exit status even when that callback also requested quit.
-      let pendingTermination = signals.termination()
-      if pendingTermination != 0 { throw .interrupted(signal: pendingTermination) }
-      switch result {
-      case .quit: return
-      case .interrupted(let number): throw .interrupted(signal: number)
-      case .suspend:
-        try signals.suspend()
-        runner.resume()
-      }
+      throw error
+    }
+    // A signal can arrive in the final input callback or during restoration.
+    // Preserve its exit status even when that callback also requested quit.
+    let pendingTermination = signals.termination()
+    if pendingTermination != 0 { throw .interrupted(signal: pendingTermination) }
+    switch result {
+    case .quit: return
+    case .interrupted(let number): throw .interrupted(signal: number)
     }
   }
 
@@ -244,12 +246,26 @@ extension ScreenApplication where Self: ~Copyable {
     signals: borrowing SignalSession
   ) throws(ScreenApplicationError) -> ScreenRunResult {
     guard Self.configuration.mouseTracking else {
-      return try runner.run(application: &self, input: input, output: output, signals: signals)
+      return try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
     }
     let mouse: MouseTracking
     do throws(IOError) { mouse = try output.mouseTracking() } catch { throw .io(error) }
-    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
+    let result = try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
     do throws(IOError) { try mouse.restore() } catch { throw .io(error) }
+    return result
+  }
+
+  private mutating func runKeyboardSession(
+    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
+    signals: borrowing SignalSession
+  ) throws(ScreenApplicationError) -> ScreenRunResult {
+    guard Self.configuration.enhancedKeyboard else {
+      return try runner.run(application: &self, input: input, output: output, signals: signals)
+    }
+    let keyboard: EnhancedKeyboard
+    do throws(IOError) { keyboard = try output.enhancedKeyboard() } catch { throw .io(error) }
+    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
+    do throws(IOError) { try keyboard.restore() } catch { throw .io(error) }
     return result
   }
 }

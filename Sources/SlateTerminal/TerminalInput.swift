@@ -86,7 +86,7 @@ public struct TerminalInput: ~Copyable, Sendable {
     return decoder.finish()
   }
 
-  /// Preserve framing across managed suspension. Only lone Escape gets a fresh
+  /// Preserve framing when resuming input. Only lone Escape gets a fresh
   /// deadline; suspension does not renew a response's recovery allowance.
   public mutating func resume(at now: ContinuousClock.Instant) {
     precondition(eventIndex == eventCount)

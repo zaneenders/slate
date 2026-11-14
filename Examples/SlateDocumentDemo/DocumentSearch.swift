@@ -79,6 +79,7 @@ struct DocumentSearch: ~Copyable, ~Sendable {
     _ key: InputKey, modifiers: KeyModifiers, copyBuffer: inout CopyBuffer,
     firstByte: Int, byteCount: Int
   ) -> ScreenUpdate? {
+    let modifiers = modifiers.withoutLocks
     let controlC = key == .control(.c) || (key == .character("c") && modifiers == .control)
     if isVisible && (key == .escape || controlC) {
       close()

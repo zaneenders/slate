@@ -34,6 +34,7 @@ struct SlateGraphicsDemo: ScreenApplication {
   }
 
   private mutating func handle(_ key: InputKey, modifiers: KeyModifiers) -> ScreenUpdate {
+    let modifiers = modifiers.withoutLocks
     if key == .control(.c) || key == .control(.q) { return .quit }
     if modifiers == .control && (key == .character("c") || key == .character("q")) { return .quit }
     guard modifiers.isEmpty || modifiers == .shift else { return .none }

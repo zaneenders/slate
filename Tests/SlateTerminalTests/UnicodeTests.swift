@@ -37,3 +37,23 @@ private enum UnicodeScopeFailure: Error { case expected }
 private func throwInsideUnicodeScope(_ mode: borrowing GraphemeClustering) throws(UnicodeScopeFailure) {
   throw .expected
 }
+
+@Test func enhancedKeyboardRestoresThePreviousFlagsOnExplicitAndThrowingExits() throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  do {
+    let mode = try output.enhancedKeyboard()
+    #expect(try capture.take() == Array("\u{1b}[>1u".utf8))
+    try mode.restore()
+  }
+  #expect(try capture.take() == Array("\u{1b}[<u".utf8))
+  do {
+    let mode = try output.enhancedKeyboard()
+    try throwInsideKeyboardScope(mode)
+  } catch UnicodeScopeFailure.expected {}
+  #expect(try capture.take() == Array("\u{1b}[>1u\u{1b}[<u".utf8))
+}
+
+private func throwInsideKeyboardScope(_ mode: borrowing EnhancedKeyboard) throws(UnicodeScopeFailure) {
+  throw .expected
+}

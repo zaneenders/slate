@@ -1,9 +1,11 @@
 import SlateApplication
 
 // Child process for managed signal tests. Keep only the field state needed to
-// verify that editing, paste, and clipboard operations survive suspension.
+// verify that editing, paste, and clipboard operations survive intercepted signals.
 @main
 struct SlateSignalFixture: ScreenApplication {
+  static var configuration: ScreenApplicationConfiguration { .init(enhancedKeyboard: true) }
+
   private let field = try! TextInput(capacity: 1_024)
   private var focused = false
 
@@ -24,6 +26,12 @@ struct SlateSignalFixture: ScreenApplication {
   private mutating func handle(
     _ key: InputKey, modifiers: KeyModifiers, copyBuffer: inout CopyBuffer
   ) -> ScreenUpdate {
+    let modifiers = modifiers.withoutLocks
+    let controlC = key == .control(.c) || (key == .character("c") && modifiers == .control)
+    // Test-only binding: actual Ctrl-Z quits, including while editing.
+    if key == .control(.z) || (key == .character("z") && modifiers == .control) {
+      return .quit
+    }
     if key == .tab, modifiers.isEmpty {
       focused.toggle()
       return .redraw
@@ -36,10 +44,10 @@ struct SlateSignalFixture: ScreenApplication {
       switch field.handle(key, modifiers: modifiers, copyBuffer: &copyBuffer) {
       case .changed, .submit: return .redraw
       case .rejected: return .quit
-      case .ignored: return key == .control(.c) ? .quit : .none
+      case .ignored: return controlC ? .quit : .none
       }
     }
-    return modifiers.isEmpty && (key == .character("q") || key == .control(.c)) ? .quit : .none
+    return controlC || (modifiers.isEmpty && key == .character("q")) ? .quit : .none
   }
 
   func render(in size: TerminalSize) -> some Block {

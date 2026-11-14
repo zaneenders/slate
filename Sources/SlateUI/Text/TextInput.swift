@@ -115,7 +115,7 @@ public final class TextInput: ~Sendable {
     _ key: InputKey, modifiers: KeyModifiers = [], copyBuffer: inout CopyBuffer
   ) -> TextInputAction {
     var key = key
-    var modifiers = modifiers
+    var modifiers = modifiers.withoutLocks
     if case .control(let control) = key,
       (ControlKey.a.rawValue...ControlKey.z.rawValue).contains(control.rawValue)
     {

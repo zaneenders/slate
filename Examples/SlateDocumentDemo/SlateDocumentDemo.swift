@@ -134,7 +134,7 @@ struct SlateDocumentDemo: ScreenApplication {
 
   private static func isQuitKey(_ key: InputKey, modifiers: KeyModifiers) -> Bool {
     key == .escape || key == .character("q") || key == .control(.q) || key == .control(.c)
-      || (modifiers == .control && key == .character("c"))
+      || (modifiers.withoutLocks == .control && key == .character("c"))
   }
 
   func render(in size: TerminalSize) -> some Block {

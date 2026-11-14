@@ -5,11 +5,6 @@ struct TickSchedule {
   private var interval: Duration?
   private var origin: ContinuousClock.Instant?
 
-  mutating func reset() {
-    interval = nil
-    origin = nil
-  }
-
   mutating func synchronize(interval: Duration?, at now: ContinuousClock.Instant)
     throws(ScreenApplicationError)
   {

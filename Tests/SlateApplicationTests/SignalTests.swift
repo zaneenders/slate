@@ -96,6 +96,7 @@ struct SignalOwnershipTests {
       let unchanged = try SignalSession(.unchanged)
       #expect(unchanged.enabled == false)
       expectSignalAction(try readSignalAction(SIGPIPE), saved[5])
+      #expect(signalHandlerAddress(try readSignalAction(SIGTSTP)) == signalHandlerAddress(ignoredContinue))
       #expect(throws: ScreenApplicationError.signalSetup(errno: EBUSY)) { _ = try SignalSession(.managed) }
 
       // Call the installed callback synchronously to make coalescing
@@ -110,28 +111,20 @@ struct SignalOwnershipTests {
       #endif
 
       // More signals than a buffered design could retain still occupy one flag.
-      for _ in 0..<4_096 { handler(SIGTSTP) }
-      #expect(unchanged.shouldSuspend() == false)
-      #expect(owner.shouldSuspend() == true)
-      #expect(owner.shouldSuspend() == false)
-      handler(SIGTSTP)
+      for _ in 0..<4_096 { handler(SIGINT) }
       handler(SIGCONT)
-      #expect(owner.shouldSuspend() == false)
+      #expect(owner.termination() == SIGINT)
       for number in [SIGINT, SIGTERM, SIGHUP] {
         handler(number)
         #expect(owner.termination() == number)
         #expect(unchanged.termination() == 0)
       }
-      #expect(owner.shouldSuspend() == false)
       #expect(owner.termination() == SIGHUP)
-      // A latched termination must prevent an actual stop.
-      try owner.suspend()
     }
     for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
     do {
       let next = try SignalSession(.managed)
       #expect(next.termination() == 0)
-      #expect(next.shouldSuspend() == false)
     }
     do {
       let owner = try SignalSession(.managed)
@@ -148,18 +141,19 @@ private func readSignalAction(_ number: Int32) throws -> sigaction {
   return result
 }
 
-private func expectSignalAction(_ actual: sigaction, _ expected: sigaction) {
+private func signalHandlerAddress(_ action: sigaction) -> UInt {
   #if canImport(Darwin)
-  let actualHandler = unsafe actual.__sigaction_u.__sa_handler
-  let expectedHandler = unsafe expected.__sigaction_u.__sa_handler
+  let handler = unsafe action.__sigaction_u.__sa_handler
   #elseif canImport(Musl)
-  let actualHandler = unsafe actual.__sa_handler.sa_handler
-  let expectedHandler = unsafe expected.__sa_handler.sa_handler
+  let handler = unsafe action.__sa_handler.sa_handler
   #else
-  let actualHandler = unsafe actual.__sigaction_handler.sa_handler
-  let expectedHandler = unsafe expected.__sigaction_handler.sa_handler
+  let handler = unsafe action.__sigaction_handler.sa_handler
   #endif
-  #expect(unsafe unsafeBitCast(actualHandler, to: UInt.self) == unsafeBitCast(expectedHandler, to: UInt.self))
+  return unsafe unsafeBitCast(handler, to: UInt.self)
+}
+
+private func expectSignalAction(_ actual: sigaction, _ expected: sigaction) {
+  #expect(signalHandlerAddress(actual) == signalHandlerAddress(expected))
   #expect(actual.sa_flags == expected.sa_flags)
   var actualMask = actual.sa_mask
   var expectedMask = expected.sa_mask
@@ -200,7 +194,7 @@ private struct SignalDuringQuitApplication: ScreenApplication {
 @Test(arguments: [SIGINT, SIGTERM, SIGHUP])
 func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2027h")
+  try child.awaitOutput("\u{1b}[>1u")
   #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
   try #require(kill(child.pid, number) == 0)
   let (kind, value) = try child.awaitState()
@@ -208,43 +202,58 @@ func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[?2004l")
   #expect(child.output.contains("\u{1b}[?2027r"))
+  #expect(child.output.contains("\u{1b}[<u"))
   #expect(child.output.contains("\u{1b}[?25h\u{1b}[?1049l"))
 }
 
-@Test(arguments: [false, true])
-func managedSuspensionRestoresThenReentersAndPreservesField(_ keyboard: Bool) throws {
+@Test(arguments: [1, 5, 69, 133, 197])
+func managedRawModeAllowsApplicationsToRebindCtrlZ(_ keyboard: Int) throws {
   let child = try TerminalChild()
-  try child.awaitOutput("\u{1b}[?2027h")
-  try child.send("\tHello")
-  // End a partial paste after resume: its q must remain text.
-  try child.send("\u{1b}[200~q")
-  if keyboard {
-    // Ctrl-Z inside paste is data, so finish first before requesting suspend.
-    try child.send("\u{1b}[201~\u{1a}")
-  } else {
-    try #require(kill(child.pid, SIGTSTP) == 0)
-  }
-  let (kind, signal) = try child.awaitState()
-  #expect(kind == 1 && signal == SIGTSTP)
+  try child.awaitOutput("\u{1b}[>1u")
+  #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ISIG) == 0)
+  try child.send(keyboard == 1 ? "\u{1a}" : "\u{1b}[122;\(keyboard)u")
+  let (kind, value) = try child.awaitState()
+  #expect(kind == 2 && value == 0)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
-  try child.awaitOutput("\u{1b}[?2004l")
-  #expect(child.output.contains("\u{1b}[?2027r"))
-  child.output = ""
-  try #require(kill(child.pid, SIGCONT) == 0)
-  try child.awaitOutput("\u{1b}[?2027h")
-  #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON) == 0)
-  if !keyboard { try child.send("\u{1b}[201~") }
-  try child.send("\u{1}\u{3}")
+  try child.awaitOutput("\u{1b}[<u")
+}
+
+@Test(arguments: [1, 5, 69, 133, 197])
+func managedSIGTSTPLeavesRawModeAndPasteFramingActive(_ keyboard: Int) throws {
+  let child = try TerminalChild()
+  try child.awaitOutput("\u{1b}[>1u")
+  try child.send("\tHello")
+  try child.awaitOutput("Hello")
+  // An intercepted signal must not reset or reinterpret an in-progress paste.
+  try child.send("\u{1b}[200~q")
+  try #require(kill(child.pid, SIGTSTP) == 0)
+  try child.send("\u{1b}[201~")
+  try child.send(keyboard > 1 ? "\u{1b}[97;\(keyboard)u\u{1b}[99;\(keyboard)u" : "\u{1}\u{3}")
   try child.awaitOutput("\u{1b}]52;c;SGVsbG9x\u{1b}\\")
+  #expect(try attributes(of: child.pty.slave).c_lflag & tcflag_t(ICANON | ISIG) == 0)
+  #expect(!child.output.contains("\u{1b}[?2004l"))
+  #expect(!child.output.contains("\u{1b}[?2027r"))
+  #expect(!child.output.contains("\u{1b}[<u"))
   try child.send("\u{1} \u{1}Hello\u{1}q\u{1}Copied\u{1}\u{3}")
   try child.awaitOutput("\u{1b}]52;c;Q29waWVk\u{1b}\\")
-  try child.send("\u{1b}")
-  // Lone Escape needs its normal deadline before the quit key.
-  usleep(80_000)
-  try child.send("q")
+  try child.send("\u{1b}[27uq")
   let exitState = try child.awaitState()
   #expect(exitState.0 == 2 && exitState.1 == 0)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
+}
+
+@Test func managedSIGTSTPDoesNotInvokeTheApplicationCtrlZBinding() throws {
+  let child = try TerminalChild()
+  try child.awaitOutput("\u{1b}[>1u")
+  try #require(kill(child.pid, SIGTSTP) == 0)
+  try child.send("\tHello\u{1}\u{3}")
+  try child.awaitOutput("\u{1b}]52;c;SGVsbG8=\u{1b}\\")
+  // Only an actual Ctrl-Z keypress may invoke the fixture's quit binding.
+  try child.send("\u{1a}")
+  let (kind, value) = try child.awaitState()
+  #expect(kind == 2 && value == 0)
+  expectEqual(try attributes(of: child.pty.slave), child.saved)
+  try child.awaitOutput("\u{1b}[<u")
 }
 
 private enum ChildError: Error {

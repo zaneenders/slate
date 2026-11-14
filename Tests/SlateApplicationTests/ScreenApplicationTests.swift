@@ -136,6 +136,25 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.modifiers == [[], .shift, .alt, []])
 }
 
+@Test func applicationDeliversSuperAndControlKeysAlongsideNativeTerminalPaste() throws {
+  var runner = try ScreenRunner(configuration: .init(enhancedKeyboard: true))
+  var application = ProbeApplication()
+  let bytes = "\u{1b}[99;9u\u{1b}[200~café\u{1b}[201~\u{1b}[99;5uq".utf8Span.span
+  #expect(try !runner.receive(bytes, at: .now, application: &application))
+  #expect(application.probe.keys == [.character("c"), .character("c"), .character("q")])
+  #expect(application.probe.modifiers == [.super, .control, []])
+  #expect(application.probe.pastes == ["café"])
+}
+
+@Test func applicationPreservesLockStateOnNavigationAndKeypadEvents() throws {
+  var runner = try ScreenRunner(configuration: .init(enhancedKeyboard: true))
+  var application = ProbeApplication()
+  let bytes = "\u{1b}[1;137D\u{1b}[57414;193uq".utf8Span.span
+  #expect(try !runner.receive(bytes, at: .now, application: &application))
+  #expect(application.probe.keys == [.left, .enter, .character("q")])
+  #expect(application.probe.modifiers == [[.super, .numLock], [.capsLock, .numLock], []])
+}
+
 @Test func applicationEscapeDeadlineDeliversExactlyOnceAndCanQuit() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()

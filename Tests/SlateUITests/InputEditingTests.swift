@@ -76,6 +76,30 @@ import Testing
   }
 }
 
+@Test(arguments: [KeyModifiers.capsLock, .numLock, [.capsLock, .numLock]])
+func textInputShortcutsAndSelectionIgnoreLockState(_ locks: KeyModifiers) throws {
+  let input = try TextInput("café")
+  var copyBuffer = CopyBuffer()
+  #expect(input.handle(.home, modifiers: locks, copyBuffer: &copyBuffer) == .changed)
+  #expect(input.handle(.right, modifiers: locks.union(.shift), copyBuffer: &copyBuffer) == .changed)
+  #expect(input.selection == 0..<1)
+  #expect(input.handle(.character("a"), modifiers: locks.union(.control), copyBuffer: &copyBuffer) == .changed)
+  #expect(input.selection == 0..<5)
+  #expect(input.handle(.character("c"), modifiers: locks.union(.control), copyBuffer: &copyBuffer) == .changed)
+  var copied = ""
+  copyBuffer.flush { copied = String(copying: $0) }
+  #expect(copied == "café")
+  #expect(input.handle(.character("x"), modifiers: locks.union(.control), copyBuffer: &copyBuffer) == .changed)
+  #expect(input.snapshot().isEmpty)
+  #expect(input.handle(.character("A"), modifiers: locks, copyBuffer: &copyBuffer) == .changed)
+  #expect(input.snapshot() == "A")
+  #expect(input.handle(.enter, modifiers: locks, copyBuffer: &copyBuffer) == .submit)
+  for modifier in [KeyModifiers.alt, .super, [.control, .shift]] {
+    #expect(input.handle(.character("a"), modifiers: locks.union(modifier), copyBuffer: &copyBuffer) == .ignored)
+    #expect(input.snapshot() == "A" && input.selection.isEmpty)
+  }
+}
+
 @Test func inputBoxesDrawSelectionCaretClippingAndFocus() throws {
   let input = try TextInput("abcdef")
   var surface = try Surface(maximumSize: TerminalSize(columns: 4, rows: 1))
