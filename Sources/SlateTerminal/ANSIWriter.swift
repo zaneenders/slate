@@ -1,20 +1,20 @@
 import SlateUI
 
-// Shared by full-screen and region presentation; each owner retains its writer.
-struct ANSIWriter: ~Copyable {
+// Shared by cell presentation and terminal extensions; each owner retains its writer.
+package struct ANSIWriter: ~Copyable {
   let capabilities: TerminalCapabilities
   private var bytes = InlineArray<4_096, UInt8>(repeating: 0)
   private var count = 0
-  private(set) var outputBytes = 0
+  package private(set) var outputBytes = 0
 
-  init(capabilities: TerminalCapabilities = .init()) { self.capabilities = capabilities }
+  package init(capabilities: TerminalCapabilities = .init()) { self.capabilities = capabilities }
 
   mutating func reset() {
     count = 0
     outputBytes = 0
   }
 
-  mutating func flush(to output: borrowing Output) throws(IOError) {
+  package mutating func flush(to output: borrowing Output) throws(IOError) {
     guard count > 0 else { return }
     try output.writeAll(bytes.span.extracting(first: count))
     outputBytes += count
@@ -27,7 +27,7 @@ struct ANSIWriter: ~Copyable {
     count += 1
   }
 
-  mutating func literal(_ text: StaticString, to output: borrowing Output) throws(IOError) {
+  package mutating func literal(_ text: StaticString, to output: borrowing Output) throws(IOError) {
     let error = text.withUTF8Buffer { buffer -> IOError? in
       do throws(IOError) {
         let span = unsafe Span(_unsafeElements: buffer)
@@ -50,8 +50,8 @@ struct ANSIWriter: ~Copyable {
     }
   }
 
-  /// Kitty identifiers and pixel dimensions use the full unsigned 32-bit range.
-  mutating func unsignedNumber(_ value: UInt32, to output: borrowing Output) throws(IOError) {
+  /// Encodes full-width parameters independently of the bounded cell coordinates.
+  package mutating func unsignedNumber(_ value: UInt32, to output: borrowing Output) throws(IOError) {
     var divisor: UInt32 = 1_000_000_000
     while divisor > 1 && value < divisor { divisor /= 10 }
     var remainder = value
@@ -62,12 +62,12 @@ struct ANSIWriter: ~Copyable {
     }
   }
 
-  mutating func signedNumber(_ value: Int32, to output: borrowing Output) throws(IOError) {
+  package mutating func signedNumber(_ value: Int32, to output: borrowing Output) throws(IOError) {
     if value < 0 { try byte(0x2d, to: output) }
     try unsignedNumber(value.magnitude, to: output)
   }
 
-  mutating func cursor(x: Int, y: Int, to output: borrowing Output) throws(IOError) {
+  package mutating func cursor(x: Int, y: Int, to output: borrowing Output) throws(IOError) {
     try literal("\u{1b}[", to: output)
     try number(y + 1, to: output)
     try byte(0x3b, to: output)
@@ -156,7 +156,7 @@ struct ANSIWriter: ~Copyable {
     for index in 0..<source.count { try byte(source[index], to: output) }
   }
 
-  mutating func base64(_ source: Span<UInt8>, to output: borrowing Output) throws(IOError) {
+  package mutating func base64(_ source: Span<UInt8>, to output: borrowing Output) throws(IOError) {
     var index = 0
     while index < source.count {
       // Each group emits four bytes together, preserving the fixed buffer bound.

@@ -1,3 +1,4 @@
+import SlateKittyGraphics
 import SlateTerminal
 
 #if canImport(Darwin)
@@ -146,7 +147,9 @@ struct ScreenRunner: ~Copyable {
           if let event = self.input.finish() { _ = deliver(event, application: &application) }
           break
         }
-        guard try receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else { break }
+        guard try receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else {
+          break
+        }
       }
       retries = SystemCallRetryBudget()
       guard performPendingWork(application: &application) else { break }

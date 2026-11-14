@@ -1,3 +1,4 @@
+@_exported public import SlateKittyGraphics
 @_exported public import SlateTerminal
 
 #if canImport(Darwin)

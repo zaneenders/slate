@@ -75,6 +75,10 @@ public struct Output: ~Copyable, ~Sendable {
   }
 }
 
+package func writeStatic(_ text: StaticString, to output: borrowing Output) throws(IOError) {
+  try writeStatic(text, to: output.descriptor)
+}
+
 func writeBytes(to descriptor: FileDescriptor, _ bytes: Span<UInt8>) throws(IOError) {
   try bytes.withUnsafeBufferPointer { buffer throws(IOError) in
     var offset = 0

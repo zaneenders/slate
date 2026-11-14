@@ -1,3 +1,4 @@
+import SlateKittyGraphics
 import SlateTerminal
 import Testing
 

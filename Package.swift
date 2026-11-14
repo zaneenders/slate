@@ -64,12 +64,13 @@ let package = Package(
       path: "Examples/SlateDocumentDemo",
       swiftSettings: swiftSettings
     ),
-    // Libraries: application lifecycle -> terminal backend -> UI composition and drawing.
+    // Libraries: application lifecycle -> terminal extensions/backend -> UI composition and drawing.
     .target(
       name: "Slate",
       dependencies: [
         "SlateUI",
         "SlateTerminal",
+        "SlateKittyGraphics",
         "SlateApplication"
       ],
       swiftSettings: swiftSettings
@@ -87,7 +88,15 @@ let package = Package(
       dependencies: [
         "SlateUI",
         .product(name: "BasicContainers", package: "swift-collections"),
-        .product(name: "SystemPackage", package: "swift-system"),
+        .product(name: "SystemPackage", package: "swift-system")
+      ],
+      swiftSettings: swiftSettings
+    ),
+    .target(
+      name: "SlateKittyGraphics",
+      dependencies: [
+        "SlateTerminal",
+        "SlateUI",
         .product(name: "Zlib", package: "swift-zlib")
       ],
       swiftSettings: swiftSettings
@@ -96,6 +105,7 @@ let package = Package(
       name: "SlateApplication",
       dependencies: [
         "SlateTerminal",
+        "SlateKittyGraphics",
         .product(name: "BasicContainers", package: "swift-collections")
       ],
       swiftSettings: swiftSettings
@@ -147,7 +157,12 @@ let package = Package(
     ),
     .testTarget(
       name: "SlateTerminalTests",
+      dependencies: ["SlateTerminal", "SlateTestSupport", "CIOTestSupport"]
+    ),
+    .testTarget(
+      name: "SlateKittyGraphicsTests",
       dependencies: [
+        "SlateKittyGraphics",
         "SlateTerminal",
         "SlateTestSupport",
         "CIOTestSupport",

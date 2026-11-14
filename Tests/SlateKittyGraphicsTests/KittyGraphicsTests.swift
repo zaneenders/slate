@@ -1,5 +1,6 @@
 import CIOTestSupport
 import Foundation
+import SlateKittyGraphics
 import SlateTerminal
 import SlateTestSupport
 import Testing

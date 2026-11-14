@@ -1,3 +1,4 @@
+public import SlateKittyGraphics
 public import SlateTerminal
 
 /// A paste was rejected for invalid UTF-8, incomplete terminal framing, or

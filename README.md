@@ -241,6 +241,10 @@ their own `output.graphemeClustering()` scope.
 
 ## Kitty image graphics
 
+Kitty image preparation, commands, and replies live in the internal
+`SlateKittyGraphics` target, which owns the `swift-zlib` dependency. `import Slate`
+includes these APIs.
+
 Use `KittyImage` and the `Output` graphics methods explicitly in a terminal that
 supports the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
 Raw RGB/RGBA pixels are compressed once with

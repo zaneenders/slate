@@ -1,3 +1,4 @@
+public import SlateTerminal
 public import SlateUI
 
 public enum KittyGraphicsError: Error, Equatable, Sendable {
@@ -146,8 +147,8 @@ extension Output {
       if progress > 0 {
         // Cancel any partial APC before recovery. A targeted deletion also
         // aborts a chunked upload that has not received its final chunk.
-        try? writeStatic("\u{18}\u{1b}\\", to: descriptor)
-        if restoreCursor && progress >= 2 { try? writeStatic("\u{1b}8", to: descriptor) }
+        try? writeStatic("\u{18}\u{1b}\\", to: self)
+        if restoreCursor && progress >= 2 { try? writeStatic("\u{1b}8", to: self) }
         if let id = cancelImageID {
           var recovery = ANSIWriter()
           try? recovery.deleteKittyImage(id: id, to: self)

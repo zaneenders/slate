@@ -1,3 +1,5 @@
+public import SlateTerminal
+
 /// A bounded Kitty graphics acknowledgement, query result, or error. Parsing
 /// borrows an already framed APC command; it never reads from the terminal.
 /// The reply owns its inline message storage and can be retained by the caller.
