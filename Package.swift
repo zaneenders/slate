@@ -27,7 +27,7 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.5"),
-    .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.0")
+    .package(url: "https://github.com/apple/swift-system.git", from: "1.9.0")
   ],
   targets: [
     // Demo

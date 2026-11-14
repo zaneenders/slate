@@ -1,5 +1,5 @@
 {
-  "originHash" : "36e335242b59e3ea9cd45632146e705104579ea6c66f8a22c9dce05848cd3073",
+  "originHash" : "5c5018799973845c186c66530af77e93de8420c12d03e35870c3d6ce6f6049ee",
   "pins" : [
     {
       "identity" : "swift-collections",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-system.git",
       "state" : {
-        "revision" : "704705c5c51156ede21172a38654d522ce487074",
-        "version" : "1.8.0"
+        "revision" : "640e5755b5826f4437eaeedd366fd776737db62c",
+        "version" : "1.9.0"
       }
     }
   ],
