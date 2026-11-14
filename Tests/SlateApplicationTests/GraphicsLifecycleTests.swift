@@ -23,7 +23,7 @@ func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ fa
     try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
     #expect(!failPresentation)
   } catch { #expect(failPresentation && error == .graphics(.emptyRegion)) }
-  #expect(application.probe.calls == ["cells", "graphics", "cleanup"])
+  #expect(application.probe.calls == ["cells", "observed", "graphics", "cleanup"])
   expectEqual(try attributes(of: pty.slave), saved)
   try expectGraphicsCleanupBeforeScreenRestore(on: pty.master)
 }
@@ -38,7 +38,7 @@ func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ fa
   #expect(throws: ScreenApplicationError.graphics(.invalidImageID)) {
     try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
   }
-  #expect(application.probe.calls == ["cells", "graphics", "cleanup", "cleanup"])
+  #expect(application.probe.calls == ["cells", "observed", "graphics", "cleanup", "cleanup"])
   expectEqual(try attributes(of: pty.slave), saved)
   try expectGraphicsCleanupBeforeScreenRestore(on: pty.master)
 }
@@ -74,6 +74,8 @@ private struct GraphicsLifecycleApplication: ScreenApplication {
     probe.calls.append("cells")
     return Text("cells")
   }
+
+  mutating func didPresentFrame(_ statistics: FrameStatistics) { probe.calls.append("observed") }
 
   mutating func presentGraphics(in size: TerminalSize, to output: borrowing Output) throws(KittyGraphicsError) {
     probe.calls.append("graphics")

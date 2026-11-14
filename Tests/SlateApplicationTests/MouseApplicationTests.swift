@@ -95,7 +95,8 @@ private struct MouseApplication: ScreenApplication, ~Copyable {
     case .key(let key, _):
       probe.keys.append(key)
       return key == .character("q") ? .quit : .none
-    case .paste, .pasteEmpty, .pasteRejected, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
+    case .paste, .pasteEmpty, .pasteRejected, .tick, .applicationCommand, .kittyGraphicsReply, .primaryDeviceAttributes:
+      return .none
     }
   }
 

@@ -16,8 +16,12 @@ public enum ScreenError: Error, Equatable, Sendable {
   }
 }
 
+/// Output from one successful cell presentation, excluding terminal setup and
+/// other writers. A requested redraw may produce zero cells and zero bytes.
 public struct FrameStatistics: Equatable, Sendable {
+  /// Cells emitted, including blanks; a wide glyph counts as two cells.
   public let changedCells: Int
+  /// Bytes written, including cursor movements and style escape sequences.
   public let outputBytes: Int
 }
 

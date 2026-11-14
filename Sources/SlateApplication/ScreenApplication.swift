@@ -116,6 +116,11 @@ public protocol ScreenApplication: ~Copyable {
   /// Draws after block layout, before presentation. The frame cannot escape.
   /// Use this for application-owned editors, charts, or other custom views.
   borrowing func paint(in frame: inout Frame)
+  /// Observes each successfully presented cell frame, including zero-byte diffs,
+  /// before presentGraphics. Skipped draws and failed frames do not call this.
+  /// Default does nothing. Counts exclude image commands and terminal setup.
+  /// Observation is synchronous; retained history/logging belongs to the caller.
+  mutating func didPresentFrame(_ statistics: FrameStatistics)
   /// Presents terminal images after a successful cell frame, including resizes.
   /// Shares the session's output writer; do not start another input reader.
   /// Upload reusable images once and recreate their placements here as needed.
@@ -135,6 +140,7 @@ extension ScreenApplication where Self: ~Copyable {
     .none
   }
   public borrowing func paint(in frame: inout Frame) {}
+  public mutating func didPresentFrame(_ statistics: FrameStatistics) {}
   public mutating func presentGraphics(
     in size: TerminalSize, to output: borrowing Output
   ) throws(KittyGraphicsError) {}

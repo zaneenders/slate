@@ -407,7 +407,8 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
     let bytes = Array(("\u{1b}[200~" + body + "\u{1b}[201~j").utf8)
     for start in stride(from: 0, to: bytes.count, by: 64) {
       #expect(
-        try runner.receive(bytes.span.extracting(start..<min(start + 64, bytes.count)), at: now, application: &application))
+        try runner.receive(
+          bytes.span.extracting(start..<min(start + 64, bytes.count)), at: now, application: &application))
     }
     #expect(application.probe.keys.last == .character("j"))
     if count == 0 {
@@ -545,7 +546,7 @@ private struct ProbeApplication: ScreenApplication, ~Copyable {
       guard modifiers.isEmpty else { return .none }
       if key == quitKey { return .quit }
       return key == .character("r") ? .redraw : .none
-    case .mouse, .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
+    case .mouse, .tick, .applicationCommand, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
     }
   }
 

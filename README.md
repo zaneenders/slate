@@ -294,6 +294,14 @@ already frames APC replies: after `.terminalReply(.applicationCommand)`, parse
 The reply owns its bounded message, exposes `imageID`, `placementID`, `isSuccess`,
 and `messageTruncated`, and never turns response text into key events.
 
+Other completed APC responses arrive as `.applicationCommand(command)`, including
+headers that are not valid Kitty replies. Extensions can decode these owned
+`ApplicationCommand` values through the existing input reader. The command retains
+its first 160 bytes and sets `truncated` when the terminal sent more; check that
+flag before interpreting the payload. Each APC produces one event: a recognized
+Kitty reply uses the typed event, and all others use the generic event. Incomplete
+or expired responses retain the existing bounded recovery policy.
+
 For explicit capability detection call `output.queryKittyGraphics(id: queryID)`.
 It sends a one-pixel query followed by a primary device attributes request, without
 storing an image. A matching successful graphics reply indicates support; device
@@ -370,6 +378,12 @@ swift run -c release kitty-graphics
 
 ## Development
 
+Regular tests generate their own fixtures and need no local document files.
+GitHub Actions runs debug/release tests, allocation checks, and rendering
+benchmarks on Ubuntu 24.04 and the [Xcode 27 macOS image](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md),
+using Swift 6.4.2. Benchmark JSON and the toolchain version are retained as CI artifacts;
+timing measurements have no machine-dependent pass/fail threshold.
+
 ```sh
 swift test
 swift test -c release
@@ -388,3 +402,44 @@ check per-frame construction of mixed canvas drawing types and hit-map ID types.
 Successful frames must allocate nothing after warm-up. Rejected layouts
 allow two Swift Testing diagnostic allocations with the pinned toolchain. Output
 checks use `/dev/null`; they do not measure terminal latency.
+
+Observe successful cell frames from an application by implementing the optional
+callback. It runs after cell output succeeds and before `presentGraphics`, including
+redraws that emit zero bytes. Idle iterations and failed frames produce no callback.
+The default implementation does nothing and reads no clock; any logging/history
+and its allocation costs belong to the observer. Counts exclude Kitty graphics,
+terminal modes, and clipboard output.
+
+```swift
+mutating func didPresentFrame(_ statistics: FrameStatistics) {
+  lastChangedCells = statistics.changedCells
+  lastOutputBytes = statistics.outputBytes
+}
+```
+
+Run the rendering benchmark with warmed storage and `/dev/null` output:
+
+```sh
+swift run -c release render-benchmark --iterations 1000 --warmup 50 > /tmp/slate-render.json
+```
+
+It reports JSON for 80×24, 240×80, and 512×256 grids under unchanged frames, a
+single alternating cell, scrolling rows, and explicit full repaints. Each workload
+composes one reusable `Canvas`. `renderNanosecondsPerFrame` measures a `Surface`
+render (layout, clearing, and painting); `drawNanosecondsPerFrame` independently
+measures a complete `Screen` draw including diffing, encoding, and writes. Warm-up,
+owner initialization, and JSON formatting are outside the measured loops. Cell and
+byte counts come from actual draws. Compare repeated release runs on the same
+machine; the two timings are separate samples, and `/dev/null` excludes terminal
+emulator/SSH latency.
+
+The document load probe and gigabyte save test are opt-in. Set
+`SLATE_LARGE_DOCUMENT_PATH` to a fixture; otherwise they use the ignored
+`pi_hex_1b.txt` at the repository root. The save test requires at least 1 GB.
+
+```sh
+SLATE_RUN_LOAD_BENCHMARK=1 SLATE_LARGE_DOCUMENT_PATH=/path/to/file \
+  swift test -c release --filter loadTimingProbe
+SLATE_RUN_LARGE_FILE_TESTS=1 SLATE_LARGE_DOCUMENT_PATH=/path/to/gigabyte-file \
+  swift test -c release --filter largeDocumentWrite
+```

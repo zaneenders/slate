@@ -28,7 +28,7 @@ struct SlateSignalFixture: ScreenApplication {
     case .pasteRejected: return .quit
     case .pasteEmpty: return .none
     case .mouse: return .none
-    case .tick, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
+    case .tick, .applicationCommand, .kittyGraphicsReply, .primaryDeviceAttributes: return .none
     }
   }
 

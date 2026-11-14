@@ -61,13 +61,17 @@ import Glibc
   }
 }
 
-@Test func unrelatedAndMalformedAPCsStayOutOfApplicationKeysAndGraphicsEvents() throws {
+@Test func unrelatedAndMalformedAPCsUseGenericEventsWithoutBecomingKeysOrKittyReplies() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = KittyReplyApplication()
   let bytes = "\u{1b}_unrelated\u{1b}\\\u{1b}_Gi=4294967296;OK\u{1b}\\q".utf8Span.span
   #expect(try !runner.receive(bytes, at: .now, application: &application))
   #expect(application.received == ["q"])
   #expect(application.replies.isEmpty)
+  #expect(
+    application.commands == [
+      ApplicationCommand("unrelated".utf8Span.span), ApplicationCommand("Gi=4294967296;OK".utf8Span.span)
+    ])
 }
 
 @Test func kittyReplyHandlerCanRequestRedrawOrQuitWithoutConsumingFollowingKeys() throws {
@@ -91,12 +95,14 @@ private struct KittyReplyApplication: ScreenApplication {
   static var configuration: ScreenApplicationConfiguration { .init(kittyGraphicsQueryID: 31) }
   var received: [String] = []
   var replies: [KittyGraphicsReply] = []
+  var commands: [ApplicationCommand] = []
   var replyUpdate = ScreenUpdate.none
   private let probe = KittyFrameProbe()
   var frames: Int { probe.frames }
 
   mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
     switch event {
+    case .applicationCommand(let command): commands.append(command)
     case .kittyGraphicsReply(let reply):
       replies.append(reply)
       received.append("\(reply.imageID):" + String(copying: reply.message))

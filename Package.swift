@@ -24,7 +24,8 @@ let package = Package(
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "document", targets: ["SlateDocumentDemo"]),
     .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
-    .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"])
+    .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"]),
+    .executable(name: "render-benchmark", targets: ["SlateRenderBenchmark"])
   ],
   dependencies: [
     .package(url: "https://github.com/apple/swift-collections.git", exact: "1.7.6"),
@@ -34,6 +35,12 @@ let package = Package(
       revision: "d2790e2e0bdac0d48dd622a8b97b8c20f8807c1d")
   ],
   targets: [
+    .executableTarget(
+      name: "SlateRenderBenchmark",
+      dependencies: ["SlateTerminal", "SlateUI"],
+      path: "Benchmarks/SlateRenderBenchmark",
+      swiftSettings: swiftSettings
+    ),
     // Demo
     .executableTarget(
       name: "SlateStarter",

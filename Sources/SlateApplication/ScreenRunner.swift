@@ -69,12 +69,13 @@ struct ScreenRunner: ~Copyable {
       needsRedraw = true
     }
     guard needsRedraw else { return false }
-    try screen.draw(
+    let statistics = try screen.draw(
       size: size, to: output,
       content: { application.render(in: size) },
       paint: { application.paint(in: &$0) })
     previousActualSize = actualSize
     needsRedraw = false
+    application.didPresentFrame(statistics)
     return true
   }
 
@@ -217,8 +218,12 @@ struct ScreenRunner: ~Copyable {
       update = application.event(.key(key, modifiers: modifiers), copyBuffer: &copyBuffer)
     case .mouse(let event): update = application.event(.mouse(event), copyBuffer: &copyBuffer)
     case .terminalReply(.applicationCommand):
-      guard let reply = KittyGraphicsReply(input.applicationCommand) else { return true }
-      update = application.event(.kittyGraphicsReply(reply), copyBuffer: &copyBuffer)
+      let command = input.applicationCommand
+      if let reply = KittyGraphicsReply(command) {
+        update = application.event(.kittyGraphicsReply(reply), copyBuffer: &copyBuffer)
+      } else {
+        update = application.event(.applicationCommand(command), copyBuffer: &copyBuffer)
+      }
     case .terminalReply(.primaryAttributes):
       update = application.event(.primaryDeviceAttributes, copyBuffer: &copyBuffer)
     case .paste(.begin):

@@ -19,6 +19,10 @@ public enum ScreenEvent: ~Escapable, ~Sendable {
   case tick(elapsed: Duration)
   case key(InputKey, modifiers: KeyModifiers = [])
   case mouse(MouseEvent)
+  /// A completed APC response not recognized as Kitty graphics. Owns its first
+  /// ApplicationCommand.maximumBytes bytes; inspect truncated before decoding.
+  /// Protocol extensions interpret the payload without starting another reader.
+  case applicationCommand(ApplicationCommand)
   /// A typed Kitty APC reply, delivered through the same reader as keys. Match
   /// imageID to an explicit query or command before changing application state.
   case kittyGraphicsReply(KittyGraphicsReply)
