@@ -171,6 +171,55 @@ import Testing
 private enum HitTarget: Hashable { case first, second, third, parent }
 private struct EmptyHitBlock: Block { var body: some Block {} }
 
+@Test(arguments: [false, true], [false, true])
+private func groupedHitModifiersPreserveFillInStacks(horizontal: Bool, blocking: Bool) throws {
+  let hits = HitMap<HitTarget>()
+  var surface = try Surface(maximumSize: TerminalSize(columns: 8, rows: 4))
+  for size in [surface.maximumSize, TerminalSize(columns: 6, rows: 3)] {
+    try surface.render(size: size) {
+      Overlay {
+        Text("back").frame(width: .fill, height: .fill).hitRegion(.first, in: hits)
+        if horizontal {
+          Row {
+            GroupedHitContent(map: hits, blocking: blocking)
+            Text("R")
+          }.frame(width: .fill, height: .fill)
+        } else {
+          Column {
+            GroupedHitContent(map: hits, blocking: blocking)
+            Text("R")
+          }.frame(width: .fill, height: .fill)
+        }
+      }
+    }
+    let width = size.columns - (horizontal ? 1 : 0)
+    let height = size.rows - (horizontal ? 0 : 1)
+    #expect(surface.cell(x: horizontal ? width : 0, y: horizontal ? 0 : height)?.glyph.scalar == "R")
+    #expect(hits.hitTest(column: width - 1, row: height - 1)?.id == (blocking ? nil : .parent))
+    if !blocking { #expect(hits.bounds(for: .parent) == Rect(width: width, height: height)) }
+    #expect(hits.hitTest(column: horizontal ? width : 0, row: horizontal ? 0 : height)?.id == .first)
+  }
+}
+
+private struct GroupedHitContent: Block {
+  let map: HitMap<HitTarget>
+  let blocking: Bool
+  var body: some Block {
+    if blocking {
+      FilledHitSiblings().blocksMouse(in: map)
+    } else {
+      FilledHitSiblings().hitRegion(.parent, in: map)
+    }
+  }
+}
+
+private struct FilledHitSiblings: Block {
+  var body: some Block {
+    Text("AB")
+    Text("C").frame(width: .fill, height: .fill)
+  }
+}
+
 @Test func hitMapIDLookupHandlesHashCollisionsAndReorderedTargets() throws {
   let hits = HitMap<CollidingHitID>(capacity: 32)
   let size = TerminalSize(columns: 32, rows: 1)

@@ -384,7 +384,14 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
     #expect(error == (successfulWrites == 3 ? .screen(.output(failure)) : .io(failure)))
   }
   expectEqual(try attributes(of: pty.slave), saved)
-  try expectApplicationScreenRestored(pty.master)
+  if successfulWrites == 0 {
+    // No alternate-screen command reached the terminal, so no output state
+    // should be changed while unwinding the raw-mode scope.
+    var readiness = pollfd(fd: pty.master, events: Int16(POLLIN), revents: 0)
+    #expect(unsafe poll(&readiness, 1, 0) == 0)
+  } else {
+    try expectApplicationScreenRestored(pty.master)
+  }
 }
 #endif
 

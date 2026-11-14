@@ -241,10 +241,11 @@ struct LayoutTree: ~Copyable {
       var width = 0
       var height = 0
       var childCount = 0
-      let preservesFill = node.kind == .background || node.kind == .padding || node.kind == .border
+      let preservesFill =
+        node.kind == .background || node.kind == .padding || node.kind == .border || node.kind == .hitRegion
       while child >= 0 {
         let next = nodes[child]
-        // Decorations keep their measured insets while forwarding filling axes,
+        // Wrappers keep their measured insets while forwarding filling axes,
         // including custom blocks that emit several siblings.
         if preservesFill {
           if next.width == .fill { nodes[index].width = .fill }

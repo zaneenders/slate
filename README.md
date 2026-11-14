@@ -167,7 +167,8 @@ the surface viewport. Apply `hitRegion` after padding/border to include them,
 and before `position` to target the content rather than the positioner's full slot.
 Hit regions add one layout node and preserve their child's sizing. For custom
 blocks emitting several siblings, the modifier groups them in one overlay region,
-like `background` or `border`.
+like `background` or `border`. The group fills each axis where any child requests
+`.fill`.
 
 The frontmost registered region wins, with nested targets taking precedence over
 their enclosing target. Untagged decoration passes through. Use

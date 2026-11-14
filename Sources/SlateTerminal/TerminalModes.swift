@@ -76,8 +76,9 @@ public struct GraphemeClustering: ~Copyable, ~Escapable, ~Sendable {
 }
 
 /// Scoped all-motion tracking (1003) with SGR cell coordinates (1006).
-/// Do not nest mouse-mode owners on the same terminal. Destruction disables
-/// both modes, including on throwing exits and partially written setup.
+/// Do not nest mouse-mode owners on the same terminal. Scope exit disables
+/// both modes, including on throwing exits. Failed setup cancels incomplete
+/// commands and restores modes only after a complete enable command was written.
 public struct MouseTracking: ~Copyable, ~Escapable, ~Sendable {
   private var session: TerminalModeSession
 
@@ -133,11 +134,21 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
     case .keyboard: ("\u{1b}[>1u", "\u{1b}[<u")
     }
   }
+
+  /// The first complete command saves or changes the state this scope owns.
+  /// Until then, setup failure can only leave an incomplete escape sequence.
+  var minimumSetupBytesForRestore: Int {
+    switch self {
+    case .keyboard: 5  // ESC [ > 1 u pushes the keyboard flags.
+    case .mouse, .paste, .alternate, .grapheme: 8  // ESC [ ? n n n n h/s
+    }
+  }
 }
 
 /// One inline owner per mode, borrowing the output descriptor. Setup failure
-/// rolls back once; explicit restoration failure retries once and preserves the
-/// first error. Each write uses the existing bounded syscall retry budget.
+/// cancels incomplete commands or rolls back completed state once. Explicit
+/// restoration failure retries once and preserves the first error. Each write
+/// uses the existing bounded syscall retry budget.
 @usableFromInline struct TerminalModeSession: ~Copyable, ~Escapable, ~Sendable {
   private let descriptor: FileDescriptor
   private let mode: TerminalMode
@@ -147,7 +158,10 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
   init(output: borrowing Output, mode: TerminalMode) throws(IOError) {
     let sequences = mode.sequences
     do throws(IOError) { try writeStatic(sequences.enable, to: output.descriptor) } catch {
-      try? writeStatic(sequences.restore, to: output.descriptor)
+      if case .write(_, let bytesWritten) = error, bytesWritten > 0 {
+        let recovery: StaticString = bytesWritten >= mode.minimumSetupBytesForRestore ? sequences.restore : "\u{18}"
+        try? writeStatic(recovery, to: output.descriptor)
+      }
       throw error
     }
     descriptor = output.descriptor

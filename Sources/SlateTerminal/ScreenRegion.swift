@@ -71,7 +71,7 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
       try writer.literal("\u{1b}[0m\u{1b}8", to: output)
       try writer.flush(to: output)
     } catch {
-      restoreAfterFailure(to: output)
+      restoreAfterFailure(error, to: output)
       throw .output(error)
     }
     return FrameStatistics(
@@ -98,7 +98,7 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
         try writer.literal("\u{1b}[0m\u{1b}8", to: output)
         try writer.flush(to: output)
       } catch {
-        restoreAfterFailure(to: output)
+        restoreAfterFailure(error, to: output)
         throw .output(error)
       }
     }
@@ -106,9 +106,16 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
     return FrameStatistics(changedCells: clipped.width * clipped.height, outputBytes: writer.outputBytes)
   }
 
-  private mutating func restoreAfterFailure(to output: borrowing Output) {
+  private mutating func restoreAfterFailure(_ error: IOError, to output: borrowing Output) {
+    // Include earlier flushes: a zero-byte failure in a later buffer can still
+    // follow a completed cursor save in the first buffer.
+    var bytesWritten = writer.outputBytes
+    if case .write(_, let partial) = error { bytesWritten += partial }
     writer.reset()
+    guard bytesWritten > 0 else { return }
+    // ESC 7 needs two bytes. A lone ESC has not saved any state to restore.
+    let recovery: StaticString = bytesWritten >= 2 ? "\u{1b}[0m\u{1b}8" : "\u{18}"
     // One best-effort attempt, using the same bounded syscall retry policy.
-    try? writeStatic("\u{1b}[0m\u{1b}8", to: output.descriptor)
+    try? writeStatic(recovery, to: output.descriptor)
   }
 }

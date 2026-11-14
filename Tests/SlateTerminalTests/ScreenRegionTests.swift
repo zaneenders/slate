@@ -123,6 +123,58 @@ import Glibc
 }
 
 #if os(Linux)
+@Test(arguments: 0..<8, [false, true])
+private func regionFailureRestoresOnlyASavedCursor(prefix: Int, clearing: Bool) throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  var surface = try ScreenRegion(maximumSize: TerminalSize(columns: 2, rows: 1))
+  let viewport = TerminalSize(columns: 20, rows: 10)
+  let region = Rect(x: 3, y: 2, width: 2, height: 1)
+  if clearing {
+    try surface.draw(in: region, clippedTo: viewport, to: output) { Text("AB") }
+    _ = try capture.take()
+  }
+  let steps: InlineArray<2, Int32> = [Int32(prefix), -EAGAIN]
+  steps.span.extracting((prefix == 0 ? 1 : 0)..<2).withUnsafeBufferPointer {
+    unsafe cli_test_write_script($0.baseAddress, $0.count)
+  }
+  defer { cli_test_reset_io() }
+  #expect(throws: ScreenError.output(.write(errno: EAGAIN, bytesWritten: prefix))) {
+    if clearing {
+      try surface.clear(clippedTo: viewport, to: output)
+    } else {
+      try surface.draw(in: region, clippedTo: viewport, to: output) { Text("AB") }
+    }
+  }
+  let attempted =
+    clearing
+    ? "\u{1b}7\u{1b}[0m\u{1b}[3;4H  \u{1b}[0m\u{1b}8"
+    : "\u{1b}7\u{1b}[0m\u{1b}[3;4H\u{1b}[0mAB\u{1b}[0m\u{1b}8"
+  let recovery = prefix == 0 ? "" : prefix == 1 ? "\u{18}" : "\u{1b}[0m\u{1b}8"
+  #expect(try capture.take() == Array(attempted.utf8.prefix(prefix)) + Array(recovery.utf8))
+  #expect(surface.paintedRegion == region)
+}
+
+@Test private func regionFailureAfterAFullWriterBufferStillRestoresTheCursor() throws {
+  let capture = try ScreenCapture()
+  let output = try Output(fileDescriptor: capture.descriptor)
+  let size = TerminalSize(columns: 512, rows: 16)
+  var surface = try ScreenRegion(maximumSize: size)
+  let steps: InlineArray<2, Int32> = [4_096, -EAGAIN]
+  steps.span.withUnsafeBufferPointer { unsafe cli_test_write_script($0.baseAddress, $0.count) }
+  defer { cli_test_reset_io() }
+  #expect(throws: ScreenError.output(.write(errno: EAGAIN, bytesWritten: 0))) {
+    try surface.draw(in: Rect(width: size.columns, height: size.rows), clippedTo: size, to: output) {
+      Text("").frame(width: .fill, height: .fill).background(.blue)
+    }
+  }
+  let bytes = try capture.take()
+  let recovery = Array("\u{1b}[0m\u{1b}8".utf8)
+  #expect(bytes.count == 4_096 + recovery.count)
+  #expect(bytes.starts(with: Array("\u{1b}7".utf8)))
+  #expect(bytes.suffix(recovery.count) == recovery[...])
+}
+
 @Test func regionRetainsOnlyOneRepairRectangleAcrossFailedMovesAndClears() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
