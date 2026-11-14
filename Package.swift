@@ -169,6 +169,11 @@ let package = Package(
       name: "SlateTestSupport",
       path: "Tests/SlateTestSupport"
     ),
+    .target(
+      name: "CLinuxGamepadTestSupport",
+      dependencies: ["CLinuxGamepad"],
+      path: "Tests/CLinuxGamepadTestSupport"
+    ),
 
     // Tests
     .testTarget(
@@ -181,6 +186,7 @@ let package = Package(
       dependencies: [
         "SlateGamepad", "CIOTestSupport",
         .target(name: "CLinuxGamepad", condition: .when(platforms: [.linux])),
+        .target(name: "CLinuxGamepadTestSupport", condition: .when(platforms: [.linux])),
         .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.linux]))
       ],
       swiftSettings: [.enableExperimentalFeature("Lifetimes")]

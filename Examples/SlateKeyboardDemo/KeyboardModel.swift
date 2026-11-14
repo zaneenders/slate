@@ -20,7 +20,7 @@ enum KeyboardMode: Int, Sendable, CaseIterable {
 }
 
 enum KeyboardNotice {
-  case ready, draftFull, wordFull, unknownWord, chooseGroup, invalidLetter, cancelled
+  case ready, draftFull, wordFull, unknownWord, chooseGroup, invalidLetter, cancelled, copied
   var text: String {
     switch self {
     case .ready: "Compose with the sticks. Each tab keeps its own draft."
@@ -30,6 +30,7 @@ enum KeyboardNotice {
     case .chooseGroup: "Aim the left stick at a group, then flick the right stick."
     case .invalidLetter: "That group has no letter in this direction."
     case .cancelled: "Pending input cancelled. Your draft is kept."
+    case .copied: "Draft copied through the terminal clipboard."
     }
   }
 }
@@ -62,6 +63,9 @@ struct KeyboardDraft {
   }
   // Explicitly allocating test/debug snapshot, outside event and rendering paths.
   func snapshot() -> String { String(copying: unsafe UTF8Span(unchecked: bytes.span.extracting(first: count))) }
+  func withText<Result>(_ body: (UTF8Span) -> Result) -> Result {
+    body(unsafe UTF8Span(unchecked: bytes.span.extracting(first: count)))
+  }
 }
 
 struct KeyboardWord {
@@ -211,6 +215,15 @@ final class KeyboardSession: ~Sendable {
     selectedCandidate = 0
     selectedGroup = nil
     notice = .cancelled
+  }
+  func deleteWord() {
+    if tokenCount > 0 {
+      cancel()
+      return
+    }
+    while draft.count > 0 && draft[draft.count - 1] == 32 { draft.count -= 1 }
+    while draft.count > 0 && draft[draft.count - 1] != 32 { draft.count -= 1 }
+    notice = .ready
   }
   func finish(period: Bool = false) {
     guard tokenCount == 0 || candidateCount > 0 else {

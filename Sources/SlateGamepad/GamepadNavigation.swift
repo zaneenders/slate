@@ -2,8 +2,8 @@ public import SlateUI
 
 /// Physical positions, independent of the controller's printed button labels.
 public struct GamepadButtons: OptionSet, Equatable, Sendable {
-  public let rawValue: UInt16
-  public init(rawValue: UInt16) { self.rawValue = rawValue }
+  public let rawValue: UInt32
+  public init(rawValue: UInt32) { self.rawValue = rawValue }
   public static let up = Self(rawValue: 1 << 0)
   public static let down = Self(rawValue: 1 << 1)
   public static let left = Self(rawValue: 1 << 2)
@@ -18,30 +18,37 @@ public struct GamepadButtons: OptionSet, Equatable, Sendable {
   public static let north = Self(rawValue: 1 << 7)
   public static let leftShoulder = Self(rawValue: 1 << 8)
   public static let rightShoulder = Self(rawValue: 1 << 9)
+  public static let leftTrigger = Self(rawValue: 1 << 10)
+  public static let rightTrigger = Self(rawValue: 1 << 11)
+  public static let leftStick = Self(rawValue: 1 << 12)
+  public static let rightStick = Self(rawValue: 1 << 13)
+  /// Options on PlayStation, Menu on Xbox.
+  public static let menu = Self(rawValue: 1 << 14)
+  /// Create on PlayStation, View on Xbox.
+  public static let secondaryMenu = Self(rawValue: 1 << 15)
+  public static let home = Self(rawValue: 1 << 16)
+  public static let touchpad = Self(rawValue: 1 << 17)
+  /// Only available when the native driver exposes a microphone-mute key.
+  public static let microphoneMute = Self(rawValue: 1 << 18)
+  public static let cross = south
+  public static let circle = east
+  public static let square = west
+  public static let triangle = north
+  public static let l1 = leftShoulder
+  public static let r1 = rightShoulder
+  public static let l2 = leftTrigger
+  public static let r2 = rightTrigger
+  public static let l3 = leftStick
+  public static let r3 = rightStick
+  public static let options = menu
+  public static let create = secondaryMenu
+  public static let ps = home
+  public static let standard: Self = [
+    .up, .down, .left, .right, .south, .east, .west, .north,
+    .leftShoulder, .rightShoulder, .leftTrigger, .rightTrigger,
+    .leftStick, .rightStick, .menu, .secondaryMenu, .home
+  ]
   static let directions: Self = [.up, .down, .left, .right]
-}
-
-/// A sampled state. Stick axes are -1...1, with positive Y pointing up.
-/// A disconnected sample clears all held buttons and repeat state.
-public struct GamepadState: Equatable, Sendable {
-  public var connected: Bool
-  public var buttons: GamepadButtons
-  public var leftX: Float
-  public var leftY: Float
-  public var rightX: Float
-  public var rightY: Float
-
-  public init(
-    connected: Bool = false, buttons: GamepadButtons = [], leftX: Float = 0, leftY: Float = 0,
-    rightX: Float = 0, rightY: Float = 0
-  ) {
-    self.connected = connected
-    self.buttons = buttons
-    self.leftX = leftX
-    self.leftY = leftY
-    self.rightX = rightX
-    self.rightY = rightY
-  }
 }
 
 public enum GamepadAction: Equatable, Sendable {
@@ -88,7 +95,7 @@ public struct GamepadNavigation: Sendable {
     }
     let direction = direction(for: state)
     guard armed else {
-      armed = state.buttons.isEmpty && direction == nil
+      armed = state.isNeutral && direction == nil
       return actions
     }
     let pressed = state.buttons.subtracting(previousButtons)

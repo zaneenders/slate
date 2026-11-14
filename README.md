@@ -342,7 +342,8 @@ second while disconnected. The first readable gamepad with south/east buttons
 and ABS_X/Y axes wins; additional controllers wait until it disconnects. D-pad
 hat axes and digital D-pad buttons are supported. The kernel's
 [evdev current-state ioctls](https://www.kernel.org/doc/html/latest/input/event-codes.html)
-take at most seven calls per sample, with no retry or event-draining loop; kernel
+take at most nine calls for the gamepad and six for its optional touchpad per sample,
+with no retry or event-draining loop; kernel
 event queue overflow cannot leave held state stuck. A small C target supplies
 ioctl macros unavailable through Swift System; Swift System owns open/close.
 No new package dependency is needed. If access is denied, grant the current
@@ -351,14 +352,16 @@ device/session rules. Keyboard navigation remains available during retries.
 
 The translator and action batch use fixed inline storage, budgeted by
 `MemoryLayout<GamepadNavigation>.stride + MemoryLayout<GamepadActions>.stride`.
-This is 32 + 16 = 48 bytes on the tested macOS/Linux 64-bit toolchains.
+This is 40 + 16 = 56 bytes on the tested macOS/Linux 64-bit toolchains.
 There is no queue or capacity growth: a sample can emit at most two button actions
 and one move, filling its three inline slots. Callers cannot insert into the
 batch; an internal bound violation traps. Missed samples/repeats are dropped.
 The allocation probe verifies warmed release translation at maximum action load,
 held/repeat boundaries, and reconnects. Native discovery is an explicitly allowed
 allocation path: macOS bridges the device list; Linux creates at most 64 bounded
-device paths per scan, holding one candidate descriptor at a time. OS/framework
+device paths per scan, holding one candidate descriptor at a time. The optional
+Linux touchpad adds one 64-node pass per second until paired, and one retained
+descriptor; at most three descriptors are open during that scan. OS/framework
 storage, initialization, and caller event handlers are outside the verified
 allocation guarantee.
 
@@ -366,6 +369,8 @@ allocation guarantee.
 
 ```sh
 swift run -c release keyboard
+# Start with the live DualSense control map:
+swift run -c release keyboard --controls
 # Keyboard/mouse only, without opening the native controller reader:
 swift run -c release keyboard --keyboard-only
 ```
@@ -380,7 +385,7 @@ The new example has three clickable tabs, each with its own 512-character draft:
 
 D-pad left/right switches tabs. Cross inserts a space in the literal layouts;
 Square deletes, Circle cancels pending input, Triangle adds a period and space,
-and L1 toggles capitals. Holding a direction never repeats a character. Both
+and L1 toggles capitals. The complete DualSense bindings are below. Holding a direction never repeats a character. Both
 sticks must return to neutral after reconnects, tab/layer changes, or cancellation.
 The stick engages at 0.55, releases at 0.35, and uses angular hysteresis to reduce
 sector jitter. Center the right stick before starting another chord.
@@ -408,7 +413,7 @@ UTF-8 bytes per word; `storageBudgetBytes` reports that bound, excluding array
 headers, owner objects, and allocator metadata. Candidate lookup scans at most
 512 signatures and makes at most five insertion comparisons per match. On the
 tested 64-bit toolchains, these buffer budgets are 1,848 and 24,576 bytes.
-Rendering reuses three Canvas owners and a 24-entry HitMap. Full drafts/words reject input
+Rendering reuses four Canvas owners and a 24-entry HitMap. Full drafts/words reject input
 before mutation. Startup tokenization/strings and native controller discovery
 may allocate; warmed typing, lookup, tab rendering, and capacity rejection are
 covered by the release allocation probe. Test/debug `snapshot()` explicitly
@@ -419,6 +424,78 @@ gesture clients. Choose `sample` or navigation `poll` once per tick; the keyboar
 uses raw samples and does not consume navigation's repeating direction actions.
 Linux reads ABS_RX/RY when both axes exist, otherwise reports a neutral right
 stick. The same macOS main-thread and device-access policies apply.
+
+### Complete DualSense input map
+
+Open **Options** (or H/F4) for a live map of all 19 button directions/controls,
+both stick axes, analog triggers, and the two touchpad positions. Pressed,
+released, and not-exposed controls have distinct indicators. Typing and copying
+are suspended in that view; Options/H/Escape returns. D-pad up/down scrolls on
+small viewports. Touch positions are diagnostic data; they do not type letters.
+
+| PS5 control | Keyboard lab action |
+| --- | --- |
+| Left stick | The active tab's letter/group wheel. |
+| Right stick | The active tab's word/letter wheel. |
+| D-pad left / right | Previous / next tab. |
+| D-pad up / down | Right wheel north / south: first/last prediction, or first/third letter in a selected literal group. |
+| Cross / R2 / R3 | Accept the current prediction and a space, or insert a literal space. |
+| Circle / L3 | Cancel pending input; preserve the committed draft. |
+| Square | Delete one composing group or committed character. |
+| Triangle | Commit a prediction if present, then add a period and space. |
+| L1 | Toggle capitals. |
+| R1 (held) | Extra letters/punctuation in Common letters. |
+| L2 | Delete the composing word, or the last committed word and trailing spaces. |
+| Create | Copy the committed draft through terminal OSC 52. Terminal clipboard policy still applies. |
+| Options | Open/close the live control map. |
+| PS | Return to the Predictive tab, preserving drafts. |
+| Touchpad click | Pause/resume typing. |
+| Microphone mute | System audio control; the native APIs/drivers used here do not expose a DualSense key event. |
+
+Keyboard alternatives add H/F4 for the control map, P for pause, and Y for copy.
+Buttons operate on press edges. Trigger values are normalized to 0...1 with
+press/release thresholds of 0.55/0.45; reconnect arming requires both below 0.1,
+neutral sticks, released buttons, and released contacts where available.
+
+The public `GamepadState` now includes `leftTrigger`, `rightTrigger`,
+`supportedButtons`, `features`, `primaryTouch`, and `secondaryTouch`.
+`GamepadButtons` uses UInt32 and provides PlayStation aliases such as `.cross`,
+`.l2`, `.l3`, `.options`, `.create`, and `.ps`. A snapshot occupies
+`MemoryLayout<GamepadState>.stride` bytes; samples, trigger latches, and two contact
+slots have fixed storage (64 bytes per snapshot on the tested 64-bit targets).
+The control map budgets 19 times `MemoryLayout<Control>.stride` plus one snapshot;
+text literals and owner headers are separate from these inline records.
+Clipboard requests may allocate up to the bounded 512-character payload on first
+use/growth; warmed maximum-size copying is covered by the allocation probe.
+
+macOS uses Apple's [DualSense profile](https://developer.apple.com/documentation/gamecontroller/gcdualsensegamepad).
+It exposes touchpad click and two coordinate pairs, but its direction pads lack
+finger-contact flags. `isTouching` remains nil; zero coordinates never imply
+finger-up. The keyboard demo opts into `Gamepad(captureSystemButtons: true)` to
+request direct Menu/Create/PS delivery through
+[system gesture preferences](https://developer.apple.com/documentation/gamecontroller/gccontrollerelement/preferredsystemgesturestate).
+The OS may decline. Preferences are restored on device changes and destruction;
+the library's default remains unchanged. Microphone mute is absent from this profile.
+
+Linux uses ABS_Z/RZ for analog triggers, falling back to digital BTN_TL2/TR2.
+L3/R3, Options/Create, and PS use BTN_THUMBL/THUMBR, BTN_START/SELECT, and BTN_MODE.
+The [hid-playstation driver](https://github.com/torvalds/linux/blob/master/drivers/hid/hid-playstation.c)
+places touchpad click and contacts on a separate evdev node. Slate matches its
+hardware IDs and nonempty unique ID to the selected controller, reads BTN_LEFT
+and exactly two MT slots, and reports accurate contact flags. Empty/truncated IDs
+and mismatches are rejected. Missing/unreadable touchpads leave the gamepad usable
+and report those inputs as not exposed. The driver handles microphone mute
+internally; if an alternative driver advertises KEY_MICMUTE, Slate exposes it.
+Linux input remains nonexclusive, so desktop shortcuts may also receive PS.
+
+Native Linux reads use fixed key masks, eight axis records, and three two-slot
+MT query buffers; at most 15 ioctls per complete sample, without retries or event
+queues. Tests inject bounded ioctl fixtures to verify all mappings, digital
+fallback, identity pairing, centered contacts, and atomic failures at every query
+step. Release probes cover full snapshots, control-map rendering, and maximum
+clipboard payloads. Native discovery/framework allocations remain outside the
+warmed processing guarantee. This maps input controls; motion sensors and
+rumble/adaptive-trigger output are separate features.
 
 ## Colors and terminal settings
 

@@ -36,9 +36,10 @@ import CLinuxGamepad
 import SystemPackage
 
 @Test func gamepadLinuxQueryFailuresLeaveCallerStorageUnchanged() {
-  var axes: UInt8 = 99
-  #expect(slate_gamepad_probe(-1, &axes) == -Errno.badFileDescriptor.rawValue)
-  #expect(axes == 99)
+  var capabilities = slate_gamepad_capabilities()
+  capabilities.axes = 99
+  #expect(slate_gamepad_probe(-1, &capabilities) == -Errno.badFileDescriptor.rawValue)
+  #expect(capabilities.axes == 99)
   var state = slate_gamepad_state()
   state.buttons = 99
   #expect(slate_gamepad_read_state(-1, 3, &state) == -Errno.badFileDescriptor.rawValue)

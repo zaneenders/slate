@@ -13,11 +13,20 @@ public enum GamepadStatus: Equatable, Sendable {
 /// macOS permits one active reader per process and restores its process-wide
 /// background monitoring policy when that reader is destroyed.
 public struct Gamepad: ~Copyable, ~Sendable {
-  private var backend = PlatformGamepad()
+  private var backend: PlatformGamepad
   private var navigation = GamepadNavigation()
   public var status: GamepadStatus { backend.status }
 
-  public init() {}
+  /// On macOS, optionally request direct delivery of Menu/Create/PS instead of
+  /// their system gestures. The OS may decline; previous preferences are restored
+  /// when switching devices or destroying this owner. Linux remains nonexclusive.
+  public init(captureSystemButtons: Bool = false) {
+    #if os(macOS)
+    backend = PlatformGamepad(captureSystemButtons: captureSystemButtons)
+    #else
+    backend = PlatformGamepad()
+    #endif
+  }
 
   /// Sample once per application tick (recommended 16 ms). Sampling can miss a
   /// complete press/release between polls. Late polls emit no catch-up repeats.
