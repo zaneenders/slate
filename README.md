@@ -41,6 +41,8 @@ missed ticks instead of accumulating work.
 Create a drawing owner once, then compose `Canvas(owner)` with ordinary blocks.
 The canvas fills its available space; `frame`, `padding`, and `border` constrain
 its drawing region. Coordinates start at zero inside that region.
+Padding, borders, and backgrounds preserve the child's filling axes, including
+an explicit `.frame(width: .fill, height: .fill)` applied before those modifiers.
 
 ```swift
 import Slate

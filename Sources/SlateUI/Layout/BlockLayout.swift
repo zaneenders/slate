@@ -241,8 +241,15 @@ struct LayoutTree: ~Copyable {
       var width = 0
       var height = 0
       var childCount = 0
+      let preservesFill = node.kind == .background || node.kind == .padding || node.kind == .border
       while child >= 0 {
         let next = nodes[child]
+        // Decorations keep their measured insets while forwarding filling axes,
+        // including custom blocks that emit several siblings.
+        if preservesFill {
+          if next.width == .fill { nodes[index].width = .fill }
+          if next.height == .fill { nodes[index].height = .fill }
+        }
         if node.kind == .row {
           width += next.measuredWidth
           height = max(height, next.measuredHeight)
@@ -258,8 +265,8 @@ struct LayoutTree: ~Copyable {
       }
       if node.kind == .row { width += max(0, childCount - 1) * node.gap }
       if node.kind == .column { height += max(0, childCount - 1) * node.gap }
-      nodes[index].measuredWidth = node.width.measured(min(65_535, width + 2 * node.horizontalPadding))
-      nodes[index].measuredHeight = node.height.measured(min(65_535, height + 2 * node.verticalPadding))
+      nodes[index].measuredWidth = nodes[index].width.measured(min(65_535, width + 2 * node.horizontalPadding))
+      nodes[index].measuredHeight = nodes[index].height.measured(min(65_535, height + 2 * node.verticalPadding))
     }
     nodes[0].region = area
     for index in 0..<count {
