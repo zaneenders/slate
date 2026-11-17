@@ -1,5 +1,4 @@
 import CIOTestSupport
-import Dispatch
 import Foundation
 import SlateTestSupport
 import Synchronization
@@ -16,9 +15,11 @@ import Glibc
 #endif
 
 @Suite(.serialized)
-struct SignalOwnershipTests {
+@MainActor struct SignalOwnershipTests {
   #if os(Linux)
-  @Test func readInterruptionChecksTerminationBeforePollingOrDeliveringInput() throws {
+  @Test @MainActor func readInterruptionChecksTerminationBeforePollingOrDeliveringInput() async throws {
+    await SessionIOGate.shared.acquire()
+    defer { SessionIOGate.shared.release() }
     let pty = try PseudoTerminal()
     var size = winsize(ws_row: 1, ws_col: 1, ws_xpixel: 0, ws_ypixel: 0)
     try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
@@ -31,12 +32,15 @@ struct SignalOwnershipTests {
     try #require(unsafe pthread_sigmask(SIG_UNBLOCK, &set, &saved) == 0)
     defer { _ = unsafe pthread_sigmask(SIG_SETMASK, &saved, nil) }
     let polls: InlineArray<2, Int32> = [1, -EIO]
+    cli_test_session_io(pty.slave)
     polls.span.withUnsafeBufferPointer { unsafe cli_test_poll_script($0.baseAddress, $0.count) }
     cli_test_read_signal(SIGTERM)
     defer { cli_test_reset_io() }
     var application = SignalDuringQuitApplication()
-    #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
-      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
+    await #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
+      try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+        application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+        signalHandling: .managed)
     }
     #expect(application.handledKeys == 0)
     // The second scripted poll must still be pending after termination.
@@ -46,7 +50,9 @@ struct SignalOwnershipTests {
   }
   #endif
 
-  @Test func signalOwnerRejectsOverlapAndRestoresAfterScopeExit() throws {
+  @Test @MainActor func signalOwnerRejectsOverlapAndRestoresAfterScopeExit() async throws {
+    await SessionIOGate.shared.acquire()
+    defer { SessionIOGate.shared.release() }
     do {
       let owner = try SignalSession(.managed)
       let enabled = owner.enabled
@@ -66,15 +72,17 @@ struct SignalOwnershipTests {
     let output = try Output(fileDescriptor: pty.master)
     try output.writeAll("q".utf8Span.span)
     var application = SignalDuringQuitApplication()
-    #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
-      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave, signalHandling: .managed)
+    await #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
+      try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+        application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+        signalHandling: .managed)
     }
     #expect(application.handledKeys == 1)
     expectEqual(try attributes(of: pty.slave), saved)
   }
 
   // Serialize parent-process signal changes; the other tests use child processes.
-  @Test func signalStateCoalescesBurstsAndRestoresDispositions() throws {
+  @Test @MainActor func signalStateCoalescesBurstsAndRestoresDispositions() throws {
     var originalContinue = try readSignalAction(SIGCONT)
     defer { _ = unsafe sigaction(SIGCONT, &originalContinue, nil) }
     var ignoredContinue = sigaction()
@@ -135,25 +143,18 @@ struct SignalOwnershipTests {
     for index in numbers.indices { expectSignalAction(try readSignalAction(numbers[index]), saved[index]) }
   }
 
-  @Test func signalsStayMaskedDuringSetupAndTeardownAndKeepTheFirstCause() throws {
-    // Darwin cannot target a dispatch worker with pthread_kill; raise then
-    // falls back to process delivery. Use an ordinary thread for thread-mask
-    // assertions, and report its observations back on the test's own task.
-    let result = Mutex<Result<[SignalMaskObservation], any Error>?>(nil)
-    let finished = DispatchSemaphore(value: 0)
-    Thread.detachNewThread {
-      let observations = Result { try observeSignalMaskDelivery() }
-      result.withLock { $0 = observations }
-      finished.signal()
+  @Test @MainActor func signalsStayMaskedDuringSetupAndTeardownAndKeepTheFirstCause() async throws {
+    let observations: [SignalMaskObservation] = try await withCheckedThrowingContinuation { continuation in
+      Thread.detachNewThread {
+        continuation.resume(with: Result { try observeSignalMaskDelivery() })
+      }
     }
-    finished.wait()
-    let observations = try result.withLock { try $0!.get() }
     for observation in observations {
       #expect(observation.actual == observation.expected, "\(observation.operation)")
     }
   }
 
-  @Test func managedSignalDispositionsRestoreWithoutReplacingRuntimeCrashOrChildHandlers() throws {
+  @Test @MainActor func managedSignalDispositionsRestoreWithoutReplacingRuntimeCrashOrChildHandlers() throws {
     let numbers = [
       SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGALRM, SIGUSR1, SIGUSR2, SIGVTALRM, SIGPROF,
       SIGXCPU, SIGXFSZ, SIGIO, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE, SIGCONT, SIGWINCH,
@@ -300,6 +301,7 @@ private struct SignalDuringQuitApplication: ScreenApplication {
 }
 
 @Test(arguments: terminalTerminationSignals)
+@MainActor
 func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -315,6 +317,7 @@ func managedTerminationRestoresModesAndReportsSignal(_ number: Int32) throws {
 }
 
 @Test(arguments: [SIGTTIN, SIGTTOU, SIGPIPE, SIGCONT, SIGWINCH])
+@MainActor
 func managedIgnoredSignalsLeaveTheSessionUsable(_ number: Int32) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -327,6 +330,7 @@ func managedIgnoredSignalsLeaveTheSessionUsable(_ number: Int32) throws {
 }
 
 @Test(arguments: [false, true])
+@MainActor
 func signalBurstsDuringTeardownFinishCleanupAndPreserveTheInitialCause(_ hasInitialTermination: Bool) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -341,6 +345,7 @@ func signalBurstsDuringTeardownFinishCleanupAndPreserveTheInitialCause(_ hasInit
 }
 
 @Test(arguments: [1, 5, 69, 133, 197])
+@MainActor
 func managedRawModeAllowsApplicationsToRebindCtrlZ(_ keyboard: Int) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -353,6 +358,7 @@ func managedRawModeAllowsApplicationsToRebindCtrlZ(_ keyboard: Int) throws {
 }
 
 @Test(arguments: [1, 5, 69, 133, 197])
+@MainActor
 func managedSIGTSTPLeavesRawModeAndPasteFramingActive(_ keyboard: Int) throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
@@ -376,7 +382,7 @@ func managedSIGTSTPLeavesRawModeAndPasteFramingActive(_ keyboard: Int) throws {
   expectEqual(try attributes(of: child.pty.slave), child.saved)
 }
 
-@Test func managedSIGTSTPDoesNotInvokeTheApplicationCtrlZBinding() throws {
+@Test @MainActor func managedSIGTSTPDoesNotInvokeTheApplicationCtrlZBinding() throws {
   let child = try TerminalChild()
   try child.awaitOutput("\u{1b}[>1u")
   try #require(kill(child.pid, SIGTSTP) == 0)
@@ -388,4 +394,42 @@ func managedSIGTSTPLeavesRawModeAndPasteFramingActive(_ keyboard: Int) throws {
   #expect(kind == 2 && value == 0)
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   try child.awaitOutput("\u{1b}[<u")
+}
+
+extension SignalOwnershipTests {
+  @Test func terminationDuringFailureCleanupKeepsTheManagedSignalExitStatus() async throws {
+    await SessionIOGate.shared.acquire()
+    defer { SessionIOGate.shared.release() }
+    let pty = try PseudoTerminal()
+    let saved = try attributes(of: pty.slave)
+    var size = winsize(ws_row: 2, ws_col: 8, ws_xpixel: 0, ws_ypixel: 0)
+    try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
+    var app = TerminatingFailureApplication()
+    let session = ScreenSession(maximumOutputBytes: 65_536, taskCapacity: 0)
+    await #expect(throws: ScreenApplicationError.interrupted(signal: SIGTERM)) {
+      try await session.run(
+        application: &app, inputFileDescriptor: pty.slave,
+        outputFileDescriptor: pty.slave, signalHandling: .managed)
+    }
+    expectEqual(try attributes(of: pty.slave), saved)
+  }
+}
+
+private struct TerminatingFailureApplication: ScreenApplication {
+  func render(in size: TerminalSize) -> some Block { Text("cells") }
+  mutating func presentGraphics(in size: TerminalSize, to output: borrowing Output) throws(KittyGraphicsError) {
+    throw .emptyRegion
+  }
+  mutating func clearGraphics(to output: borrowing Output) throws(KittyGraphicsError) {
+    var action = sigaction()
+    precondition(unsafe sigaction(SIGTERM, nil, &action) == 0)
+    #if canImport(Darwin)
+    let handler = unsafe action.__sigaction_u.__sa_handler
+    #elseif canImport(Musl)
+    let handler = unsafe action.__sa_handler.sa_handler
+    #else
+    let handler = unsafe action.__sigaction_handler.sa_handler
+    #endif
+    handler!(SIGTERM)
+  }
 }

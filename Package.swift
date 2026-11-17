@@ -1,4 +1,4 @@
-// swift-tools-version: 6.4
+// swift-tools-version: 6.4.2
 
 import PackageDescription
 
@@ -23,6 +23,7 @@ let package = Package(
     .library(name: "Slate", targets: ["Slate"]),
     .library(name: "SlateGamepad", targets: ["SlateGamepad"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
+    .executable(name: "async-updates", targets: ["SlateAsyncDemo"]),
     .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
     .executable(name: "scoped-navigation", targets: ["SlateScopedNavigationDemo"]),
     .executable(name: "keyboard", targets: ["SlateKeyboardDemo"]),
@@ -43,6 +44,10 @@ let package = Package(
       dependencies: ["SlateTerminal", "SlateUI"],
       path: "Benchmarks/SlateRenderBenchmark",
       swiftSettings: swiftSettings
+    ),
+    .executableTarget(
+      name: "SlateAsyncDemo", dependencies: ["Slate"],
+      path: "Examples/SlateAsyncDemo", swiftSettings: swiftSettings
     ),
     // Demo
     .executableTarget(

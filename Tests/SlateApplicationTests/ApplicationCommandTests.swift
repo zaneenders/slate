@@ -3,7 +3,7 @@ import Testing
 
 @testable import SlateApplication
 
-@Test func genericCommandsPreserveOrderAndOwnedPayloadsAtEveryInputSplit() throws {
+@Test @MainActor func genericCommandsPreserveOrderAndOwnedPayloadsAtEveryInputSplit() throws {
   let bytes = Array("a\u{1b}_Xmode=ready\u{1b}\\b\u{1b}_Gi=7;OK\u{1b}\\\u{1b}_Gi=0;OK\u{1b}\\qz".utf8)
   for split in 0...bytes.count {
     var runner = try ScreenRunner(configuration: .init())
@@ -23,7 +23,7 @@ import Testing
   }
 }
 
-@Test func genericCommandsKeepBoundedPrefixesAndConsumeTruncatedTails() throws {
+@Test @MainActor func genericCommandsKeepBoundedPrefixesAndConsumeTruncatedTails() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = CommandApplication()
   let body = String(repeating: "x", count: ApplicationCommand.maximumBytes + 20)
@@ -41,17 +41,17 @@ import Testing
   #expect(command == ApplicationCommand(body.utf8Span.span))
 }
 
-@Test func genericCommandHandlersCanRequestRedrawOrQuitWithinABatch() throws {
+@Test @MainActor func genericCommandHandlersCanRequestRedrawOrQuitWithinABatch() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   let size = TerminalSize(columns: 1, rows: 1)
   var runner = try ScreenRunner(configuration: .init())
   var application = CommandApplication()
-  #expect(try runner.draw(application: &application, actualSize: size, to: output))
-  #expect(try !runner.draw(application: &application, actualSize: size, to: output))
+  #expect(try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output))
+  #expect(try !presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output))
   application.commandUpdate = .redraw
   #expect(try runner.receive("\u{1b}_Xready\u{1b}\\".utf8Span.span, at: .now, application: &application))
-  #expect(try runner.draw(application: &application, actualSize: size, to: output))
+  #expect(try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output))
   application.commandUpdate = .quit
   #expect(try !runner.receive("\u{1b}_Xdone\u{1b}\\z".utf8Span.span, at: .now, application: &application))
   #expect(application.received == ["command", "command"])

@@ -23,6 +23,10 @@ public struct TerminalInput: ~Copyable, Sendable {
   private var failure: TerminalInputError?
   private var finished = false
 
+  package var hasPendingDeadline: Bool {
+    escapeDeadline != nil || responseDeadline != nil || recoveryDeadline != nil
+  }
+
   public init() {}
 
   /// Read immediately after receiving .terminalReply(.applicationCommand),

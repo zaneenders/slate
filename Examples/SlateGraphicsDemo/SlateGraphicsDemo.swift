@@ -4,6 +4,13 @@ import Slate
 /// one animation step per 16 ms tick. Late ticks are dropped, never queued.
 @main
 struct SlateGraphicsDemo: ScreenApplication {
+  static func main() async {
+    var application = Self()
+    let session = ScreenSession(maximumOutputBytes: 4 * 1_048_576, taskCapacity: 0)
+    await session.main(
+      application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
+  }
+
   private let gradient = GradientDrawing()
   private let bars = BarDrawing()
   private let panelDrag = PanelDrag()

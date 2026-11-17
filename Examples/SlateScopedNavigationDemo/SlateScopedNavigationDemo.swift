@@ -2,6 +2,13 @@ import Slate
 
 @main
 struct SlateScopedNavigationDemo: ~Copyable, ScreenApplication {
+  static func main() async {
+    var application = Self()
+    let session = ScreenSession(maximumOutputBytes: 4 * 1_048_576, taskCapacity: 0)
+    await session.main(
+      application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
+  }
+
   enum Scope: Hashable { case workspace, help }
   enum Target: Hashable { case notes, reader, help }
 

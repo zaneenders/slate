@@ -14,6 +14,7 @@ import Musl
 extension Output {
   /// Queries the output terminal, independently of the input terminal.
   public borrowing func terminalSize() throws(TerminalError) -> TerminalSize {
+    guard !isBuffered else { throw .readSize(errno: ENOTTY) }
     var size = winsize()
     guard unsafe ioctl(descriptor.rawValue, UInt(TIOCGWINSZ), &size) == 0 else {
       throw .readSize(errno: errno)
@@ -156,6 +157,7 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
 
   @_lifetime(borrow output)
   init(output: borrowing Output, mode: TerminalMode) throws(IOError) {
+    guard !output.isBuffered else { throw .write(errno: ENOTTY, bytesWritten: 0) }
     let sequences = mode.sequences
     do throws(IOError) { try writeStatic(sequences.enable, to: output.descriptor) } catch {
       if case .write(_, let bytesWritten) = error, bytesWritten > 0 {

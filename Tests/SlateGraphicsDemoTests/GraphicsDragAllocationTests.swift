@@ -9,6 +9,7 @@ import Testing
 /// Setup, runtime warm-up, clocks, and assertions stay outside the synchronous
 /// measured loop. Each event replaces fixed-size state and renders the full demo.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+@MainActor
 func graphicsDragAllocationAtMaximumViewport() throws {
   try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
   let configuration = SlateGraphicsDemo.configuration
@@ -59,6 +60,7 @@ func graphicsDragAllocationAtMaximumViewport() throws {
 }
 
 @inline(never)
+@MainActor
 private func renderDragStep(
   _ step: Int, application: inout SlateGraphicsDemo, surface: inout Surface, copy: inout CopyBuffer,
   size: TerminalSize
@@ -70,6 +72,7 @@ private func renderDragStep(
 }
 
 @inline(never)
+@MainActor
 private func renderAnimationStep(
   application: inout SlateGraphicsDemo, surface: inout Surface, copy: inout CopyBuffer, size: TerminalSize
 ) throws(SurfaceError) {

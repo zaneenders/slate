@@ -9,6 +9,7 @@ import Testing
 @Suite(.serialized)
 struct KeyboardAllocationTests {
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  @MainActor
   func keyboardDemoAllocationForRenderingCapacityRejectionAndClipboard() throws {
     try #require(cli_test_prepare_allocation_counter() != 0)
     var app = SlateKeyboardDemo()
@@ -31,6 +32,7 @@ struct KeyboardAllocationTests {
     #expect(surface.storageBudgetBytes == budget)
   }
 
+  @MainActor
   private func batch(_ app: inout SlateKeyboardDemo, surface: inout Surface, copy: inout CopyBuffer)
     throws(SurfaceError)
   {

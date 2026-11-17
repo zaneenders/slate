@@ -11,8 +11,8 @@ import Musl
 import Glibc
 #endif
 
-@Test func ticksDefaultTo50MillisecondsAndSkipMissedUpdates() throws {
-  #expect(DefaultTickApplication().tickInterval == .milliseconds(50))
+@Test @MainActor func ticksAreOptInAndSkipMissedUpdates() throws {
+  #expect(DefaultTickApplication().tickInterval == nil)
   var runner = try ScreenRunner(configuration: .init())
   var application = TickApplication()
   let start = ContinuousClock().now
@@ -32,7 +32,7 @@ import Glibc
   #expect(application.probe.elapsed.count == 2)
 }
 
-@Test func tickIntervalChangesPauseAndResumeRestartScheduling() throws {
+@Test @MainActor func tickIntervalChangesPauseAndResumeRestartScheduling() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = TickApplication()
   application.tickInterval = .milliseconds(16)
@@ -56,7 +56,7 @@ import Glibc
   #expect(application.probe.elapsed == [.milliseconds(16), .milliseconds(32)])
 }
 
-@Test func tickPollingRoundsUpAndHandlesHugeOrInvalidIntervals() throws {
+@Test @MainActor func tickPollingRoundsUpAndHandlesHugeOrInvalidIntervals() throws {
   let start = ContinuousClock().now
   var schedule = TickSchedule()
   try schedule.synchronize(interval: .nanoseconds(1), at: start)
@@ -80,25 +80,25 @@ import Glibc
   #expect(schedule.next(at: start.advanced(by: .seconds(1))) == nil)
 }
 
-@Test func ticksCoalesceRedrawsAndHonorNoneQuitAndPendingWork() throws {
+@Test @MainActor func ticksCoalesceRedrawsAndHonorNoneQuitAndPendingWork() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   let size = TerminalSize(columns: 4, rows: 1)
   var runner = try ScreenRunner(configuration: .init())
   var application = TickApplication()
   let start = ContinuousClock().now
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 1)
   _ = try runner.pollTimeout(at: start, application: application)
   application.update = .none
   #expect(try runner.tick(at: start.advanced(by: .milliseconds(50)), application: &application))
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 1)
   application.update = .redraw
   for milliseconds in [100, 150] {
     #expect(try runner.tick(at: start.advanced(by: .milliseconds(milliseconds)), application: &application))
   }
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 2)
   application.hasPendingWork = true
   #expect(try runner.pollTimeout(at: start.advanced(by: .milliseconds(151)), application: application) == 0)
@@ -107,7 +107,9 @@ import Glibc
   #expect(application.probe.elapsed.count == 4)
 }
 
-@Test func applicationTicksWithoutInputAndQueuedQuitTakesPriority() throws {
+@Test @MainActor func applicationTicksWithoutInputAndQueuedQuitTakesPriority() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   for queuedQuit in [false, true] {
     let pty = try PseudoTerminal()
     var size = winsize(ws_row: 1, ws_col: 4, ws_xpixel: 0, ws_ypixel: 0)
@@ -119,21 +121,27 @@ import Glibc
     var application = TickApplication()
     application.tickInterval = .milliseconds(16)
     application.quitAfterTicks = 2
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     #expect(application.probe.elapsed.count == (queuedQuit ? 0 : 2))
     #expect(application.probe.frames == (queuedQuit ? 1 : 2))
     #expect(application.probe.elapsed.allSatisfy { $0 >= .milliseconds(16) })
   }
 }
 
-@Test func invalidInitialTickIntervalsFailBeforeChangingTerminalModes() throws {
+@Test @MainActor func invalidInitialTickIntervalsFailBeforeChangingTerminalModes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   let saved = try attributes(of: pty.slave)
   for interval in [Duration.zero, .milliseconds(-1)] {
     var application = TickApplication()
     application.tickInterval = interval
-    #expect(throws: ScreenApplicationError.invalidTickInterval) {
-      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    await #expect(throws: ScreenApplicationError.invalidTickInterval) {
+      try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+        application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+        signalHandling: .unchanged)
     }
     expectEqual(try attributes(of: pty.slave), saved)
     #expect(application.probe.frames == 0 && application.probe.elapsed.isEmpty)

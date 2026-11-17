@@ -4,7 +4,7 @@ import Testing
 
 @testable import SlateKeyboardDemo
 
-@Test func keyboardLettersCoverTheAlphabetAndRejectMissingPositions() {
+@Test @MainActor func keyboardLettersCoverTheAlphabetAndRejectMissingPositions() {
   var letters: [UInt8] = []
   for group in 0..<8 {
     for sector in stride(from: 0, to: 8, by: 2) {
@@ -16,7 +16,7 @@ import Testing
   #expect(KeyboardLetters.letter(group: 0, sector: 1) == nil)
 }
 
-@Test func keyboardStickFlickRequiresNeutralAndCommitsOnceInAllEightDirections() {
+@Test @MainActor func keyboardStickFlickRequiresNeutralAndCommitsOnceInAllEightDirections() {
   var stick = StickFlick(eightWay: true)
   #expect(stick.update(x: 1, y: 0) == nil && stick.active == nil)
   _ = stick.update(x: 0, y: 0)
@@ -37,7 +37,7 @@ import Testing
   #expect(stick.active == nil)
 }
 
-@Test func keyboardControllerLatchesGroupsAndRequiresNeutralAfterReconnectAndCancel() {
+@Test @MainActor func keyboardControllerLatchesGroupsAndRequiresNeutralAfterReconnectAndCancel() {
   var app = SlateKeyboardDemo()
   app.controllerEnabled = false
   var copy = CopyBuffer()
@@ -59,7 +59,7 @@ import Testing
   #expect(app.draft.snapshot() == "a")
 }
 
-@Test func keyboardControllerCommandsAreEdgedAndCopyTheDraft() {
+@Test @MainActor func keyboardControllerCommandsAreEdgedAndCopyTheDraft() {
   var app = SlateKeyboardDemo()
   app.controllerEnabled = false
   var copy = CopyBuffer()
@@ -75,7 +75,7 @@ import Testing
   #expect(app.draft.byteCount == 0)
 }
 
-@Test func keyboardMouseAndKeysUseTheRenderedGroupGeometry() throws {
+@Test @MainActor func keyboardMouseAndKeysUseTheRenderedGroupGeometry() throws {
   var app = SlateKeyboardDemo()
   app.controllerEnabled = false
   var surface = try Surface(maximumSize: .init(columns: 240, rows: 80))

@@ -11,6 +11,7 @@ import Glibc
 #endif
 
 @Test(arguments: ["\r", "\u{3}", "\u{1b}", "q", "\u{1b}[99;5u"])
+@MainActor
 func kittyDemoDeletesItsImageAndRestoresTerminalAfterExitKeys(_ key: String) throws {
   let child = try TerminalChild(executable: "kitty-graphics")
   try child.awaitOutput(",C=1,q=2\u{1b}\\\u{1b}8")
@@ -21,6 +22,7 @@ func kittyDemoDeletesItsImageAndRestoresTerminalAfterExitKeys(_ key: String) thr
 }
 
 @Test(arguments: terminalTerminationSignals)
+@MainActor
 func kittyDemoDeletesItsImageBeforeRestoringTerminalAfterSignals(_ number: Int32) throws {
   let child = try TerminalChild(executable: "kitty-graphics")
   try child.awaitOutput(",C=1,q=2\u{1b}\\\u{1b}8")
@@ -29,7 +31,7 @@ func kittyDemoDeletesItsImageBeforeRestoringTerminalAfterSignals(_ number: Int32
   try expectRestored(child)
 }
 
-@Test func kittyDemoRepositionsOnResizeWithoutUploadingAgain() throws {
+@Test @MainActor func kittyDemoRepositionsOnResizeWithoutUploadingAgain() throws {
   let child = try TerminalChild(executable: "kitty-graphics")
   try child.awaitOutput(",c=78,r=21,z=0,C=1,q=2\u{1b}\\\u{1b}8")
   var size = winsize(ws_row: 16, ws_col: 60, ws_xpixel: 0, ws_ypixel: 0)
@@ -41,6 +43,7 @@ func kittyDemoDeletesItsImageBeforeRestoringTerminalAfterSignals(_ number: Int32
   try expectRestored(child)
 }
 
+@MainActor
 private func expectRestored(_ child: TerminalChild) throws {
   expectEqual(try attributes(of: child.pty.slave), child.saved)
   let deletion = try #require(child.output.range(of: "\u{1b}_Ga=d,d=I,i=1,q=2\u{1b}\\"))

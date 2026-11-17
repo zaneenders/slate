@@ -4,6 +4,7 @@ import Testing
 @testable import SlateScopedNavigationDemo
 
 @Test(arguments: [TerminalSize(columns: 100, rows: 24), .init(columns: 40, rows: 16)])
+@MainActor
 func scopedDemoKeepsMovementLocalAndRevealsCollapsedPanes(size: TerminalSize) throws {
   var app = SlateScopedNavigationDemo()
   var surface = try Surface(maximumSize: size, layoutBudget: .init())
@@ -26,7 +27,7 @@ func scopedDemoKeepsMovementLocalAndRevealsCollapsedPanes(size: TerminalSize) th
   #expect(app.focus.focusedID == .reader)
 }
 
-@Test func scopedDemoDialogOwnsInputAndRestoresTheReader() throws {
+@Test @MainActor func scopedDemoDialogOwnsInputAndRestoresTheReader() throws {
   var app = SlateScopedNavigationDemo()
   let size = TerminalSize(columns: 100, rows: 24)
   var surface = try Surface(maximumSize: size, layoutBudget: .init())
@@ -57,7 +58,7 @@ func scopedDemoKeepsMovementLocalAndRevealsCollapsedPanes(size: TerminalSize) th
   #expect(app.focus.focusedID == .notes)
 }
 
-@Test func scopedDemoPreservesStateAcrossTinyAndSplitViewports() throws {
+@Test @MainActor func scopedDemoPreservesStateAcrossTinyAndSplitViewports() throws {
   var app = SlateScopedNavigationDemo()
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 30), layoutBudget: .init())
   var copy = CopyBuffer()

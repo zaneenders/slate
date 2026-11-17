@@ -1,43 +1,41 @@
 import BasicContainers
 
-/// Retains at most `maximumBytes` of the current paste. Capacity starts small,
-/// grows on demand, and is retained across resets. Oversized pastes are drained
-/// to the terminator and reported once as `.tooLarge`, so their tail never
-/// becomes keystrokes. A truncated paste is cancelled at EOF.
+//// Fixed startup paste storage. Oversized payloads are drained and rejected once.
 struct PasteBuffer: ~Copyable {
   static let defaultMaximumBytes = ScreenApplicationConfiguration.defaultMaximumPasteBytes
   static let maximumSupportedBytes = ScreenApplicationConfiguration.maximumPasteBytesLimit
-  static let initialCapacity = 65_536
 
   let maximumBytes: Int
-  private var bytes: UniqueArray<UInt8>
+  private var bytes: RigidArray<UInt8>
+  private var count = 0
   private(set) var isTooLarge = false
 
-  init(maximumBytes: Int = Self.defaultMaximumBytes) {
+  init(maximumBytes: Int) {
     precondition(maximumBytes > 0 && maximumBytes <= Self.maximumSupportedBytes)
     self.maximumBytes = maximumBytes
-    bytes = UniqueArray(minimumCapacity: min(Self.initialCapacity, maximumBytes))
+    bytes = RigidArray(repeating: 0, count: maximumBytes)
   }
 
-  var isEmpty: Bool { bytes.isEmpty }
+  var isEmpty: Bool { count == 0 }
 
   mutating func reset() {
-    bytes.removeAll()
+    count = 0
     isTooLarge = false
   }
 
   mutating func append(_ byte: UInt8) {
     guard !isTooLarge else { return }
-    guard bytes.count < maximumBytes else {
+    guard count < maximumBytes else {
       isTooLarge = true
       return
     }
-    bytes.append(byte)
+    bytes[count] = byte
+    count += 1
   }
 
   @_lifetime(borrow self)
   borrowing func text() throws(PasteError) -> UTF8Span {
     precondition(!isTooLarge, "An oversized paste must be rejected before reading its text")
-    do { return try UTF8Span(validating: bytes.span) } catch { throw .invalidUTF8 }
+    do { return try UTF8Span(validating: bytes.span.extracting(first: count)) } catch { throw .invalidUTF8 }
   }
 }

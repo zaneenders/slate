@@ -4,7 +4,7 @@ import Testing
 
 @testable import SlateNavigationDemo
 
-@Test func navigationDemoReflowsFocusGroupsAndAcceptsMouseSelection() throws {
+@Test @MainActor func navigationDemoReflowsFocusGroupsAndAcceptsMouseSelection() throws {
   var app = SlateNavigationDemo()
   app.controllerEnabled = false
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
@@ -30,7 +30,7 @@ import Testing
   try surface.render(size: .init(columns: 1, rows: 1)) { app.render(in: .init(columns: 1, rows: 1)) }
 }
 
-@Test func navigationDemoEditingKeepsArrowsAndClipboardWithTheInput() throws {
+@Test @MainActor func navigationDemoEditingKeepsArrowsAndClipboardWithTheInput() throws {
   var app = SlateNavigationDemo()
   app.controllerEnabled = false
   var surface = try Surface(maximumSize: .init(columns: 80, rows: 24))
@@ -56,7 +56,7 @@ import Testing
   #expect(app.event(.key(.character("q"), modifiers: .control), copyBuffer: &copy) == .quit)
 }
 
-@Test func navigationDemoControllerBackAndPauseAndAnimation() throws {
+@Test @MainActor func navigationDemoControllerBackAndPauseAndAnimation() throws {
   var app = SlateNavigationDemo()
   app.controllerEnabled = false
   var surface = try Surface(maximumSize: .init(columns: 80, rows: 24))

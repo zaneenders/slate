@@ -12,7 +12,7 @@ import Musl
 import Glibc
 #endif
 
-@Test func unifiedEventsPreserveOrderPasteFailuresAndQuitWithinOneBatch() throws {
+@Test @MainActor func unifiedEventsPreserveOrderPasteFailuresAndQuitWithinOneBatch() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = OrderedEventApplication()
   var bytes = Array("a\u{1b}[1;2A\u{1b}[<0;2;2M\u{1b}[200~é\u{1b}[201~\u{1b}[200~".utf8)
@@ -45,51 +45,51 @@ private struct OrderedEventApplication: ScreenApplication {
   func render(in size: TerminalSize) -> some Block { Text("") }
 }
 
-@Test func applicationDrawsInitiallyAndCoalescesOnlyRequestedUpdates() throws {
+@Test @MainActor func applicationDrawsInitiallyAndCoalescesOnlyRequestedUpdates() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let size = TerminalSize(columns: 4, rows: 2)
   let now = ContinuousClock().now
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.sizes == [size])
   #expect(!(try capture.take()).isEmpty)
 
   let ignored: InlineArray<2, UInt8> = [0x78, 0xff]
   #expect(try runner.receive(ignored.span, at: now, application: &application))
-  try runner.draw(application: &application, actualSize: size, to: output)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.sizes.count == 1)
   #expect(try capture.take().isEmpty)
   #expect(application.probe.keys == [.character("x")])
 
   let redraws: InlineArray<3, UInt8> = [0x72, 0x78, 0x72]
   #expect(try runner.receive(redraws.span, at: now, application: &application))
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.sizes.count == 2)
 }
 
-@Test func applicationWorkRunsOneBatchAndRedrawsOnlyWhenRequested() throws {
+@Test @MainActor func applicationWorkRunsOneBatchAndRedrawsOnlyWhenRequested() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   var runner = try ScreenRunner(configuration: .init())
   var application = WorkApplication()
   let size = TerminalSize(columns: 4, rows: 2)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 1 && application.probe.steps == 0)
   _ = try capture.take()
   let firstContinues = runner.performPendingWork(application: &application)
   #expect(firstContinues)
   #expect(application.probe.steps == 1)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 2)
   _ = try capture.take()
   // The final batch can finish without changing presentation.
   application.finalUpdate = .none
   let secondContinues = runner.performPendingWork(application: &application)
   #expect(secondContinues)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.steps == 2 && application.probe.frames == 2)
   #expect(try capture.take().isEmpty)
   let idleContinues = runner.performPendingWork(application: &application)
@@ -101,13 +101,17 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(!quitContinues)
 }
 
-@Test func applicationWorkAdvancesWithoutInputAndChecksQueuedQuitBeforeWork() throws {
+@Test @MainActor func applicationWorkAdvancesWithoutInputAndChecksQueuedQuitBeforeWork() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   for queuedQuit in [false, true] {
     let pty = try PseudoTerminal()
     try setApplicationTerminalSize(pty.slave)
     if queuedQuit { try queueApplicationInput([0x71], to: pty.master) }
     var application = WorkApplication()
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     #expect(application.probe.steps == (queuedQuit ? 0 : 2))
     #expect(application.probe.frames == (queuedQuit ? 1 : 2))
     #expect(fcntl(pty.master, F_GETFD) >= 0)
@@ -115,7 +119,7 @@ private struct OrderedEventApplication: ScreenApplication {
   }
 }
 
-@Test func applicationDeliversMaximumInputBatchAndRecoveryAcrossEventCapacity() throws {
+@Test @MainActor func applicationDeliversMaximumInputBatchAndRecoveryAcrossEventCapacity() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let now = ContinuousClock().now
@@ -127,7 +131,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.keys == Array(repeating: .character("a"), count: 64))
 }
 
-@Test func applicationDeliversKeyModifiersAndStopsBatchOnQuit() throws {
+@Test @MainActor func applicationDeliversKeyModifiersAndStopsBatchOnQuit() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let bytes = "x\u{1b}[1;2A\u{1b}[1;3Dqr".utf8Span.span
@@ -136,7 +140,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.modifiers == [[], .shift, .alt, []])
 }
 
-@Test func applicationDeliversSuperAndControlKeysAlongsideNativeTerminalPaste() throws {
+@Test @MainActor func applicationDeliversSuperAndControlKeysAlongsideNativeTerminalPaste() throws {
   var runner = try ScreenRunner(configuration: .init(enhancedKeyboard: true))
   var application = ProbeApplication()
   let bytes = "\u{1b}[99;9u\u{1b}[200~café\u{1b}[201~\u{1b}[99;5uq".utf8Span.span
@@ -146,7 +150,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.pastes == ["café"])
 }
 
-@Test func applicationPreservesLockStateOnNavigationAndKeypadEvents() throws {
+@Test @MainActor func applicationPreservesLockStateOnNavigationAndKeypadEvents() throws {
   var runner = try ScreenRunner(configuration: .init(enhancedKeyboard: true))
   var application = ProbeApplication()
   let bytes = "\u{1b}[1;137D\u{1b}[57414;193uq".utf8Span.span
@@ -155,7 +159,7 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.modifiers == [[.super, .numLock], [.capsLock, .numLock], []])
 }
 
-@Test func applicationEscapeDeadlineDeliversExactlyOnceAndCanQuit() throws {
+@Test @MainActor func applicationEscapeDeadlineDeliversExactlyOnceAndCanQuit() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let now = ContinuousClock().now
@@ -175,13 +179,17 @@ private struct OrderedEventApplication: ScreenApplication {
   #expect(application.probe.keys == [.escape, .escape])
 }
 
-@Test func applicationRunRestoresTerminalOnQuitAndLeavesOriginalDescriptorsOpen() throws {
+@Test @MainActor func applicationRunRestoresTerminalOnQuitAndLeavesOriginalDescriptorsOpen() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   try queueApplicationInput([0x71], to: pty.master)
   var application = ProbeApplication()
-  try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+    application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+    signalHandling: .unchanged)
   #expect(application.probe.keys == [.character("q")])
   #expect(application.probe.sizes == [TerminalSize(columns: 4, rows: 2)])
   expectEqual(try attributes(of: pty.slave), saved)
@@ -189,40 +197,52 @@ private struct OrderedEventApplication: ScreenApplication {
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationRunRejectsNonterminalOutputBeforeChangingInput() throws {
+@Test @MainActor func applicationRunRejectsNonterminalOutputBeforeChangingInput() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   let saved = try attributes(of: pty.slave)
   let capture = try ScreenCapture()
   var application = ProbeApplication()
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: capture.descriptor)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: capture.descriptor,
+      signalHandling: .unchanged)
     Issue.record("Nonterminal output was accepted")
   } catch { #expect(error == .terminal(.readSize(errno: ENOTTY))) }
   expectEqual(try attributes(of: pty.slave), saved)
   #expect(try capture.take().isEmpty)
 }
 
-@Test func applicationLayoutFailureUnwindsBothTerminalScopes() throws {
+@Test @MainActor func applicationLayoutFailureUnwindsBothTerminalScopes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   var application = FailingLayoutApplication()
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     Issue.record("Layout failure was ignored")
   } catch { #expect(error == .screen(.layout(.textTooLong))) }
   expectEqual(try attributes(of: pty.slave), saved)
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationFramingFailureRestoresTheTerminalWithoutDeliveringResponseKeys() throws {
+@Test @MainActor func applicationFramingFailureRestoresTheTerminalWithoutDeliveringResponseKeys() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   try queueApplicationInput(Array("\u{1b}_qqqq".utf8), to: pty.master)
   var application = ProbeApplication()
-  #expect(throws: ScreenApplicationError.input(.responseRecoveryExceeded)) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  await #expect(throws: ScreenApplicationError.input(.responseRecoveryExceeded)) {
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
   }
   #expect(application.probe.keys.isEmpty)
   expectEqual(try attributes(of: pty.slave), saved)
@@ -230,13 +250,17 @@ private struct OrderedEventApplication: ScreenApplication {
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationLayoutBudgetsAreValidatedBeforeChangingTerminalModes() throws {
+@Test @MainActor func applicationLayoutBudgetsAreValidatedBeforeChangingTerminalModes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   var application = InvalidLayoutBudgetApplication()
-  #expect(throws: ScreenApplicationError.screen(.invalidCapacity)) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  await #expect(throws: ScreenApplicationError.screen(.invalidCapacity)) {
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
   }
   expectEqual(try attributes(of: pty.slave), saved)
   var readiness = pollfd(fd: pty.master, events: Int16(POLLIN), revents: 0)
@@ -250,7 +274,9 @@ private struct InvalidLayoutBudgetApplication: ScreenApplication {
 
 #if os(Linux)
 
-@Test func inputReportsInterruptionWithoutRetryingOrChangingTheBuffer() throws {
+@Test @MainActor func inputReportsInterruptionWithoutRetryingOrChangingTheBuffer() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   try output.writeAll("q".utf8Span.span)
@@ -271,19 +297,24 @@ private struct InvalidLayoutBudgetApplication: ScreenApplication {
   #expect(bytes[0] == 0x71)
 }
 
-@Test func applicationReadInterruptionReturnsToPoll() throws {
+@Test @MainActor func applicationReadInterruptionReturnsToPoll() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   try queueApplicationInput([0x71], to: pty.master)
   let reads: InlineArray<1, Int32> = [-EINTR]
   let polls: InlineArray<2, Int32> = [1, -EIO]
+  cli_test_session_io(pty.slave)
   reads.span.withUnsafeBufferPointer { unsafe cli_test_read_script($0.baseAddress, $0.count) }
   polls.span.withUnsafeBufferPointer { unsafe cli_test_poll_script($0.baseAddress, $0.count) }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
-  #expect(throws: ScreenApplicationError.poll(errno: EIO)) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  await #expect(throws: ScreenApplicationError.poll(errno: EIO)) {
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
   }
   #expect(application.probe.keys.isEmpty)
   expectEqual(try attributes(of: pty.slave), saved)
@@ -291,7 +322,10 @@ private struct InvalidLayoutBudgetApplication: ScreenApplication {
 }
 
 @Test(arguments: [0, 4])
-func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) throws {
+@MainActor
+func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
@@ -299,6 +333,7 @@ func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) t
   var polls = InlineArray<5, Int32>(repeating: -EINTR)
   polls[pollInterruptions] = 1
   let reads = InlineArray<9, Int32>(repeating: -EINTR)
+  cli_test_session_io(pty.slave)
   polls.span.extracting(first: pollInterruptions + 1).withUnsafeBufferPointer {
     unsafe cli_test_poll_script($0.baseAddress, $0.count)
   }
@@ -307,38 +342,50 @@ func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) t
   }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
-  #expect(throws: ScreenApplicationError.io(.read(errno: EINTR))) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  await #expect(throws: ScreenApplicationError.io(.read(errno: EINTR))) {
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
   }
   #expect(application.probe.keys.isEmpty)
   expectEqual(try attributes(of: pty.slave), saved)
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationResetsInterruptionBudgetAfterDeliveringInput() throws {
+@Test @MainActor func applicationResetsInterruptionBudgetAfterDeliveringInput() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   try queueApplicationInput([0x78, 0x71], to: pty.master)
   var reads = InlineArray<16, Int32>(repeating: -EINTR)
   reads[7] = 1
+  cli_test_session_io(pty.slave)
   reads.span.withUnsafeBufferPointer { unsafe cli_test_read_script($0.baseAddress, $0.count) }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
-  try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+    application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+    signalHandling: .unchanged)
   #expect(application.probe.keys == [.character("x"), .character("q")])
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationPollExhaustionUnwindsBothTerminalScopes() throws {
+@Test @MainActor func applicationPollExhaustionUnwindsBothTerminalScopes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   let steps = InlineArray<9, Int32>(repeating: -EINTR)
+  cli_test_session_io(pty.slave)
   steps.span.withUnsafeBufferPointer { unsafe cli_test_poll_script($0.baseAddress, $0.count) }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     Issue.record("Nine poll interruptions were accepted")
   } catch { #expect(error == .poll(errno: EINTR)) }
   expectEqual(try attributes(of: pty.slave), saved)
@@ -346,17 +393,22 @@ func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) t
   try expectApplicationScreenRestored(pty.master)
 }
 
-@Test func applicationReadFailureUnwindsBothTerminalScopes() throws {
+@Test @MainActor func applicationReadFailureUnwindsBothTerminalScopes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   try queueApplicationInput([0x71], to: pty.master)
   let steps: InlineArray<1, Int32> = [-EIO]
+  cli_test_session_io(pty.slave)
   steps.span.withUnsafeBufferPointer { unsafe cli_test_read_script($0.baseAddress, $0.count) }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     Issue.record("Input failure was ignored")
   } catch { #expect(error == .io(.read(errno: EIO))) }
   expectEqual(try attributes(of: pty.slave), saved)
@@ -364,24 +416,30 @@ func applicationPollAndReadInterruptionsShareOneBudget(pollInterruptions: Int) t
 }
 
 @Test(arguments: [0, 1, 2, 3, 4, 5, 6])
-func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int) throws {
+@MainActor
+func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int) async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   try setApplicationTerminalSize(pty.slave)
   let saved = try attributes(of: pty.slave)
   if successfulWrites >= 3 { try queueApplicationInput([0x71], to: pty.master) }
   var steps = InlineArray<7, Int32>(repeating: 4_096)
   steps[successfulWrites] = -EIO
+  cli_test_session_io(pty.slave)
   steps.span.extracting(first: successfulWrites + 1).withUnsafeBufferPointer {
     unsafe cli_test_write_script($0.baseAddress, $0.count)
   }
   defer { cli_test_reset_io() }
   var application = ProbeApplication()
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     Issue.record("Output failure was ignored")
   } catch {
     let failure = IOError.write(errno: EIO, bytesWritten: 0)
-    #expect(error == (successfulWrites == 3 ? .screen(.output(failure)) : .io(failure)))
+    #expect(error == (.io(failure)))
   }
   expectEqual(try attributes(of: pty.slave), saved)
   if successfulWrites == 0 {
@@ -395,7 +453,7 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
 }
 #endif
 
-@Test func applicationDeliversWholePastesBeyond64KiBWithoutLeakingKeys() throws {
+@Test @MainActor func applicationDeliversWholePastesBeyond64KiBWithoutLeakingKeys() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let now = ContinuousClock().now
@@ -433,7 +491,7 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count + 1))
 }
 
-@Test func applicationBoundsPastesAndSurfacesEmptyPastes() throws {
+@Test @MainActor func applicationBoundsPastesAndSurfacesEmptyPastes() throws {
   var runner = try ScreenRunner(configuration: .init(maximumPasteBytes: 4))
   var application = ProbeApplication()
   let now = ContinuousClock().now
@@ -457,7 +515,7 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   #expect(application.probe.pastes == ["abcd", "abcd"])
 }
 
-@Test func applicationRejectsInvalidPasteCapacity() {
+@Test @MainActor func applicationRejectsInvalidPasteCapacity() {
   #expect(ScreenApplicationConfiguration().maximumPasteBytes == 1_048_576)
   #expect(ScreenApplicationConfiguration.maximumPasteBytesLimit == 64 * 1_048_576)
   #expect(throws: ScreenError.invalidCapacity) {
@@ -469,7 +527,7 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   }
 }
 
-private func feedPaste(
+@MainActor private func feedPaste(
   _ text: String, to runner: inout ScreenRunner, application: inout ProbeApplication,
   at now: ContinuousClock.Instant
 ) throws -> Bool {
@@ -584,16 +642,16 @@ private func expectApplicationScreenRestored(_ master: Int32) throws {
   #expect(try terminalOutput(from: master).contains("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l"))
 }
 
-@Test func applicationIgnoresTerminalRepliesAndEmitsOnlyCellOutput() throws {
+@Test @MainActor func applicationIgnoresTerminalRepliesAndEmitsOnlyCellOutput() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   var runner = try ScreenRunner(configuration: .init())
   var application = ProbeApplication()
   let size = TerminalSize(columns: 4, rows: 2)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   let response = Array("\u{1b}_extension response\u{1b}\\\u{1b}[?1;2cr".utf8)
   #expect(try runner.receive(response.span, at: .now, application: &application))
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.keys == [.character("r")])
   let emitted = String(decoding: try capture.take(), as: UTF8.self)
   #expect(emitted.contains("App"))

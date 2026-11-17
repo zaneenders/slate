@@ -12,13 +12,13 @@ import Glibc
 import Musl
 #endif
 
-@Test func applicationRoutesMouseEventsWithoutTurningThemIntoKeys() throws {
+@Test @MainActor func applicationRoutesMouseEventsWithoutTurningThemIntoKeys() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   var runner = try ScreenRunner(configuration: MouseApplication.configuration)
   var application = MouseApplication()
   let size = TerminalSize(columns: 4, rows: 2)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   _ = try capture.take()
   let reports = "\u{1b}[<0;2;2M\u{1b}[<32;4;2M\u{1b}[<0;4;2m".utf8Span.span
   let continues = try runner.receive(reports, at: .now, application: &application)
@@ -30,7 +30,7 @@ import Musl
       .init(action: .release, button: .left, column: 3, row: 1)
     ])
   #expect(application.probe.keys.isEmpty)
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.probe.frames == 2)
   application.quitOnRelease = true
   let quit = "\u{1b}[<0;4;2mq".utf8Span.span
@@ -38,7 +38,9 @@ import Musl
   #expect(!afterQuit && application.probe.keys.isEmpty)
 }
 
-@Test func applicationMouseTrackingIsScopedOnQuitAndLayoutFailure() throws {
+@Test @MainActor func applicationMouseTrackingIsScopedOnQuitAndLayoutFailure() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   for failLayout in [false, true] {
     let pty = try PseudoTerminal()
     var size = winsize(ws_row: 2, ws_col: 4, ws_xpixel: 0, ws_ypixel: 0)
@@ -48,7 +50,9 @@ import Musl
     var application = MouseApplication()
     application.failLayout = failLayout
     do {
-      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+      try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+        application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+        signalHandling: .unchanged)
       #expect(!failLayout)
     } catch {
       #expect(failLayout && error == .screen(.layout(.textTooLong)))
@@ -62,7 +66,9 @@ import Musl
   }
 }
 
-@Test func applicationMouseTrackingRemainsOptIn() throws {
+@Test @MainActor func applicationMouseTrackingRemainsOptIn() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   #expect(!ScreenApplicationConfiguration().mouseTracking)
   let pty = try PseudoTerminal()
   var size = winsize(ws_row: 2, ws_col: 4, ws_xpixel: 0, ws_ypixel: 0)
@@ -70,7 +76,9 @@ import Musl
   let output = try Output(fileDescriptor: pty.master)
   try output.writeAll("q".utf8Span.span)
   var application = NoMouseApplication()
-  try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+    application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+    signalHandling: .unchanged)
   let received = try terminalOutput(from: pty.master)
   #expect(!received.contains("\u{1b}[?1003") && !received.contains("\u{1b}[?1006"))
 }

@@ -3,7 +3,7 @@ import Testing
 
 @testable import SlateGraphicsDemo
 
-@Test func panelDragStartsCenteredAndOnlyCapturesItsTitleBar() throws {
+@Test @MainActor func panelDragStartsCenteredAndOnlyCapturesItsTitleBar() throws {
   let drag = PanelDrag()
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
   try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
@@ -23,7 +23,7 @@ import Testing
   #expect(drag.bounds == Rect(x: 25, y: 8, width: 30, height: 7))
 }
 
-@Test func panelDragPreservesGrabOffsetAndAppliesFinalReleasePosition() throws {
+@Test @MainActor func panelDragPreservesGrabOffsetAndAppliesFinalReleasePosition() throws {
   let drag = PanelDrag()
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
   try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
@@ -37,7 +37,7 @@ import Testing
   #expect(drag.handle(.init(action: .move, button: .left, column: 20, row: 5)) == .none)
 }
 
-@Test func panelDragClampsWholePanelAndRecoversFromMissingRelease() throws {
+@Test @MainActor func panelDragClampsWholePanelAndRecoversFromMissingRelease() throws {
   let drag = PanelDrag()
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
   try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
@@ -57,7 +57,7 @@ import Testing
   #expect(drag.bounds == Rect(x: 17, y: 10, width: 30, height: 7))
 }
 
-@Test func panelDragResizeCancelsCaptureAndClampsRememberedPosition() throws {
+@Test @MainActor func panelDragResizeCancelsCaptureAndClampsRememberedPosition() throws {
   let drag = PanelDrag()
   var surface = try Surface(maximumSize: .init(columns: 100, rows: 40))
   try preparePanelDrag(drag, in: .init(columns: 80, rows: 24), surface: &surface)
@@ -80,6 +80,7 @@ import Testing
   #expect(!drag.isDragging)
 }
 
+@MainActor
 private func preparePanelDrag(_ drag: PanelDrag, in size: TerminalSize, surface: inout Surface) throws {
   drag.prepare(in: size)
   try surface.render(size: size) {
@@ -88,7 +89,7 @@ private func preparePanelDrag(_ drag: PanelDrag, in size: TerminalSize, surface:
   }
 }
 
-@Test func graphicsDemoHidingCancelsDragAndReopeningRetainsPosition() throws {
+@Test @MainActor func graphicsDemoHidingCancelsDragAndReopeningRetainsPosition() throws {
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)
@@ -114,7 +115,7 @@ private func preparePanelDrag(_ drag: PanelDrag, in size: TerminalSize, surface:
   #expect(application.event(.key(.escape), copyBuffer: &copy) == .none)
 }
 
-@Test func graphicsDemoDraggingRestoresUncoveredCellsAndMatchesHitGeometry() throws {
+@Test @MainActor func graphicsDemoDraggingRestoresUncoveredCellsAndMatchesHitGeometry() throws {
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)

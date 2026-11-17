@@ -17,16 +17,23 @@ import Musl
 /// Paste storage is bounded by `configuration.maximumPasteBytes`; copy storage
 /// grows with explicit copy requests. Both retain capacity for reuse.
 /// Other storage is inline; no application borrows survive callbacks.
+@MainActor
 struct ScreenRunner: ~Copyable {
   private var screen: Screen
   private let overflow: ScreenApplicationConfiguration.ViewportOverflow
   private var input = TerminalInput()
   private var previousActualSize: TerminalSize?
   private var needsRedraw = true
+  mutating func invalidate() { needsRedraw = true }
   private var paste: PasteBuffer
   private var copyBuffer = CopyBuffer()
   private var ticks = TickSchedule()
   private let kittyGraphicsQueryID: UInt32?
+
+  func willDraw(actualSize: TerminalSize) -> Bool { needsRedraw || actualSize != previousActualSize }
+  mutating func flushCopies(to output: borrowing Output) throws(IOError) { try copyBuffer.flush(to: output) }
+
+  var hasInputDeadline: Bool { input.hasPendingDeadline }
 
   var capabilities: TerminalCapabilities { screen.capabilities }
 
@@ -60,7 +67,7 @@ struct ScreenRunner: ~Copyable {
   @discardableResult
   mutating func draw<Application: ScreenApplication & ~Copyable>(
     application: inout Application, actualSize: TerminalSize, to output: borrowing Output
-  ) throws(ScreenError) -> Bool {
+  ) throws(ScreenError) -> FrameStatistics? {
     let size = try viewport(for: actualSize)
     if actualSize != previousActualSize {
       // A physical resize can disturb the display even if the clipped viewport
@@ -68,96 +75,14 @@ struct ScreenRunner: ~Copyable {
       screen.invalidate()
       needsRedraw = true
     }
-    guard needsRedraw else { return false }
+    guard needsRedraw else { return nil }
     let statistics = try screen.draw(
       size: size, to: output,
       content: { application.render(in: size) },
       paint: { application.paint(in: &$0) })
     previousActualSize = actualSize
     needsRedraw = false
-    application.didPresentFrame(statistics)
-    return true
-  }
-
-  mutating func run<Application: ScreenApplication & ~Copyable>(
-    application: inout Application, input: borrowing RawMode, output: borrowing Output,
-    signals: borrowing SignalSession
-  ) throws(ScreenApplicationError) -> ScreenRunResult {
-    // Setup holds asynchronous signals until every mode guard is ready. Every
-    // exit blocks them again before those guards start restoring the terminal.
-    defer { signals.protectTeardown() }
-    try signals.resumeDelivery()
-    let initialTermination = signals.termination()
-    if initialTermination != 0 { return .interrupted(initialTermination) }
-    let clock = ContinuousClock()
-    var inputBytes = InlineArray<64, UInt8>(repeating: 0)
-    var retries = SystemCallRetryBudget()
-    if let id = kittyGraphicsQueryID {
-      do throws(KittyGraphicsError) {
-        try output.queryKittyGraphics(id: id)
-      } catch { throw .graphics(error) }
-    }
-    // This loop intentionally lasts for the application session. Work between
-    // polls is bounded by one input batch, one application-bounded work step,
-    // one tick, and one frame. Layout work scales with application node count.
-    // Pending work uses nonblocking polls; timers can shorten the 50 ms
-    // input/resize polling interval.
-    while true {
-      let number = signals.termination()
-      if number != 0 { return .interrupted(number) }
-      do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
-      guard try expireInput(at: clock.now, application: &application) else { break }
-      let actualSize: TerminalSize
-      do throws(TerminalError) {
-        actualSize = try output.terminalSize()
-      } catch { throw .terminal(error) }
-      let presented: Bool
-      let size: TerminalSize
-      do throws(ScreenError) {
-        size = try viewport(for: actualSize)
-        presented = try draw(application: &application, actualSize: actualSize, to: output)
-      } catch { throw .screen(error) }
-      if presented {
-        do throws(KittyGraphicsError) {
-          try application.presentGraphics(in: size, to: output)
-        } catch { throw .graphics(error) }
-      }
-      var readiness = pollfd(fd: input.rawDescriptor, events: Int16(POLLIN), revents: 0)
-      let timeout = try pollTimeout(at: clock.now, application: application)
-      let ready = unsafe poll(&readiness, 1, timeout)
-      if ready < 0 {
-        let error = errno
-        if retries.retry(after: error) { continue }
-        throw ScreenApplicationError.poll(errno: error)
-      }
-      // Deliver an expired Escape before decoding bytes arriving after it.
-      guard try expireInput(at: clock.now, application: &application) else { break }
-      if readiness.revents & Int16(POLLERR | POLLNVAL) != 0 { throw ScreenApplicationError.disconnected }
-      if readiness.revents & Int16(POLLIN | POLLHUP) != 0 {
-        let count: Int
-        do throws(IOError) {
-          count = try input.read(into: inputBytes.mutableSpan)
-        } catch {
-          // Return to the signal checks and poll instead of repeating a blocking
-          // read. Poll/read interruptions share one budget until an iteration
-          // completes, so successful polls cannot mask repeated read failures.
-          if case .read(let number) = error, retries.retry(after: number) { continue }
-          throw .io(error)
-        }
-        if count == 0 {
-          if let event = self.input.finish() { _ = deliver(event, application: &application) }
-          break
-        }
-        guard try receive(inputBytes.span.extracting(first: count), at: clock.now, application: &application) else {
-          break
-        }
-      }
-      retries = SystemCallRetryBudget()
-      guard performPendingWork(application: &application) else { break }
-      guard try tick(at: clock.now, application: &application) else { break }
-    }
-    do throws(IOError) { try copyBuffer.flush(to: output) } catch { throw .io(error) }
-    return .quit
+    return statistics
   }
 
   mutating func pollTimeout<Application: ScreenApplication & ~Copyable>(
@@ -173,6 +98,10 @@ struct ScreenRunner: ~Copyable {
     try ticks.synchronize(interval: application.tickInterval, at: now)
     guard let elapsed = ticks.next(at: now) else { return true }
     return apply(application.event(.tick(elapsed: elapsed), copyBuffer: &copyBuffer))
+  }
+
+  mutating func update<Application: ScreenApplication & ~Copyable>(application: inout Application) -> Bool {
+    apply(application.update(copyBuffer: &copyBuffer))
   }
 
   mutating func performPendingWork<Application: ScreenApplication & ~Copyable>(
@@ -208,7 +137,7 @@ struct ScreenRunner: ~Copyable {
     return deliver(event, application: &application)
   }
 
-  private mutating func deliver<Application: ScreenApplication & ~Copyable>(
+  mutating func deliver<Application: ScreenApplication & ~Copyable>(
     _ event: InputEvent, application: inout Application
   ) -> Bool {
     let update: ScreenUpdate

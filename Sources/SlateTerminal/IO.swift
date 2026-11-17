@@ -53,11 +53,34 @@ public struct Input: ~Copyable, ~Sendable {
 /// Duplicates share file offsets and status flags. This type does not change
 /// SIGPIPE handling; the process must handle or ignore it to receive EPIPE.
 public struct Output: ~Copyable, ~Sendable {
-  let descriptor: FileDescriptor
+  private let nativeDescriptor: FileDescriptor?
+  private let buffer: OutputBuffer?
+  var isBuffered: Bool { buffer != nil }
+  package var rawDescriptor: Int32 { descriptor.rawValue }
+  var descriptor: FileDescriptor {
+    guard let nativeDescriptor else { preconditionFailure("Buffered output has no terminal descriptor") }
+    return nativeDescriptor
+  }
+
+  public init(buffer: OutputBuffer) {
+    self.buffer = buffer
+    nativeDescriptor = nil
+  }
 
   public init(fileDescriptor: Int32 = 1) throws(IOError) {
-    do { descriptor = try duplicateDescriptor(fileDescriptor) } catch {
+    buffer = nil
+    do { nativeDescriptor = try duplicateDescriptor(fileDescriptor) } catch {
       throw .duplicateDescriptor(errno: error.rawValue)
+    }
+  }
+
+  /// One native write attempt; backpressure is returned as a value so the worker does not allocate an error box while waiting.
+  package borrowing func writeAvailable(_ bytes: Span<UInt8>) -> Result<Int, IOError> {
+    precondition(!isBuffered)
+    return bytes.withUnsafeBufferPointer { buffer in
+      let count = unsafe write(descriptor.rawValue, buffer.baseAddress, buffer.count)
+      if count < 0 { return .failure(.write(errno: errno, bytesWritten: 0)) }
+      return .success(count)
     }
   }
 
@@ -67,16 +90,22 @@ public struct Output: ~Copyable, ~Sendable {
   /// Retries EINTR up to eight times without progress, then throws with EINTR.
   /// Each successful write resets the retry budget.
   public borrowing func writeAll(_ bytes: Span<UInt8>) throws(IOError) {
-    try writeBytes(to: descriptor, bytes)
+    if let buffer { try buffer.append(bytes) } else { try writeBytes(to: descriptor, bytes) }
   }
 
   deinit {
-    try? descriptor.close()
+    try? nativeDescriptor?.close()
   }
 }
 
 package func writeStatic(_ text: StaticString, to output: borrowing Output) throws(IOError) {
-  try writeStatic(text, to: output.descriptor)
+  let error = text.withUTF8Buffer { buffer -> IOError? in
+    do throws(IOError) {
+      try output.writeAll(unsafe Span(_unsafeElements: buffer))
+      return nil
+    } catch { return error }
+  }
+  if let error { throw error }
 }
 
 func writeBytes(to descriptor: FileDescriptor, _ bytes: Span<UInt8>) throws(IOError) {

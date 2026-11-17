@@ -31,15 +31,21 @@ while the session owns the terminal, so job control cannot suspend restoration.
 `PIPE` is ignored so failed writes can unwind normally. Resizing is polled;
 `WINCH` and `CONT` need no callbacks.
 
-The synchronous owner masks asynchronous signals on its thread during terminal
+The terminal worker masks asynchronous signals on its thread during terminal
 setup and teardown, then delivers pending signals while managed handlers still
 own them. It restores the caller's mask and every changed disposition on exit.
 Other threads can still receive signals, so handlers only latch a lock-free
 atomic through a compiler-checked `@c` entry point; all cleanup runs in ordinary
 Swift code. `SIGKILL` and `SIGSTOP` cannot be caught or blocked. Synchronous fault
 signals keep their runtime crash handlers; child and realtime dispositions stay
-with the host. Embedding applications retain their signal policy unless they
-request `run(signalHandling: .managed)`.
+with the host. Embedding applications choose `.unchanged` or `.managed` explicitly
+when calling `ScreenSession.run`.
+
+Run an observable model updated by a session-owned async task:
+
+```sh
+swift run async-updates
+```
 
 Run the larger graphics showcase:
 
@@ -77,6 +83,12 @@ final class Bars: CanvasDrawing {
 
 @main
 struct Demo: ScreenApplication {
+  static func main() async {
+    var application = Self()
+    let session = ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 0)
+    await session.main(application: &application, inputFileDescriptor: 0,
+      outputFileDescriptor: 1, signalHandling: .managed)
+  }
   private let bars = Bars()
 
   func render(in size: TerminalSize) -> some Block {
@@ -95,11 +107,9 @@ struct Demo: ScreenApplication {
 
 `Surface` owns the cell grid and layout storage independently of terminal I/O.
 `Frame` borrows those cells for synchronous drawing. `Screen` presents full-screen
-ANSI diffs; `ScreenRegion` presents a positioned region. `ScreenApplication`
-provides the input loop and terminal-mode lifecycle.
+ANSI diffs; `ScreenRegion` presents a positioned region. `ScreenSession` owns the async input loop and terminal-mode lifecycle.
 
-Applications receive `.tick(elapsed:)` events every 50 ms by default. Override
-`tickInterval` to change the interval or return `nil` to disable ticks:
+Ticks are opt-in; set `tickInterval` to receive `.tick(elapsed:)` events:
 
 ```swift
 var tickInterval: Duration? { isPaused ? nil : .milliseconds(16) }

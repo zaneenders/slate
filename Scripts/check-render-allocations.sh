@@ -29,7 +29,7 @@ SLATE_ALLOCATION_PROBE=0 swift test -c release --filter Allocation
 if [ "$(uname -s)" = Linux ]; then
   # Isolate each suite so Swift Testing cannot start concurrent process-wide
   # measurements, including toolchains that link all targets into one runner.
-  for filter in RenderAllocationTests terminalColorAllocation graphicsDragAllocation gamepadAllocation keyboardDemoAllocation; do
+  for filter in RenderAllocationTests terminalColorAllocation bufferedOutputAllocation nativeBackpressureAllocation graphicsDragAllocation gamepadAllocation keyboardDemoAllocation; do
     SLATE_ALLOCATION_PROBE=1 LD_PRELOAD="$probe_library${LD_PRELOAD:+:$LD_PRELOAD}" \
       swift test -c release --skip-build --filter "$filter"
   done

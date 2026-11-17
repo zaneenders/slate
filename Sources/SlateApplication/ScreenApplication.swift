@@ -77,12 +77,12 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
   case disconnected
   case signalSetup(errno: Int32)
   case interrupted(signal: Int32)
+  case cancelled
   case invalidTickInterval
   case graphics(KittyGraphicsError)
 }
 
-/// A synchronous terminal application. State belongs to the application;
-/// terminal resources and reusable buffers belong to its scoped runner.
+/// Main-actor application callbacks. ScreenSession owns I/O, storage, and task lifetime.
 ///
 /// The first frame and physical resizes render automatically. Invalid input
 /// sequences are ignored; decoded input, including Ctrl-C, belongs to `event`.
@@ -92,11 +92,15 @@ public enum ScreenApplicationError: Error, Equatable, Sendable {
 /// Managed sessions ignore SIGTSTP while keeping Ctrl-Z available as input.
 /// Event callbacks may not retain frame/paste borrows or start another terminal
 /// reader.
+@MainActor
 public protocol ScreenApplication: ~Copyable {
   associatedtype Content: Block
-  init()
+  mutating func start(in session: ScreenSession)
+  mutating func stop() async
+  /// Synchronizes widget state after a wake, before input and drawing. Clipboard storage stays within this callback.
+  mutating func update(copyBuffer: inout CopyBuffer) -> ScreenUpdate
   static var configuration: ScreenApplicationConfiguration { get }
-  /// Interval between timed events. Defaults to 50 ms; nil disables ticks.
+  /// Interval between timed events. Ticks are disabled unless explicitly requested.
   /// Intervals must be positive or run throws `.invalidTickInterval`.
   /// Changes restart the interval. Late ticks are skipped, never queued.
   /// Polling rounds up to whole milliseconds; callbacks and I/O can delay delivery.
@@ -104,6 +108,8 @@ public protocol ScreenApplication: ~Copyable {
   /// Whether another bounded work step can run without waiting for input.
   /// Default is false. The runner presents the first frame before doing work.
   var hasPendingWork: Bool { get }
+  /// Requests a graphics batch without rebuilding cells; clear this request during presentGraphics.
+  var hasPendingGraphics: Bool { get }
   /// Performs one synchronous, application-bounded batch after checking input.
   /// Return `.redraw` when progress should be presented or `.quit` to stop.
   /// Do not retain frame borrows or start another terminal reader here.
@@ -132,176 +138,17 @@ public protocol ScreenApplication: ~Copyable {
 }
 
 extension ScreenApplication where Self: ~Copyable {
+  public mutating func start(in session: ScreenSession) {}
+  public mutating func stop() async {}
+  public mutating func update(copyBuffer: inout CopyBuffer) -> ScreenUpdate { .none }
   public static var configuration: ScreenApplicationConfiguration { .init() }
-  public var tickInterval: Duration? { .milliseconds(50) }
+  public var tickInterval: Duration? { nil }
   public var hasPendingWork: Bool { false }
+  public var hasPendingGraphics: Bool { false }
   public mutating func performPendingWork() -> ScreenUpdate { .none }
-  public mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate {
-    .none
-  }
+  public mutating func event(_ event: borrowing ScreenEvent, copyBuffer: inout CopyBuffer) -> ScreenUpdate { .none }
   public borrowing func paint(in frame: inout Frame) {}
   public mutating func didPresentFrame(_ statistics: FrameStatistics) {}
-  public mutating func presentGraphics(
-    in size: TerminalSize, to output: borrowing Output
-  ) throws(KittyGraphicsError) {}
+  public mutating func presentGraphics(in size: TerminalSize, to output: borrowing Output) throws(KittyGraphicsError) {}
   public mutating func clearGraphics(to output: borrowing Output) throws(KittyGraphicsError) {}
-
-  /// Convenience executable entry point. Ignores SIGPIPE process-wide so a
-  /// broken output can unwind the terminal scopes before reporting an error.
-  public static func main() {
-    // Raw mode disables terminal-generated signals, not SIGPIPE from writes to
-    // closed pipes or sockets. Keep this process-wide policy at the entry point;
-    // it must also cover diagnostics written after terminal scopes unwind.
-    _ = signal(SIGPIPE, SIG_IGN)
-    do throws(ScreenApplicationError) {
-      var application = Self()
-      try application.run(signalHandling: .managed)
-    } catch {
-      if case .interrupted(let number) = error { exit(128 + number) }
-      let message = "\(Self.self): \(error)\n"
-      if let diagnostics = try? Output(fileDescriptor: STDERR_FILENO) {
-        try? diagnostics.writeAll(message.utf8Span.span)
-      }
-      // Uncaught errors from a throwing main trap; expected failures exit normally.
-      exit(EXIT_FAILURE)
-    }
-  }
-
-  /// Runs until `.quit`, EOF, or an error. Both descriptors must be terminals;
-  /// originals remain caller-owned. Uses one reader and one display writer.
-  /// Signal handling is opt-in for embedding. Normal exit reports restoration errors;
-  /// Swift error unwinding makes best-effort restoration attempts.
-  ///
-  /// Reports typed screen, terminal, I/O, and polling failures.
-  /// Resize and lone-Escape checks use a poll timeout of at most 50 ms;
-  /// callbacks and blocking I/O can extend that interval.
-  public mutating func run(
-    inputFileDescriptor: Int32 = 0, outputFileDescriptor: Int32 = 1,
-    signalHandling: ScreenSignalHandling = .unchanged
-  ) throws(ScreenApplicationError) {
-    if let tickInterval, tickInterval <= .zero { throw .invalidTickInterval }
-    var runner: ScreenRunner
-
-    do throws(ScreenError) {
-      runner = try ScreenRunner(configuration: Self.configuration)
-    } catch { throw .screen(error) }
-
-    let output: Output
-
-    do throws(IOError) {
-      output = try Output(fileDescriptor: outputFileDescriptor)
-    } catch { throw .io(error) }
-
-    let actualSize: TerminalSize
-    do throws(TerminalError) {
-      actualSize = try output.terminalSize()
-    } catch { throw .terminal(error) }
-
-    do throws(ScreenError) {
-      _ = try runner.viewport(for: actualSize)
-    } catch { throw .screen(error) }
-
-    var terminal: Terminal
-    do throws(TerminalError) {
-      terminal = try Terminal(fileDescriptor: inputFileDescriptor)
-    } catch { throw .terminal(error) }
-
-    let signals = try SignalSession(signalHandling)
-
-    let number = signals.termination()
-    if number != 0 { throw .interrupted(signal: number) }
-    let result: ScreenRunResult
-    do throws(ScreenApplicationError) {
-      result = try session(runner: &runner, terminal: &terminal, output: output, signals: signals)
-    } catch {
-      // Terminal restoration has finished. Release pending requests while the
-      // managed handlers are still installed, then choose the original cause.
-      try? signals.resumeDelivery()
-      let number = signals.termination()
-      if number != 0 { throw .interrupted(signal: number) }
-      throw error
-    }
-    try signals.resumeDelivery()
-    // A signal can arrive in the final input callback or during restoration.
-    // Preserve its exit status even when that callback also requested quit.
-    let pendingTermination = signals.termination()
-    if pendingTermination != 0 { throw .interrupted(signal: pendingTermination) }
-    switch result {
-    case .quit: return
-    case .interrupted(let number): throw .interrupted(signal: number)
-    }
-  }
-
-  private mutating func session(
-    runner: inout ScreenRunner, terminal: inout Terminal, output: borrowing Output,
-    signals: borrowing SignalSession
-  ) throws(ScreenApplicationError) -> ScreenRunResult {
-    let raw: RawMode
-    do throws(TerminalError) {
-      raw = try terminal.rawMode()
-    } catch { throw .terminal(error) }
-    let alternate: AlternateScreen
-    do throws(IOError) {
-      alternate = try output.alternateScreen()
-    } catch { throw .io(error) }
-    // This scope lives inside the alternate-screen owner, so error and managed
-    // signal exits remove images before the main screen becomes visible again.
-    var graphicsNeedCleanup = true
-    defer { if graphicsNeedCleanup { try? clearGraphics(to: output) } }
-    let paste: BracketedPaste
-    do throws(IOError) { paste = try output.bracketedPaste() } catch { throw .io(error) }
-    let result = try runUnicodeSession(runner: &runner, input: raw, output: output, signals: signals)
-    do throws(KittyGraphicsError) { try clearGraphics(to: output) } catch { throw .graphics(error) }
-    graphicsNeedCleanup = false
-    do throws(IOError) { try paste.restore() } catch { throw .io(error) }
-    do throws(IOError) {
-      try alternate.restore()
-    } catch { throw .io(error) }
-    do throws(TerminalError) {
-      try raw.restore()
-    } catch { throw .terminal(error) }
-    return result
-  }
-
-  private mutating func runUnicodeSession(
-    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
-    signals: borrowing SignalSession
-  ) throws(ScreenApplicationError) -> ScreenRunResult {
-    if runner.capabilities.unicode == .ascii {
-      return try runTrackedSession(runner: &runner, input: input, output: output, signals: signals)
-    }
-    let graphemes: GraphemeClustering
-    do throws(IOError) { graphemes = try output.graphemeClustering() } catch { throw .io(error) }
-    let result = try runTrackedSession(runner: &runner, input: input, output: output, signals: signals)
-    do throws(IOError) { try graphemes.restore() } catch { throw .io(error) }
-    return result
-  }
-
-  private mutating func runTrackedSession(
-    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
-    signals: borrowing SignalSession
-  ) throws(ScreenApplicationError) -> ScreenRunResult {
-    guard Self.configuration.mouseTracking else {
-      return try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
-    }
-    let mouse: MouseTracking
-    do throws(IOError) { mouse = try output.mouseTracking() } catch { throw .io(error) }
-    let result = try runKeyboardSession(runner: &runner, input: input, output: output, signals: signals)
-    do throws(IOError) { try mouse.restore() } catch { throw .io(error) }
-    return result
-  }
-
-  private mutating func runKeyboardSession(
-    runner: inout ScreenRunner, input: borrowing RawMode, output: borrowing Output,
-    signals: borrowing SignalSession
-  ) throws(ScreenApplicationError) -> ScreenRunResult {
-    guard Self.configuration.enhancedKeyboard else {
-      return try runner.run(application: &self, input: input, output: output, signals: signals)
-    }
-    let keyboard: EnhancedKeyboard
-    do throws(IOError) { keyboard = try output.enhancedKeyboard() } catch { throw .io(error) }
-    let result = try runner.run(application: &self, input: input, output: output, signals: signals)
-    do throws(IOError) { try keyboard.restore() } catch { throw .io(error) }
-    return result
-  }
 }

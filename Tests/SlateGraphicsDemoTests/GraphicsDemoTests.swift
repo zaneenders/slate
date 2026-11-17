@@ -3,7 +3,7 @@ import Testing
 
 @testable import SlateGraphicsDemo
 
-@Test func graphicsDemoRendersAtEmptySmallAndMaximumSizesWithoutChangingStorage() throws {
+@Test @MainActor func graphicsDemoRendersAtEmptySmallAndMaximumSizesWithoutChangingStorage() throws {
   let application = SlateGraphicsDemo()
   let configuration = SlateGraphicsDemo.configuration
   var surface = try Surface(maximumSize: configuration.maximumSize)
@@ -31,7 +31,7 @@ import Testing
   #expect(surface.cell(x: 2, y: 4)?.style.background == .rgb(0, 255, 128))
 }
 
-@Test func graphicsDemoOverlayTogglesAndRestoresThePreviousComposition() throws {
+@Test @MainActor func graphicsDemoOverlayTogglesAndRestoresThePreviousComposition() throws {
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   let size = TerminalSize(columns: 80, rows: 24)
@@ -50,7 +50,7 @@ import Testing
   #expect(application.animationPhase == 0)
 }
 
-@Test func graphicsDemoAdvancesOnTicksAndHonorsPause() {
+@Test @MainActor func graphicsDemoAdvancesOnTicksAndHonorsPause() {
   var application = SlateGraphicsDemo()
   var copy = CopyBuffer()
   #expect(application.tickInterval == .milliseconds(16))
@@ -71,6 +71,7 @@ import Testing
   #expect(application.event(.key(.character("c"), modifiers: .control), copyBuffer: &copy) == .quit)
 }
 
+@MainActor
 private func graphicsCells(_ surface: borrowing Surface) -> [Cell] {
   (0..<(surface.size.columns * surface.size.rows)).map {
     surface.cell(x: $0 % surface.size.columns, y: $0 / surface.size.columns)!

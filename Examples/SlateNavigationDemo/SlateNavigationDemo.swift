@@ -4,6 +4,13 @@ import SlateGamepad
 /// Spatial focus, explicit editing, and controller navigation over one layout.
 @main
 struct SlateNavigationDemo: ~Copyable, ScreenApplication {
+  static func main() async {
+    var application = Self()
+    let session = ScreenSession(maximumOutputBytes: 4 * 1_048_576, taskCapacity: 0)
+    await session.main(
+      application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
+  }
+
   enum Target: Hashable { case cyan, magenta, pause, input }
   let focus = FocusState<Target>(capacity: 8, initial: .cyan)
   let input = try! TextInput("Edit me", capacity: 128)

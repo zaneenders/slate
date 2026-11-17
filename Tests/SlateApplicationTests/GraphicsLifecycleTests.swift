@@ -12,7 +12,10 @@ import Glibc
 #endif
 
 @Test(arguments: [false, true])
-func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ failPresentation: Bool) throws {
+@MainActor
+func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ failPresentation: Bool) async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try graphicsLifecycleTerminal()
   let saved = try attributes(of: pty.slave)
   let keyboard = try Output(fileDescriptor: pty.master)
@@ -20,7 +23,9 @@ func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ fa
   var application = GraphicsLifecycleApplication()
   application.probe.failPresentation = failPresentation
   do {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
     #expect(!failPresentation)
   } catch { #expect(failPresentation && error == .graphics(.emptyRegion)) }
   #expect(application.probe.calls == ["cells", "observed", "graphics", "cleanup"])
@@ -28,15 +33,19 @@ func graphicsHooksPresentAfterCellsAndClearBeforeRestorationOnQuitOrFailure(_ fa
   try expectGraphicsCleanupBeforeScreenRestore(on: pty.master)
 }
 
-@Test func graphicsCleanupFailureRetriesBeforeScreenRestorationAndReportsTheFirstError() throws {
+@Test @MainActor func graphicsCleanupFailureRetriesBeforeScreenRestorationAndReportsTheFirstError() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try graphicsLifecycleTerminal()
   let saved = try attributes(of: pty.slave)
   let keyboard = try Output(fileDescriptor: pty.master)
   try keyboard.writeAll("q".utf8Span.span)
   var application = GraphicsLifecycleApplication()
   application.probe.failFirstCleanup = true
-  #expect(throws: ScreenApplicationError.graphics(.invalidImageID)) {
-    try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  await #expect(throws: ScreenApplicationError.graphics(.invalidImageID)) {
+    try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: .unchanged)
   }
   #expect(application.probe.calls == ["cells", "observed", "graphics", "cleanup", "cleanup"])
   expectEqual(try attributes(of: pty.slave), saved)

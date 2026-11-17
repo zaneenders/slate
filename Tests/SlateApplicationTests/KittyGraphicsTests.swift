@@ -11,7 +11,9 @@ import Musl
 import Glibc
 #endif
 
-@Test func managedKittyProbeUsesTheSessionReaderAndRestoresTerminalModes() throws {
+@Test @MainActor func managedKittyProbeUsesTheSessionReaderAndRestoresTerminalModes() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   let pty = try PseudoTerminal()
   var size = winsize(ws_row: 2, ws_col: 4, ws_xpixel: 0, ws_ypixel: 0)
   try #require(unsafe ioctl(pty.slave, UInt(TIOCSWINSZ), &size) == 0)
@@ -19,7 +21,9 @@ import Glibc
   let terminalInput = try Output(fileDescriptor: pty.master)
   try terminalInput.writeAll("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?1;2cq".utf8Span.span)
   var application = KittyReplyApplication()
-  try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+  try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+    application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+    signalHandling: .unchanged)
   #expect(application.received == ["31:OK", "attributes", "q"])
   expectEqual(try attributes(of: pty.slave), saved)
   let text = try terminalOutput(from: pty.master)
@@ -27,14 +31,14 @@ import Glibc
   #expect(text.contains("\u{1b}[?1049l"))
 }
 
-@Test func managedKittyProbeRejectsZeroQueryIDBeforeTerminalSetup() {
+@Test @MainActor func managedKittyProbeRejectsZeroQueryIDBeforeTerminalSetup() {
   #expect(ScreenApplicationConfiguration().kittyGraphicsQueryID == nil)
   #expect(throws: ScreenError.invalidCapacity) {
     _ = try ScreenRunner(configuration: .init(kittyGraphicsQueryID: 0))
   }
 }
 
-@Test func kittyRepliesReachApplicationsInOrderAtEveryInputSplit() throws {
+@Test @MainActor func kittyRepliesReachApplicationsInOrderAtEveryInputSplit() throws {
   let bytes = Array("a\u{1b}_Gi=31;OK\u{1b}\\b\u{1b}_Gp=2,i=9;ENOENT:missing\u{1b}\\\u{1b}[?1;2cqz".utf8)
   for split in 0...bytes.count {
     var runner = try ScreenRunner(configuration: .init())
@@ -58,7 +62,7 @@ import Glibc
   }
 }
 
-@Test func unrelatedAndMalformedAPCsUseGenericEventsWithoutBecomingKeysOrKittyReplies() throws {
+@Test @MainActor func unrelatedAndMalformedAPCsUseGenericEventsWithoutBecomingKeysOrKittyReplies() throws {
   var runner = try ScreenRunner(configuration: .init())
   var application = KittyReplyApplication()
   let bytes = "\u{1b}_unrelated\u{1b}\\\u{1b}_Gi=4294967296;OK\u{1b}\\q".utf8Span.span
@@ -71,17 +75,17 @@ import Glibc
     ])
 }
 
-@Test func kittyReplyHandlerCanRequestRedrawOrQuitWithoutConsumingFollowingKeys() throws {
+@Test @MainActor func kittyReplyHandlerCanRequestRedrawOrQuitWithoutConsumingFollowingKeys() throws {
   let capture = try ScreenCapture()
   let output = try Output(fileDescriptor: capture.descriptor)
   let size = TerminalSize(columns: 1, rows: 1)
   var runner = try ScreenRunner(configuration: .init())
   var application = KittyReplyApplication()
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   _ = try capture.take()
   application.replyUpdate = .redraw
   #expect(try runner.receive("\u{1b}_Gi=1;OK\u{1b}\\".utf8Span.span, at: .now, application: &application))
-  try runner.draw(application: &application, actualSize: size, to: output)
+  try presentTestFrame(runner: &runner, application: &application, actualSize: size, to: output)
   #expect(application.frames == 2)
   application.replyUpdate = .quit
   #expect(try !runner.receive("\u{1b}_Gi=2;OK\u{1b}\\z".utf8Span.span, at: .now, application: &application))

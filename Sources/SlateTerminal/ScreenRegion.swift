@@ -116,6 +116,6 @@ public struct ScreenRegion: ~Copyable, ~Sendable {
     // ESC 7 needs two bytes. A lone ESC has not saved any state to restore.
     let recovery: StaticString = bytesWritten >= 2 ? "\u{1b}[0m\u{1b}8" : "\u{18}"
     // One best-effort attempt, using the same bounded syscall retry policy.
-    try? writeStatic(recovery, to: output.descriptor)
+    try? writeStatic(recovery, to: output)
   }
 }

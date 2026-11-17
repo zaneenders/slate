@@ -12,7 +12,9 @@ import Glibc
 import Musl
 #endif
 
-@Test func asciiApplicationSkipsGraphemeModeAndRestoresTerminalOnQuitOrLayoutFailure() throws {
+@Test @MainActor func asciiApplicationSkipsGraphemeModeAndRestoresTerminalOnQuitOrLayoutFailure() async throws {
+  await SessionIOGate.shared.acquire()
+  defer { SessionIOGate.shared.release() }
   #expect(ScreenApplicationConfiguration().capabilities == TerminalCapabilities())
   for failLayout in [false, true] {
     let pty = try PseudoTerminal()
@@ -24,7 +26,9 @@ import Musl
     var application = ASCIIApplication()
     application.failLayout = failLayout
     do {
-      try application.run(inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave)
+      try await ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 4).run(
+        application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+        signalHandling: .unchanged)
       #expect(!failLayout)
     } catch {
       #expect(failLayout && error == .screen(.layout(.textTooLong)))

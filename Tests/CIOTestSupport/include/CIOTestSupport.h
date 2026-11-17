@@ -25,6 +25,7 @@ void cli_test_read_script(const int *steps, size_t count);
 // On the next read, raise this signal on the caller's thread and return EINTR.
 // The caller owns the signal disposition/mask. Reset cancels a pending signal.
 void cli_test_read_signal(int number);
+void cli_test_session_io(int descriptor);
 void cli_test_write_script(const int *steps, size_t count);
 // Negative steps fail with errno, zero simulates a timeout, positive steps call
 // the real poll. Scripts are thread-local and limited to sixteen calls.

@@ -2,6 +2,13 @@ import Slate
 
 @main
 struct SlateKittyGraphicsDemo: ScreenApplication, ~Copyable {
+  static func main() async {
+    var application = Self()
+    let session = ScreenSession(maximumOutputBytes: 4 * 1_048_576, taskCapacity: 0)
+    await session.main(
+      application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
+  }
+
   private let image: KittyImage
   private var needsImageCleanup = false
 

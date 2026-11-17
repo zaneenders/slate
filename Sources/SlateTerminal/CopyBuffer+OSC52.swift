@@ -13,7 +13,7 @@ extension CopyBuffer {
         try writer.flush(to: output)
       } catch {
         // A partial OSC must not swallow subsequent frame or restoration bytes.
-        try? writeStatic("\u{18}\u{1b}\\", to: output.descriptor)
+        try? writeStatic("\u{18}\u{1b}\\", to: output)
         if case .write(let number, let bytesWritten) = error {
           throw .write(errno: number, bytesWritten: writer.outputBytes + bytesWritten)
         }
