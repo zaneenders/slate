@@ -57,6 +57,9 @@ public final class HitMap<ID: Hashable>: ~Sendable {
   final var stagingFrame: ObjectIdentifier?
   var ownershipError: LayoutError { .hitMapInUse }
   func setBounds(_ bounds: Rect, at index: Int) { preconditionFailure("Abstract hit-map storage") }
+  func enterRegion(at index: Int, order: Int) -> Int { -1 }
+  func leaveRegion(_ previous: Int) {}
+  func prepareForPainting(in viewport: Rect) {}
   func commit(in viewport: Rect) { preconditionFailure("Abstract hit-map storage") }
   func discardPending() { preconditionFailure("Abstract hit-map storage") }
   func clear() { preconditionFailure("Abstract hit-map storage") }
@@ -213,7 +216,7 @@ final class HitMapFrame: ~Sendable {
       map.stagingFrame == nil || map.stagingFrame == owner
     else { throw map.ownershipError }
     if map.stagingFrame == owner { return }
-    precondition(pendingCount < pending.count)
+    guard pendingCount < pending.count else { throw .hitMapCapacityExceeded }
     pending[pendingCount] = map
     pendingCount += 1
     map.stagingFrame = owner
@@ -234,6 +237,10 @@ final class HitMapFrame: ~Sendable {
     swap(&committed, &pending)
     committedCount = pendingCount
     pendingCount = 0
+  }
+
+  func prepareForPainting(in viewport: Rect) {
+    for index in 0..<pendingCount { pending[index]!.prepareForPainting(in: viewport) }
   }
 
   func discardPending() {

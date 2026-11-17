@@ -271,6 +271,12 @@ Applications choose highlights, key bindings, editing, and activation. Arrows ar
 ordinary input events; `FocusState` never takes them away from an editor. The demo
 uses an explicit Enter/Escape interaction mode to make the two roles visible.
 
+Try hjkl movement, Ctrl-hjkl focus, compact panes, and isolated dialogs:
+
+```sh
+swift run -c release scoped-navigation
+```
+
 ## Optional gamepad navigation
 
 The separate `SlateGamepad` library product supports macOS and Linux. Add it to

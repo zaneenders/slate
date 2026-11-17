@@ -24,6 +24,7 @@ let package = Package(
     .library(name: "SlateGamepad", targets: ["SlateGamepad"]),
     .executable(name: "starter", targets: ["SlateStarter"]),
     .executable(name: "navigation", targets: ["SlateNavigationDemo"]),
+    .executable(name: "scoped-navigation", targets: ["SlateScopedNavigationDemo"]),
     .executable(name: "keyboard", targets: ["SlateKeyboardDemo"]),
     .executable(name: "graphics", targets: ["SlateGraphicsDemo"]),
     .executable(name: "kitty-graphics", targets: ["SlateKittyGraphicsDemo"]),
@@ -60,6 +61,12 @@ let package = Package(
       name: "SlateStarter",
       dependencies: ["Slate"],
       path: "Examples/SlateStarter",
+      swiftSettings: swiftSettings
+    ),
+    .executableTarget(
+      name: "SlateScopedNavigationDemo",
+      dependencies: ["Slate"],
+      path: "Examples/SlateScopedNavigationDemo",
       swiftSettings: swiftSettings
     ),
     .executableTarget(
@@ -183,6 +190,10 @@ let package = Package(
     .testTarget(
       name: "SlateNavigationDemoTests",
       dependencies: ["SlateNavigationDemo", "Slate", "SlateGamepad", "SlateTestSupport"]
+    ),
+    .testTarget(
+      name: "SlateScopedNavigationDemoTests",
+      dependencies: ["SlateScopedNavigationDemo", "Slate"]
     ),
     .testTarget(
       name: "SlateKittyGraphicsDemoTests",

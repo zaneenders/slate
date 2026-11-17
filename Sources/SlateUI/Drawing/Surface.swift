@@ -76,6 +76,7 @@ public struct Surface: ~Copyable, ~Sendable {
     do throws(LayoutError) {
       try layout.build(in: Rect(width: size.columns, height: size.rows), content: content)
     } catch { throw .layout(error) }
+    layout.hitMaps.prepareForPainting(in: Rect(width: size.columns, height: size.rows))
     clear(size)
     do {
       var storage = cells.mutableSpan

@@ -2,7 +2,14 @@
 /// escape. Keep reusable storage in this owner and bound work by the frame size.
 /// Canvas retains the owner only while its value or layout is in use.
 public protocol CanvasDrawing: AnyObject {
+  /// Registers custom controls before painting. Rejection preserves the last
+  /// surface and focus map; keep this bounded and free of application mutations.
+  func layout(in regions: inout CanvasLayout) throws(LayoutError)
   func paint(in frame: inout Frame)
+}
+
+extension CanvasDrawing {
+  public func layout(in regions: inout CanvasLayout) throws(LayoutError) {}
 }
 
 /// Custom drawing that participates in block layout and fills its available slot.
@@ -32,5 +39,6 @@ public struct Canvas<Drawing: CanvasDrawing>: Block, ~Sendable {
 
   init<Drawing: CanvasDrawing>(_ drawing: Drawing) { self.drawing = drawing }
 
+  func layout(in regions: inout CanvasLayout) throws(LayoutError) { try drawing.layout(in: &regions) }
   func paint(in frame: inout Frame) { drawing.paint(in: &frame) }
 }

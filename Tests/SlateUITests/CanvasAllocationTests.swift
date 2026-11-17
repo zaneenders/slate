@@ -16,6 +16,55 @@ import Glibc
 @Suite(.serialized)
 struct RenderAllocationTests {
   @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
+  func scopedNavigationAllocationAtMaximumTargetsAndScopeExhaustion() throws {
+    try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
+    let drawing = AllocationNavigationDrawing()
+    let router = NavigationRouter(root: 0, focus: drawing.focus, capacity: 32)
+    let size = TerminalSize(columns: 128, rows: 32)
+    var surface = try Surface(
+      maximumSize: size, layoutBudget: .init(nodeCapacity: 64, maximumBlockVisits: 128))
+    for _ in 0..<4 { try surface.render(size: size) { Canvas(drawing) } }
+    let budget =
+      surface.storageBudgetBytes + drawing.focus.storageBudgetBytes + router.storageBudgetBytes
+      + drawing.dialogs.reduce(0) { $0 + $1.storageBudgetBytes }
+    cli_test_begin_allocation_count()
+    _ = exerciseNavigationAllocation(router, drawing: drawing)
+    let coldCalls = cli_test_end_allocation_count()
+    for _ in 0..<4 { _ = exerciseNavigationAllocation(router, drawing: drawing) }
+    var rejectedScopes = 0
+    cli_test_begin_allocation_count()
+    do throws(SurfaceError) {
+      for _ in 0..<32 {
+        try surface.render(size: size) { Canvas(drawing) }
+        if exerciseNavigationAllocation(router, drawing: drawing) { rejectedScopes += 1 }
+      }
+    } catch {
+      _ = cli_test_end_allocation_count()
+      throw error
+    }
+    let calls = cli_test_end_allocation_count()
+    #expect(calls == 0 && rejectedScopes == 32 && router.count == 1)
+    #expect(router.focusedID == 0)
+    drawing.targetCount = 129
+    _ = rejectNavigationAllocationFrame(&surface, size: size, drawing: drawing)
+    var rejectedFrames = 0
+    cli_test_begin_allocation_count()
+    for _ in 0..<8 {
+      if rejectNavigationAllocationFrame(&surface, size: size, drawing: drawing) { rejectedFrames += 1 }
+    }
+    let rejectionCalls = cli_test_end_allocation_count()
+    #expect(rejectedFrames == 8 && rejectionCalls <= UInt64(rejectedFrames) * 2)
+    #expect(
+      router.focusedID == 0
+        && surface.storageBudgetBytes + drawing.focus.storageBudgetBytes
+          + router.storageBudgetBytes + drawing.dialogs.reduce(0) { $0 + $1.storageBudgetBytes } == budget
+    )
+    print(
+      "Scoped navigation: 128 targets, 32 scopes, \(budget) bytes, \(calls) warmed / \(coldCalls) cold allocations; \(rejectionCalls) rejection diagnostics"
+    )
+  }
+
+  @Test(.enabled(if: ProcessInfo.processInfo.environment["SLATE_ALLOCATION_PROBE"] == "1"))
   func spatialFocusAllocationAcrossRegistrationAndGroupNavigation() throws {
     try #require(cli_test_prepare_allocation_counter() != 0, "Allocation interposer was not injected")
     let focus = FocusState<Int>(capacity: 8, initial: 1)
@@ -324,6 +373,53 @@ struct RenderAllocationTests {
     #expect(surface.storageBudgetBytes == initialBudget)
   }
 
+}
+
+private final class AllocationNavigationDrawing: CanvasDrawing {
+  let focus = FocusState<Int>(capacity: 129, initial: 0)
+  let dialogs = (0..<31).map { _ in FocusState<Int>(capacity: 1, initial: 0) }
+  var targetCount = 128
+
+  func layout(in regions: inout CanvasLayout) throws(LayoutError) {
+    try regions.navigationGroup(in: focus, bounds: regions.area) { group throws(LayoutError) in
+      for index in 0..<targetCount {
+        try group.focusTarget(
+          index, in: focus, bounds: Rect(x: index % 16 * 8, y: index / 16 * 4, width: 8, height: 4),
+          enabled: true, visibility: .visible,
+          neighbors: .init(left: index > 0 ? index - 1 : nil, right: index < 127 ? index + 1 : nil, up: nil, down: nil))
+      }
+    }
+    for dialog in dialogs {
+      try regions.focusTarget(
+        0, in: dialog, bounds: regions.area, enabled: true, visibility: .visible, neighbors: .automatic)
+    }
+  }
+
+  func paint(in frame: inout Frame) { frame[0, 0] = Cell(Glyph("n")!, style: Style()) }
+}
+
+@inline(never)
+private func rejectNavigationAllocationFrame(
+  _ surface: inout Surface, size: TerminalSize, drawing: AllocationNavigationDrawing
+) -> Bool {
+  do throws(SurfaceError) {
+    try surface.render(size: size) { Canvas(drawing) }
+    return false
+  } catch { return error == .layout(.focusCapacityExceeded) }
+}
+
+private func exerciseNavigationAllocation(
+  _ router: NavigationRouter<Int, Int>, drawing: AllocationNavigationDrawing
+) -> Bool {
+  _ = router.route(.character("j"), modifiers: [], mode: .normal)
+  _ = router.route(.control(.l), modifiers: [], mode: .normal)
+  _ = router.route(.control(.h), modifiers: [], mode: .normal)
+  for index in drawing.dialogs.indices { _ = router.push(index + 1, focus: drawing.dialogs[index]) }
+  let rejected = !router.push(33, focus: drawing.focus)
+  _ = router.route(.focus(.right))
+  _ = router.route(.activate)
+  for _ in drawing.dialogs.indices { _ = router.pop() }
+  return rejected
 }
 
 private struct AllocationEmptyBlock: Block { var body: some Block {} }

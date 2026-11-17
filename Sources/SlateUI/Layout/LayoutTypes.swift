@@ -75,6 +75,7 @@ public enum LayoutError: Error, Equatable, Sendable {
   case blockVisitLimitExceeded
   case textTooLong
   case hitRegionCapacityExceeded
+  case hitMapCapacityExceeded
   /// A hit map can belong to only one live surface at a time.
   case hitMapInUse
   case focusCapacityExceeded

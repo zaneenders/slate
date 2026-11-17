@@ -4,13 +4,44 @@ public enum FocusDirection: Equatable, Sendable {
   case left, right, up, down
 }
 
+public enum FocusVisibility: Equatable, Sendable {
+  case visible, collapsed
+}
+
+/// Explicit links take precedence over spatial lookup. A missing link uses
+/// geometry; an unavailable linked target stops movement without falling through.
+public struct FocusNeighbors<ID: Hashable>: ~Sendable {
+  public let left: ID?
+  public let right: ID?
+  public let up: ID?
+  public let down: ID?
+
+  public init(left: ID?, right: ID?, up: ID?, down: ID?) {
+    self.left = left
+    self.right = right
+    self.up = up
+    self.down = down
+  }
+
+  public static var automatic: Self { Self(left: nil, right: nil, up: nil, down: nil) }
+
+  func target(in direction: FocusDirection) -> ID? {
+    switch direction {
+    case .left: left
+    case .right: right
+    case .up: up
+    case .down: down
+    }
+  }
+}
+
 /// Fixed-capacity spatial focus from the last successful surface render.
 /// Groups and targets share the capacity. Target IDs must be unique per frame.
 /// Selection and input handling are
 /// explicit: this owner never consumes keys or starts editing a control.
 public final class FocusState<ID: Hashable>: ~Sendable {
   let storage: FocusRecords<ID>
-  public var focusedID: ID? { storage.focusedID }
+  public var focusedID: ID? { storage.requestedID ?? storage.focusedID }
   public var capacity: Int { storage.capacity }
   /// Fixed record buffers, excluding class owners and storage referenced by IDs.
   public var storageBudgetBytes: Int { storage.storageBudgetBytes }
@@ -19,8 +50,20 @@ public final class FocusState<ID: Hashable>: ~Sendable {
     storage = FocusRecords(capacity: capacity, initial: initial)
   }
 
-  public func isFocused(_ id: ID) -> Bool { storage.focusedID == id }
-  public func bounds(for id: ID) -> Rect? { storage.index(for: id).map { storage.bounds(at: $0) } }
+  public func isFocused(_ id: ID) -> Bool { focusedID == id }
+  public func bounds(for id: ID) -> Rect? {
+    guard let index = storage.index(for: id) else { return nil }
+    let bounds = storage.bounds(at: index)
+    return bounds.isEmpty ? nil : bounds
+  }
+
+  /// Includes collapsed regions, which can receive focus through explicit links.
+  public func contains(_ id: ID) -> Bool { storage.index(for: id) != nil }
+
+  /// Sets the requested ID before layout, including when its pane was hidden.
+  /// Bounds remain committed; the next layout replaces a missing target with
+  /// the first visible target before painting. Empty layouts retain the request.
+  public func requestFocus(_ id: ID) { storage.requestFocus(id) }
 
   /// Selects an eligible target from the committed layout. Returns true only
   /// when selection changes. Use initial to choose focus before the first frame.
@@ -30,9 +73,10 @@ public final class FocusState<ID: Hashable>: ~Sendable {
   @discardableResult public func focus(column: Int, row: Int) -> Bool { storage.focus(column: column, row: row) }
 
   @discardableResult public func clear() -> Bool {
-    guard storage.focusedID != nil else { return false }
+    let changed = storage.requestedID != nil || storage.focusedID != nil
+    storage.requestedID = nil
     storage.focusedID = nil
-    return true
+    return changed
   }
 
   /// Searches inside the current group first, then its ancestors. Aligned
@@ -41,7 +85,7 @@ public final class FocusState<ID: Hashable>: ~Sendable {
   /// a smaller target contained within that axis is not a sideways neighbor.
   /// Leaving a group also checks the source and destination group rectangles:
   /// side-by-side groups require horizontal movement, stacked groups vertical.
-  /// No wrapping. With no selection, chooses the first eligible target.
+  /// No wrapping. With no selection, chooses the first visible target.
   /// Work is bounded by capacity times layout depth; navigation allocates nothing.
   @discardableResult public func move(_ direction: FocusDirection) -> Bool { storage.move(direction) }
 }
@@ -51,12 +95,16 @@ private struct FocusRecord<ID: Hashable> {
   let parent: Int
   let depth: Int
   let enabled: Bool
+  let visibility: FocusVisibility
+  let neighbors: FocusNeighbors<ID>
+  var order = 0
   var bounds = Rect(width: 0, height: 0)
 }
 
 final class FocusRecords<ID: Hashable>: HitMapStorage, ~Sendable {
   let capacity: Int
   var focusedID: ID?
+  var requestedID: ID?
   var stagingGroup = -1
   private var records: RigidArray<FocusRecord<ID>?>
   private var pending: RigidArray<FocusRecord<ID>?>
@@ -75,16 +123,51 @@ final class FocusRecords<ID: Hashable>: HitMapStorage, ~Sendable {
   var storageBudgetBytes: Int { 2 * capacity * MemoryLayout<FocusRecord<ID>?>.stride }
   func bounds(at index: Int) -> Rect { records[index]!.bounds }
 
-  func append(_ id: ID?, enabled: Bool) throws(LayoutError) -> Int {
+  func append(
+    _ id: ID?, enabled: Bool, visibility: FocusVisibility, neighbors: FocusNeighbors<ID>
+  ) throws(LayoutError) -> Int {
     guard pendingCount < capacity else { throw .focusCapacityExceeded }
     let index = pendingCount
     let depth = stagingGroup < 0 ? 0 : pending[stagingGroup]!.depth + 1
-    pending[index] = FocusRecord(id: id, parent: stagingGroup, depth: depth, enabled: enabled)
+    guard depth < LayoutLimits.maximumDepth else { throw .depthExceeded }
+    pending[index] = FocusRecord(
+      id: id, parent: stagingGroup, depth: depth, enabled: enabled, visibility: visibility, neighbors: neighbors)
     pendingCount += 1
     return index
   }
 
-  override func setBounds(_ bounds: Rect, at index: Int) { pending[index]!.bounds = bounds }
+  override func setBounds(_ bounds: Rect, at index: Int) {
+    pending[index]!.bounds = pending[index]!.visibility == .collapsed ? Rect(width: 0, height: 0) : bounds
+  }
+
+  override func enterRegion(at index: Int, order: Int) -> Int {
+    pending[index]!.order = order
+    let previous = stagingGroup
+    if pending[index]!.id == nil { stagingGroup = index }
+    return previous
+  }
+
+  override func leaveRegion(_ previous: Int) { stagingGroup = previous }
+
+  override func prepareForPainting(in viewport: Rect) {
+    guard let requestedID else { return }
+    var fallback: ID?
+    for index in 0..<pendingCount {
+      let record = pending[index]!
+      guard let id = record.id, record.enabled else { continue }
+      let visible = record.visibility == .visible && !record.bounds.intersection(viewport).isEmpty
+      if id == requestedID && (visible || record.visibility == .collapsed) {
+        focusedID = id
+        self.requestedID = nil
+        return
+      }
+      if visible && fallback == nil { fallback = id }
+    }
+    if let fallback {
+      focusedID = fallback
+      self.requestedID = nil
+    }
+  }
 
   override func commit(in viewport: Rect) {
     for index in 0..<count { records[index] = nil }
@@ -117,37 +200,54 @@ final class FocusRecords<ID: Hashable>: HitMapStorage, ~Sendable {
 
   private func eligible(_ index: Int) -> Bool {
     let record = records[index]!
-    return record.id != nil && record.enabled && !record.bounds.isEmpty
+    return record.id != nil && record.enabled && (record.visibility == .collapsed || !record.bounds.isEmpty)
   }
 
   func focus(_ id: ID) -> Bool {
-    guard id != focusedID, index(for: id) != nil else { return false }
+    guard index(for: id) != nil else { return false }
+    requestedID = nil
+    guard id != focusedID else { return false }
     focusedID = id
     return true
   }
 
   func focus(column: Int, row: Int) -> Bool {
+    var best: Int?
     for index in (0..<count).reversed()
-    where eligible(index) && records[index]!.bounds.contains(column: column, row: row) {
-      return focus(records[index]!.id!)
+    where eligible(index) && records[index]!.visibility == .visible
+      && records[index]!.bounds.contains(column: column, row: row)
+    {
+      if best == nil || records[index]!.order > records[best!]!.order { best = index }
     }
-    return false
+    guard let best else { return false }
+    return focus(records[best]!.id!)
+  }
+
+  func requestFocus(_ id: ID) {
+    requestedID = id
+    focusedID = id
   }
 
   func move(_ direction: FocusDirection) -> Bool {
+    requestedID = nil
     guard let focusedID, let current = index(for: focusedID) else {
-      for index in 0..<count where eligible(index) { return focus(records[index]!.id!) }
+      for index in 0..<count where eligible(index) && records[index]!.visibility == .visible {
+        return focus(records[index]!.id!)
+      }
       return false
     }
+    if let target = records[current]!.neighbors.target(in: direction) { return focus(target) }
     let origin = records[current]!.bounds
+    guard !origin.isEmpty else { return false }
     var best: Int?
     var bestRank: FocusRank?
-    for candidate in 0..<count where eligible(candidate) && records[candidate]!.id != focusedID {
+    for candidate in 0..<count
+    where eligible(candidate) && records[candidate]!.visibility == .visible && records[candidate]!.id != focusedID {
       guard let entry = FocusScore(origin: origin, candidate: records[candidate]!.bounds, direction: direction) else {
         continue
       }
       // Find the nearest shared group and the candidate's branch inside it.
-      // Preorder indices and parent depths make this a bounded ancestor walk.
+      // Parent indices and depths make this a bounded ancestor walk.
       var sourceParent = records[current]!.parent
       var targetParent = records[candidate]!.parent
       var sourceBranch = current

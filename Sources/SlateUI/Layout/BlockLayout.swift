@@ -141,10 +141,11 @@ public struct _BlockLayout: ~Copyable, ~Escapable, ~Sendable {
   }
 
   mutating func focusRegion<Content: Block, ID: Hashable>(
-    _ content: borrowing Content, id: ID?, storage: FocusRecords<ID>, enabled: Bool
+    _ content: borrowing Content, id: ID?, storage: FocusRecords<ID>, enabled: Bool,
+    visibility: FocusVisibility, neighbors: FocusNeighbors<ID>
   ) throws(LayoutError) {
     try hitMaps.register(storage)
-    let record = try storage.append(id, enabled: enabled)
+    let record = try storage.append(id, enabled: enabled, visibility: visibility, neighbors: neighbors)
     let group = storage.stagingGroup
     if id == nil { storage.stagingGroup = record }
     defer { storage.stagingGroup = group }
@@ -219,10 +220,34 @@ struct LayoutTree: ~Copyable {
       try builder.build(content())
     }
     resolve(in: area)
-    for index in 0..<count where nodes[index].kind == .hitRegion {
-      if case .hitRegion(let map, let record) = drawings[nodes[index].drawingIndex]! {
-        map.setBounds(nodes[index].region, at: record)
+    try registerRegions(at: 0)
+  }
+
+  private borrowing func registerRegions(at index: Int) throws(LayoutError) {
+    let node = nodes[index]
+    if node.kind == .hitRegion,
+      case .hitRegion(let map, let record) = drawings[node.drawingIndex]!
+    {
+      map.setBounds(node.region, at: record)
+      let previous = map.enterRegion(at: record, order: index)
+      defer { map.leaveRegion(previous) }
+      try registerChildRegions(of: index)
+    } else {
+      if node.kind == .drawing, !node.region.isEmpty,
+        case .canvas(let drawing) = drawings[node.drawingIndex]!
+      {
+        var regions = CanvasLayout(bounds: node.region, order: index, hitMaps: hitMaps)
+        try drawing.layout(in: &regions)
       }
+      try registerChildRegions(of: index)
+    }
+  }
+
+  private borrowing func registerChildRegions(of index: Int) throws(LayoutError) {
+    var child = nodes[index].firstChild
+    while child >= 0 {
+      try registerRegions(at: child)
+      child = nodes[child].nextSibling
     }
   }
 
