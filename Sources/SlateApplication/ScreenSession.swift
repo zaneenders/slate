@@ -218,8 +218,10 @@ private final class SessionInvalidation: Sendable {
       guard runner.update(application: &application) else { return }
       do {
         guard try runner.expireInput(at: .now, application: &application) else { return }
-        if event.count > 0 {
-          guard try runner.receive(event.bytes.span.extracting(first: event.count), at: .now, application: &application)
+        let receivedAt = ContinuousClock.now
+        for offset in stride(from: 0, to: event.count, by: TerminalInput.maximumBatchBytes) {
+          let end = min(offset + TerminalInput.maximumBatchBytes, event.count)
+          guard try runner.receive(event.bytes.span.extracting(offset..<end), at: receivedAt, application: &application)
           else { return }
         }
         if event.endOfInput {
@@ -275,7 +277,9 @@ private final class SessionInvalidation: Sendable {
       event = try await backend.request(
         .poll(
           timeout, generation,
-          pending || application.tickInterval != nil || application.hasPendingWork || runner.hasInputDeadline)
+          deliverTimeout: pending || application.tickInterval != nil || application.hasPendingWork
+            || runner.hasInputDeadline,
+          readingPaste: runner.canReadLiteralPaste)
       ).get()
     }
   }
@@ -289,7 +293,6 @@ private final class SessionInvalidation: Sendable {
     application: inout Application, inputFileDescriptor: Int32, outputFileDescriptor: Int32,
     signalHandling: ScreenSignalHandling
   ) async {
-    _ = signal(SIGPIPE, SIG_IGN)
     do throws(ScreenApplicationError) {
       try await run(
         application: &application, inputFileDescriptor: inputFileDescriptor,

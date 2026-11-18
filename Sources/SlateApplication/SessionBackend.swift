@@ -13,13 +13,13 @@ import Musl
 
 enum BackendCommand: Sendable {
   case start
-  case poll(Int32, UInt64, Bool)
+  case poll(Int32, UInt64, deliverTimeout: Bool, readingPaste: Bool)
   case flush, cleanup, stop
 }
 
 struct BackendEvent: Sendable {
   var size: TerminalSize
-  var bytes: InlineArray<64, UInt8>
+  var bytes: InlineArray<4096, UInt8>
   var count: Int
   var endOfInput: Bool
   var woken: Bool
@@ -308,13 +308,14 @@ final class SessionBackend: Sendable {
           }
           respond(.success(event), finished: false)
         } catch { respond(.failure(error), finished: false) }
-      case .poll(let timeout, let generation, let deliverTimeout):
+      case .poll(let timeout, let generation, let deliverTimeout, let readingPaste):
         do throws(ScreenApplicationError) {
           let previousSize = event.size
           while true {
             try checkInterruption(signals)
             let stale = self.generation() != generation
-            event = try readEvent(input: input, output: output, timeout: stale ? 0 : timeout)
+            event = try readEvent(
+              input: input, output: output, timeout: stale ? 0 : timeout, readingPaste: readingPaste)
             try checkInterruption(signals)
             if stale || deliverTimeout || event.woken || event.count > 0 || event.endOfInput
               || event.size != previousSize
@@ -408,7 +409,7 @@ final class SessionBackend: Sendable {
   }
 
   private func readEvent(
-    input: borrowing RawMode, output: borrowing Output, timeout: Int32
+    input: borrowing RawMode, output: borrowing Output, timeout: Int32, readingPaste: Bool
   ) throws(ScreenApplicationError) -> BackendEvent {
     var descriptors: InlineArray<2, pollfd> = [
       pollfd(fd: input.rawDescriptor, events: Int16(POLLIN), revents: 0),
@@ -428,7 +429,12 @@ final class SessionBackend: Sendable {
     }
     if descriptors[0].revents & Int16(POLLERR | POLLNVAL) != 0 { throw .disconnected }
     if descriptors[0].revents & Int16(POLLIN | POLLHUP) != 0 {
-      do throws(IOError) { event.count = try input.read(into: event.bytes.mutableSpan) } catch {
+      // Read one short batch for ordinary input. A confirmed paste amortizes the worker handoff.
+      let limit = readingPaste ? event.bytes.count : TerminalInput.maximumBatchBytes
+      do throws(IOError) {
+        var bytes = event.bytes.mutableSpan
+        event.count = try input.read(into: bytes._mutatingExtracting(first: limit))
+      } catch {
         if case .read(let number) = error, number == EAGAIN || number == EWOULDBLOCK { return event }
         throw .io(error)
       }

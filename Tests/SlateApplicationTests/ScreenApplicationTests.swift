@@ -491,6 +491,21 @@ func applicationOutputFailureRestoresDuringSetupDrawOrExit(successfulWrites: Int
   #expect(application.probe.keys == Array(repeating: .character("j"), count: counts.count + 1))
 }
 
+@Test @MainActor func literalPasteBatchesRespectSplitDelimitersAndCapacity() throws {
+  var runner = try ScreenRunner(configuration: .init(maximumPasteBytes: 128))
+  var application = ProbeApplication()
+  let body = String(repeating: "q", count: 64)
+  for chunk in ["\u{1b}[200~", body, "\u{1b}[20", "x", "\u{1b}[20", "1~j"] {
+    #expect(try runner.receive(chunk.utf8Span.span, at: .now, application: &application))
+  }
+  #expect(application.probe.pastes == [body + "\u{1b}[20x"])
+  for chunk in ["\u{1b}[200~x", body, body, "\u{1b}[201~j"] {
+    #expect(try runner.receive(chunk.utf8Span.span, at: .now, application: &application))
+  }
+  #expect(application.probe.pasteErrors == [.tooLarge])
+  #expect(application.probe.keys == [.character("j"), .character("j")])
+}
+
 @Test @MainActor func applicationBoundsPastesAndSurfacesEmptyPastes() throws {
   var runner = try ScreenRunner(configuration: .init(maximumPasteBytes: 4))
   var application = ProbeApplication()

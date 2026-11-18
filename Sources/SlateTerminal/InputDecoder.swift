@@ -67,6 +67,11 @@ public struct InputDecoder: ~Copyable, Sendable {
   /// A caller may apply its Escape deadline only while this is true.
   public var hasPendingEscape: Bool { state == .escape }
 
+  // With no held delimiter prefix or queued literal, bytes preceding the next ESC are pure payload.
+  var canReadLiteralPaste: Bool {
+    state == .paste && pastePrefix == 0 && pasteLiteralIndex == pasteLiteralCount
+  }
+
   public var hasPendingTerminalResponse: Bool {
     state == .apc || state == .apcEscape || state == .discardAPC || state == .discardAPCEscape
   }

@@ -33,6 +33,16 @@ struct PasteBuffer: ~Copyable {
     count += 1
   }
 
+  mutating func append(_ payload: Span<UInt8>) {
+    guard !isTooLarge else { return }
+    guard payload.count <= maximumBytes - count else {
+      isTooLarge = true
+      return
+    }
+    for index in payload.indices { bytes[count + index] = payload[index] }
+    count += payload.count
+  }
+
   @_lifetime(borrow self)
   borrowing func text() throws(PasteError) -> UTF8Span {
     precondition(!isTooLarge, "An oversized paste must be rejected before reading its text")

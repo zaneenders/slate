@@ -14,6 +14,36 @@ import Musl
 import Glibc
 #endif
 
+@Test func sessionMainHonorsTheHostsSIGPIPEHandler() async {
+  await #expect(processExitsWith: .success) {
+    try await checkSessionMainSignalPolicies()
+  }
+}
+
+@MainActor private func checkSessionMainSignalPolicies() async throws {
+  _ = signal(SIGPIPE, { _ in })
+  let hostHandler = signalHandlerAddress(try readSignalAction(SIGPIPE))
+  let pty = try PseudoTerminal()
+  let session = ScreenSession(maximumOutputBytes: 65_536, taskCapacity: 0)
+  for policy: ScreenSignalHandling in [.unchanged, .managed] {
+    var application = SignalPolicyProbe()
+    await session.main(
+      application: &application, inputFileDescriptor: pty.slave, outputFileDescriptor: pty.slave,
+      signalHandling: policy)
+    try #require((application.handlerDuringSession == hostHandler) == (policy == .unchanged))
+    try #require(signalHandlerAddress(try readSignalAction(SIGPIPE)) == hostHandler)
+  }
+}
+
+private struct SignalPolicyProbe: ScreenApplication {
+  var handlerDuringSession: UInt?
+  mutating func update(copyBuffer: inout CopyBuffer) -> ScreenUpdate {
+    handlerDuringSession = try! signalHandlerAddress(readSignalAction(SIGPIPE))
+    return .quit
+  }
+  func render(in size: TerminalSize) -> some Block { Text("") }
+}
+
 @Suite(.serialized)
 @MainActor struct SignalOwnershipTests {
   #if os(Linux)

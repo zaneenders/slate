@@ -10,8 +10,8 @@ import Musl
 #endif
 
 /// Owns all application-loop storage. No queued events, retained callbacks, or
-/// tasks. Each poll handles at most 64 bytes, reusing 16 event slots until that
-/// batch is consumed. Decoder work is bounded by supplied bytes and event slots;
+/// tasks. Each decoder batch handles at most 64 bytes, reusing 16 event slots.
+/// Decoder work is bounded by supplied bytes and event slots;
 /// paste framing can retain five delimiter bytes across input batches.
 /// Cell and layout storage are allocated at startup; traversal is budgeted.
 /// Paste storage is bounded by `configuration.maximumPasteBytes`; copy storage
@@ -26,6 +26,7 @@ struct ScreenRunner: ~Copyable {
   private var needsRedraw = true
   mutating func invalidate() { needsRedraw = true }
   private var paste: PasteBuffer
+  var canReadLiteralPaste: Bool { input.canReadLiteralPaste }
   private var copyBuffer = CopyBuffer()
   private var ticks = TickSchedule()
   private let kittyGraphicsQueryID: UInt32?
@@ -114,8 +115,11 @@ struct ScreenRunner: ~Copyable {
   mutating func receive<Application: ScreenApplication & ~Copyable>(
     _ bytes: Span<UInt8>, at now: ContinuousClock.Instant, application: inout Application
   ) throws(ScreenApplicationError) -> Bool {
-    precondition(bytes.count <= 64)
     guard !bytes.isEmpty else { return true }
+    if input.isLiteralPaste(bytes) {
+      paste.append(bytes)
+      return true
+    }
     var offset = 0
     while true {
       let next: InputEvent?

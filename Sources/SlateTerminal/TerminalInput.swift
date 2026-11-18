@@ -11,6 +11,7 @@ public enum TerminalInputError: Error, Equatable, Sendable {
 /// An incomplete APC expires after 250 ms. Recovery discards through ST with
 /// another 250 ms and 4,096 bytes; exhaustion permanently fails this owner.
 public struct TerminalInput: ~Copyable, Sendable {
+  package static let maximumBatchBytes = 64
   public static let maximumResponseRecoveryBytes = 4_096
   private var decoder = InputDecoder()
   private var events = InlineArray<16, InputEvent>(repeating: .key(.escape))
@@ -27,6 +28,15 @@ public struct TerminalInput: ~Copyable, Sendable {
     escapeDeadline != nil || responseDeadline != nil || recoveryDeadline != nil
   }
 
+  package var canReadLiteralPaste: Bool { eventIndex == eventCount && decoder.canReadLiteralPaste }
+
+  /// A drained decoder stays in the same state across a batch of literal paste bytes.
+  package func isLiteralPaste(_ bytes: Span<UInt8>) -> Bool {
+    guard canReadLiteralPaste else { return false }
+    for index in bytes.indices where bytes[index] == 0x1b { return false }
+    return true
+  }
+
   public init() {}
 
   /// Read immediately after receiving .terminalReply(.applicationCommand),
@@ -40,7 +50,7 @@ public struct TerminalInput: ~Copyable, Sendable {
   public mutating func next(
     in bytes: Span<UInt8>, offset: inout Int, at now: ContinuousClock.Instant
   ) throws(TerminalInputError) -> InputEvent? {
-    precondition(bytes.count <= 64 && offset >= 0 && offset <= bytes.count)
+    precondition(bytes.count <= Self.maximumBatchBytes && offset >= 0 && offset <= bytes.count)
     try checkResponseDeadline(at: now)
     while eventIndex == eventCount {
       guard offset < bytes.count else { return nil }
