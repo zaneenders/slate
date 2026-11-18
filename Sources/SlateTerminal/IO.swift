@@ -55,6 +55,7 @@ public struct Input: ~Copyable, ~Sendable {
 public struct Output: ~Copyable, ~Sendable {
   private let nativeDescriptor: FileDescriptor?
   private let buffer: OutputBuffer?
+  let modeWriteTimeout: Duration?
   var isBuffered: Bool { buffer != nil }
   package var rawDescriptor: Int32 { descriptor.rawValue }
   var descriptor: FileDescriptor {
@@ -65,10 +66,16 @@ public struct Output: ~Copyable, ~Sendable {
   public init(buffer: OutputBuffer) {
     self.buffer = buffer
     nativeDescriptor = nil
+    modeWriteTimeout = nil
   }
 
   public init(fileDescriptor: Int32 = 1) throws(IOError) {
+    try self.init(fileDescriptor: fileDescriptor, modeWriteTimeout: nil)
+  }
+
+  package init(fileDescriptor: Int32, modeWriteTimeout: Duration?) throws(IOError) {
     buffer = nil
+    self.modeWriteTimeout = modeWriteTimeout
     do { nativeDescriptor = try duplicateDescriptor(fileDescriptor) } catch {
       throw .duplicateDescriptor(errno: error.rawValue)
     }
@@ -93,6 +100,11 @@ public struct Output: ~Copyable, ~Sendable {
     if let buffer { try buffer.append(bytes) } else { try writeBytes(to: descriptor, bytes) }
   }
 
+  /// Writes to a nonblocking native descriptor with a fixed readiness deadline.
+  package borrowing func writeAll(_ bytes: Span<UInt8>, until deadline: ContinuousClock.Instant) throws(IOError) {
+    try writeBytes(to: descriptor, bytes, until: deadline)
+  }
+
   deinit {
     try? nativeDescriptor?.close()
   }
@@ -108,12 +120,15 @@ package func writeStatic(_ text: StaticString, to output: borrowing Output) thro
   if let error { throw error }
 }
 
-func writeBytes(to descriptor: FileDescriptor, _ bytes: Span<UInt8>) throws(IOError) {
+func writeBytes(
+  to descriptor: FileDescriptor, _ bytes: Span<UInt8>, until deadline: ContinuousClock.Instant? = nil
+) throws(IOError) {
   try bytes.withUnsafeBufferPointer { buffer throws(IOError) in
     var offset = 0
     var retries = SystemCallRetryBudget()
     let storage = UnsafeRawBufferPointer(buffer)
     while offset < buffer.count {
+      if let deadline, ContinuousClock.now >= deadline { throw .write(errno: ETIMEDOUT, bytesWritten: offset) }
       switch unsafe writeAttempt(to: descriptor, UnsafeRawBufferPointer(rebasing: storage[offset...])) {
       case .success(let count):
         guard count > 0 else { throw .write(errno: Errno.ioError.rawValue, bytesWritten: offset) }
@@ -121,6 +136,21 @@ func writeBytes(to descriptor: FileDescriptor, _ bytes: Span<UInt8>) throws(IOEr
         retries = SystemCallRetryBudget()
       case .failure(let error):
         if retries.retry(after: error.rawValue) { continue }
+        if let deadline, error.rawValue == EAGAIN || error.rawValue == EWOULDBLOCK {
+          var readiness = pollfd(fd: descriptor.rawValue, events: Int16(POLLOUT), revents: 0)
+          let remaining = ContinuousClock.now.duration(to: deadline)
+          guard remaining > .zero else { throw .write(errno: ETIMEDOUT, bytesWritten: offset) }
+          let bounded = min(remaining, .milliseconds(Int32.max)).components
+          let attosecondsPerMillisecond: Int64 = 1_000_000_000_000_000
+          let milliseconds =
+            bounded.seconds * 1_000
+            + (bounded.attoseconds + attosecondsPerMillisecond - 1) / attosecondsPerMillisecond
+          let ready = unsafe poll(&readiness, 1, Int32(milliseconds))
+          if ready > 0 && readiness.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 { continue }
+          let failure = ready < 0 ? errno : (ready == 0 ? ETIMEDOUT : EIO)
+          if retries.retry(after: failure) { continue }
+          throw .write(errno: failure, bytesWritten: offset)
+        }
         throw .write(errno: error.rawValue, bytesWritten: offset)
       }
     }
@@ -138,10 +168,12 @@ private func writeAttempt(to descriptor: FileDescriptor, _ bytes: UnsafeRawBuffe
   }
 }
 
-func writeStatic(_ text: StaticString, to descriptor: FileDescriptor) throws(IOError) {
+func writeStatic(
+  _ text: StaticString, to descriptor: FileDescriptor, until deadline: ContinuousClock.Instant? = nil
+) throws(IOError) {
   let error = text.withUTF8Buffer { buffer -> IOError? in
     do throws(IOError) {
-      try writeBytes(to: descriptor, unsafe Span(_unsafeElements: buffer))
+      try writeBytes(to: descriptor, unsafe Span(_unsafeElements: buffer), until: deadline)
       return nil
     } catch { return error }
   }

@@ -56,5 +56,5 @@ for target in SlateUITests SlateTerminalTests SlateGraphicsDemoTests SlateGamepa
     DYLD_LIBRARY_PATH="$runtime_path/macosx/testing:$testing_libraries${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
     DYLD_FRAMEWORK_PATH="$testing_frameworks${DYLD_FRAMEWORK_PATH:+:$DYLD_FRAMEWORK_PATH}" \
     "$test_helper" --test-bundle-path "$products/$target.xctest/Contents/MacOS/$target" \
-      --testing-library swift-testing --filter Allocation
+      --testing-library swift-testing --no-parallel --filter Allocation
 done

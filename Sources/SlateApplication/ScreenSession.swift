@@ -17,6 +17,7 @@ private final class SessionInvalidation: Sendable {
     var backend: SessionBackend?
   }
   private let state = Mutex(State())
+  var backend: SessionBackend? { state.withLock { $0.backend } }
   func connect(_ backend: SessionBackend?) { state.withLock { $0.backend = backend } }
   func invalidate() {
     let backend: SessionBackend? = state.withLock {
@@ -45,6 +46,7 @@ private final class SessionInvalidation: Sendable {
   private let observation = ScreenObservation()
   private var running = false
   private var quitRequested = false
+  private var graphicsInvalidated = false
   private var acceptingTasks = false
   public let maximumOutputBytes: Int
   public let taskCapacity: Int
@@ -61,9 +63,17 @@ private final class SessionInvalidation: Sendable {
   }
 
   public func invalidate() { invalidation.invalidate() }
+
+  /// Requests `presentGraphics` and wakes an idle session without invalidating its cell layout.
+  public func invalidateGraphics() {
+    guard !graphicsInvalidated else { return }
+    graphicsInvalidated = true
+    invalidation.backend?.wake()
+  }
+
   public func quit() {
     quitRequested = true
-    invalidation.invalidate()
+    invalidation.backend?.interruptIO()
   }
 
   /// A busy slot rejects work. Operations must cooperate with cancellation; shutdown cancels and joins every accepted task.
@@ -124,6 +134,7 @@ private final class SessionInvalidation: Sendable {
     precondition(!running, "A session runs one application at a time")
     running = true
     quitRequested = false
+    graphicsInvalidated = false
     defer { running = false }
     var runner: ScreenRunner
     do throws(ScreenError) { runner = try ScreenRunner(configuration: Application.configuration) } catch {
@@ -135,19 +146,26 @@ private final class SessionInvalidation: Sendable {
       configuration: Application.configuration, signalHandling: signalHandling, outputBuffer: outputBuffer)
     invalidation.connect(backend)
     defer { invalidation.connect(nil) }
+    try await withTaskCancellationHandler { () throws(ScreenApplicationError) in
+      try await run(application: &application, runner: &runner, backend: backend)
+    } onCancel: {
+      backend.interruptIO()
+    }
+  }
+
+  private func run<Application: ScreenApplication & ~Copyable>(
+    application: inout Application, runner: inout ScreenRunner, backend: SessionBackend
+  ) async throws(ScreenApplicationError) {
     let output = Output(buffer: outputBuffer)
-    var result: Result<Void, ScreenApplicationError>
+    var result: Result<Void, ScreenApplicationError> = .success(())
     do throws(ScreenApplicationError) {
       let initial = try await backend.request(.start).get()
       acceptingTasks = true
       application.start(in: self)
-      try await withTaskCancellationHandler { () throws(ScreenApplicationError) in
-        try await loop(application: &application, runner: &runner, backend: backend, output: output, initial: initial)
-      } onCancel: {
-        backend.cancel()
-      }
-      result = .success(())
-    } catch { result = .failure(error) }
+      try await loop(application: &application, runner: &runner, backend: backend, output: output, initial: initial)
+    } catch {
+      if error != .cancelled || !quitRequested || Task.isCancelled { result = .failure(error) }
+    }
     acceptingTasks = false
     for index in tasks.indices {
       tasks[index]?.cancel()
@@ -168,13 +186,18 @@ private final class SessionInvalidation: Sendable {
       if case .success = result { result = .failure(.graphics(error)) }
       try? application.clearGraphics(to: output)
     }
-    let cleanup = await backend.request(.flush)
-    if case .success = result, case .failure(let error) = cleanup { result = .failure(error) }
+    let cleanup = await backend.request(.cleanup)
     let stopped = await backend.request(.stop)
     if case .failure(.interrupted(let number)) = stopped {
       result = .failure(.interrupted(signal: number))
-    } else if case .success = result, case .failure(let error) = stopped {
-      result = .failure(error)
+    } else if case .success = result {
+      if Task.isCancelled {
+        result = .failure(.cancelled)
+      } else if case .failure(let error) = cleanup, error != .cancelled || !quitRequested {
+        result = .failure(error)
+      } else if case .failure(let error) = stopped, error != .cancelled || !quitRequested {
+        result = .failure(error)
+      }
     }
     outputBuffer.reset()
     try result.get()
@@ -195,10 +218,13 @@ private final class SessionInvalidation: Sendable {
       guard runner.update(application: &application) else { return }
       do {
         guard try runner.expireInput(at: .now, application: &application) else { return }
-        if event.endOfInput { return }
         if event.count > 0 {
           guard try runner.receive(event.bytes.span.extracting(first: event.count), at: .now, application: &application)
           else { return }
+        }
+        if event.endOfInput {
+          runner.finishInput(application: &application)
+          return
         }
         if !firstFrame {
           guard runner.performPendingWork(application: &application) else { return }
@@ -227,8 +253,11 @@ private final class SessionInvalidation: Sendable {
         if let statistics { application.didPresentFrame(statistics) }
         presentedCells = true
       }
+      if Task.isCancelled { throw .cancelled }
+      if quitRequested { return }
       // Producers may change the model while cells are being written. Rebuild before encoding graphics for that model.
-      if (presentedCells || application.hasPendingGraphics) && !invalidation.pending() {
+      if (presentedCells || graphicsInvalidated || application.hasPendingGraphics) && !invalidation.pending() {
+        graphicsInvalidated = false
         let size: TerminalSize
         do throws(ScreenError) { size = try runner.viewport(for: event.size) } catch { throw .screen(error) }
         do throws(KittyGraphicsError) { try application.presentGraphics(in: size, to: output) } catch {
@@ -241,7 +270,7 @@ private final class SessionInvalidation: Sendable {
       firstFrame = false
       event.count = 0
       let generation = backend.generation()
-      let pending = invalidation.pending()
+      let pending = invalidation.pending() || graphicsInvalidated
       let timeout = pending ? 0 : try runner.pollTimeout(at: .now, application: application)
       event = try await backend.request(
         .poll(

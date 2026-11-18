@@ -14,7 +14,7 @@ import Musl
 enum BackendCommand: Sendable {
   case start
   case poll(Int32, UInt64, Bool)
-  case flush, stop
+  case flush, cleanup, stop
 }
 
 struct BackendEvent: Sendable {
@@ -27,12 +27,14 @@ struct BackendEvent: Sendable {
 
 /// One worker, one outstanding request, two startup output buffers, and a coalescing wake pipe.
 final class SessionBackend: Sendable {
+  private static let restorationTimeout = Duration.milliseconds(200)
+
   private struct State {
     var command: BackendCommand?
     var continuation: CheckedContinuation<Result<BackendEvent, ScreenApplicationError>, Never>?
     var generation: UInt64 = 0
     var finished = false
-    var cancelled = false
+    var interruptRequested = false
     var result: Result<BackendEvent, ScreenApplicationError>?
   }
   private let state = Mutex(State())
@@ -108,9 +110,15 @@ final class SessionBackend: Sendable {
     }
   }
 
-  func cancel() {
-    state.withLock { $0.cancelled = true }
+  func interruptIO() {
+    state.withLock { $0.interruptRequested = true }
     wake()
+  }
+
+  private func checkInterruption(_ signals: borrowing SignalSession) throws(ScreenApplicationError) {
+    let number = signals.termination()
+    if number != 0 { throw .interrupted(signal: number) }
+    if state.withLock({ $0.interruptRequested }) { throw .cancelled }
   }
 
   func request(_ command: BackendCommand) async -> Result<BackendEvent, ScreenApplicationError> {
@@ -183,7 +191,9 @@ final class SessionBackend: Sendable {
   private func session() throws(ScreenApplicationError) -> BackendEvent {
     let output: Output
     var terminal: Terminal
-    do throws(IOError) { output = try Output(fileDescriptor: outputDescriptor) } catch { throw .io(error) }
+    do throws(IOError) {
+      output = try Output(fileDescriptor: outputDescriptor, modeWriteTimeout: Self.restorationTimeout)
+    } catch { throw .io(error) }
     do throws(TerminalError) { terminal = try Terminal(fileDescriptor: inputDescriptor) } catch {
       throw .terminal(error)
     }
@@ -201,6 +211,7 @@ final class SessionBackend: Sendable {
     let signals = try SignalSession(signalHandling)
     let result: BackendEvent
     do throws(ScreenApplicationError) {
+      try checkInterruption(signals)
       result = try modes(terminal: &terminal, output: output, signals: signals)
     } catch {
       try? signals.resumeDelivery()
@@ -276,41 +287,40 @@ final class SessionBackend: Sendable {
     do throws(TerminalError) { event.size = try output.terminalSize() } catch { throw .terminal(error) }
     var retries = SystemCallRetryBudget()
     var spare = RigidArray<UInt8>(repeating: 0, count: outputBuffer.capacity)
+    var needsRecovery = false
     respond(.success(event), finished: false)
     while true {
       let command = try nextCommand()
       switch command {
       case .start: preconditionFailure("A backend starts once")
-      case .stop: return event
-      case .flush:
+      case .stop:
+        signals.protectTeardown()
+        try? recoverOutput(to: output, until: .now.advanced(by: Self.restorationTimeout), needed: &needsRecovery)
+        return event
+      case .flush, .cleanup:
         let count = outputBuffer.take(into: &spare)
+        let bytes = spare.span.extracting(first: count)
         do throws(ScreenApplicationError) {
-          try writeBatch(spare.span.extracting(first: count), to: output, signals: signals)
+          if case .cleanup = command {
+            try writeCleanup(bytes, to: output, needsRecovery: &needsRecovery)
+          } else {
+            try writeBatch(bytes, to: output, signals: signals, needsRecovery: &needsRecovery)
+          }
           respond(.success(event), finished: false)
         } catch { respond(.failure(error), finished: false) }
       case .poll(let timeout, let generation, let deliverTimeout):
-        let number = signals.termination()
-        if number != 0 {
-          respond(.failure(.interrupted(signal: number)), finished: false)
-          continue
-        }
-        if state.withLock({ $0.cancelled }) {
-          respond(.failure(.cancelled), finished: false)
-          continue
-        }
         do throws(ScreenApplicationError) {
           let previousSize = event.size
           while true {
+            try checkInterruption(signals)
             let stale = self.generation() != generation
             event = try readEvent(input: input, output: output, timeout: stale ? 0 : timeout)
+            try checkInterruption(signals)
             if stale || deliverTimeout || event.woken || event.count > 0 || event.endOfInput
               || event.size != previousSize
             {
               break
             }
-            if state.withLock({ $0.cancelled }) { throw .cancelled }
-            let signal = signals.termination()
-            if signal != 0 { throw .interrupted(signal: signal) }
           }
           retries = SystemCallRetryBudget()
           respond(.success(event), finished: false)
@@ -338,31 +348,18 @@ final class SessionBackend: Sendable {
   }
 
   private func writeBatch(
-    _ bytes: Span<UInt8>, to output: borrowing Output, signals: borrowing SignalSession
+    _ bytes: Span<UInt8>, to output: borrowing Output, signals: borrowing SignalSession, needsRecovery: inout Bool
   ) throws(ScreenApplicationError) {
     var offset = 0
-    var complete = false
-    defer {
-      if !complete && offset > 0 {
-        // CAN and ST close a partial CSI/APC before the cleanup batch is encoded.
-        let recovery: InlineArray<3, UInt8> = [0x18, 0x1b, 0x5c]
-        try? output.writeAll(recovery.span)
-      }
-    }
+    defer { needsRecovery = offset > 0 && offset < bytes.count }
     var retries = SystemCallRetryBudget()
     while offset < bytes.count {
+      try checkInterruption(signals)
       switch output.writeAvailable(bytes.extracting(droppingFirst: offset)) {
       case .success(let count):
         guard count > 0 else { throw .io(.write(errno: EIO, bytesWritten: offset)) }
         offset += count
         retries = SystemCallRetryBudget()
-        if offset == bytes.count {
-          complete = true
-          return
-        }
-        if state.withLock({ $0.cancelled }) { throw .cancelled }
-        let signal = signals.termination()
-        if signal != 0 { throw .interrupted(signal: signal) }
         continue
       case .failure(.write(let number, _)):
         if retries.retry(after: number) { continue }
@@ -371,9 +368,6 @@ final class SessionBackend: Sendable {
         }
       case .failure(let error): throw .io(error)
       }
-      if state.withLock({ $0.cancelled }) { throw .cancelled }
-      let signal = signals.termination()
-      if signal != 0 { throw .interrupted(signal: signal) }
       var descriptors: InlineArray<2, pollfd> = [
         pollfd(fd: output.rawDescriptor, events: Int16(POLLOUT), revents: 0),
         pollfd(fd: wakeRead, events: Int16(POLLIN), revents: 0)
@@ -388,6 +382,29 @@ final class SessionBackend: Sendable {
       if descriptors[1].revents != 0 { drainWake() }
       if descriptors[0].revents & Int16(POLLERR | POLLNVAL | POLLHUP) != 0 { throw .disconnected }
     }
+  }
+
+  private func writeCleanup(_ bytes: Span<UInt8>, to output: borrowing Output, needsRecovery: inout Bool)
+    throws(ScreenApplicationError)
+  {
+    let deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+    do throws(IOError) {
+      try recoverOutput(to: output, until: deadline, needed: &needsRecovery)
+      try output.writeAll(bytes, until: deadline)
+    } catch {
+      if case .write(_, let written) = error, written > 0 { needsRecovery = true }
+      throw .io(error)
+    }
+  }
+
+  private func recoverOutput(to output: borrowing Output, until deadline: ContinuousClock.Instant, needed: inout Bool)
+    throws(IOError)
+  {
+    guard needed else { return }
+    // CAN and ST close a partial escape before cleanup or terminal restoration.
+    let recovery: InlineArray<3, UInt8> = [0x18, 0x1b, 0x5c]
+    try output.writeAll(recovery.span, until: deadline)
+    needed = false
   }
 
   private func readEvent(

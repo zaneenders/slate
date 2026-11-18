@@ -153,21 +153,25 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
 @usableFromInline struct TerminalModeSession: ~Copyable, ~Escapable, ~Sendable {
   private let descriptor: FileDescriptor
   private let mode: TerminalMode
+  private let writeTimeout: Duration?
   private var needsRestore = true
 
   @_lifetime(borrow output)
   init(output: borrowing Output, mode: TerminalMode) throws(IOError) {
     guard !output.isBuffered else { throw .write(errno: ENOTTY, bytesWritten: 0) }
     let sequences = mode.sequences
-    do throws(IOError) { try writeStatic(sequences.enable, to: output.descriptor) } catch {
+    let timeout = output.modeWriteTimeout
+    let deadline = timeout.map { ContinuousClock.now.advanced(by: $0) }
+    do throws(IOError) { try writeStatic(sequences.enable, to: output.descriptor, until: deadline) } catch {
       if case .write(_, let bytesWritten) = error, bytesWritten > 0 {
         let recovery: StaticString = bytesWritten >= mode.minimumSetupBytesForRestore ? sequences.restore : "\u{18}"
-        try? writeStatic(recovery, to: output.descriptor)
+        try? writeStatic(recovery, to: output.descriptor, until: timeout.map { ContinuousClock.now.advanced(by: $0) })
       }
       throw error
     }
     descriptor = output.descriptor
     self.mode = mode
+    writeTimeout = timeout
   }
 
   consuming func restore() throws(IOError) {
@@ -175,13 +179,17 @@ public struct AlternateScreen: ~Copyable, ~Escapable, ~Sendable {
     // Finish the consuming operation's cleanup explicitly, including partial
     // escape writes. Destruction must not add a third restoration attempt.
     needsRestore = false
-    do throws(IOError) { try writeStatic(sequence, to: descriptor) } catch {
-      try? writeStatic(sequence, to: descriptor)
+    let deadline = writeTimeout.map { ContinuousClock.now.advanced(by: $0) }
+    do throws(IOError) { try writeStatic(sequence, to: descriptor, until: deadline) } catch {
+      try? writeStatic(sequence, to: descriptor, until: deadline)
       throw error
     }
   }
 
   deinit {
-    if needsRestore { try? writeStatic(mode.sequences.restore, to: descriptor) }
+    if needsRestore {
+      let deadline = writeTimeout.map { ContinuousClock.now.advanced(by: $0) }
+      try? writeStatic(mode.sequences.restore, to: descriptor, until: deadline)
+    }
   }
 }

@@ -15,7 +15,8 @@ struct SlateSignalFixture: ScreenApplication {
   static func main() async {
     var application = Self()
     let session = ScreenSession(maximumOutputBytes: 1_048_576, taskCapacity: 0)
-    await session.main(application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
+    await session.main(
+      application: &application, inputFileDescriptor: 0, outputFileDescriptor: 1, signalHandling: .managed)
   }
   static var configuration: ScreenApplicationConfiguration { .init(enhancedKeyboard: true) }
 
@@ -77,10 +78,6 @@ struct SlateSignalFixture: ScreenApplication {
   mutating func clearGraphics(to output: borrowing Output) throws(KittyGraphicsError) {
     guard stressTeardown else { return }
     stressTeardown = false
-    var mask = sigset_t()
-    precondition(unsafe pthread_sigmask(SIG_SETMASK, nil, &mask) == 0)
-    precondition(unsafe sigismember(&mask, SIGUSR1) == 1)
-    precondition(unsafe sigismember(&mask, SIGTERM) == 1)
     for _ in 0..<1_024 {
       deliverTestSignal(SIGUSR1)
       deliverTestSignal(SIGTTIN)
@@ -93,7 +90,7 @@ struct SlateSignalFixture: ScreenApplication {
   }
 }
 
-// Async main's executor may inherit a blocked signal mask. Deliver test raises synchronously within one callback.
+// Deliver test raises synchronously on the callback's thread, restoring its inherited mask.
 private func deliverTestSignal(_ number: Int32) {
   var set = sigset_t()
   var saved = sigset_t()

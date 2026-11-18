@@ -137,6 +137,10 @@ struct ScreenRunner: ~Copyable {
     return deliver(event, application: &application)
   }
 
+  mutating func finishInput<Application: ScreenApplication & ~Copyable>(application: inout Application) {
+    if let event = input.finish() { _ = deliver(event, application: &application) }
+  }
+
   mutating func deliver<Application: ScreenApplication & ~Copyable>(
     _ event: InputEvent, application: inout Application
   ) -> Bool {

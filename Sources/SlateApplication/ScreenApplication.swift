@@ -108,7 +108,8 @@ public protocol ScreenApplication: ~Copyable {
   /// Whether another bounded work step can run without waiting for input.
   /// Default is false. The runner presents the first frame before doing work.
   var hasPendingWork: Bool { get }
-  /// Requests a graphics batch without rebuilding cells; clear this request during presentGraphics.
+  /// Requests a graphics batch on the next loop iteration. Clear this request during presentGraphics.
+  /// Use ScreenSession.invalidateGraphics() to request a batch from an async producer and wake an idle session.
   var hasPendingGraphics: Bool { get }
   /// Performs one synchronous, application-bounded batch after checking input.
   /// Return `.redraw` when progress should be presented or `.quit` to stop.
