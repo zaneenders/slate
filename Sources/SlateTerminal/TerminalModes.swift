@@ -14,12 +14,23 @@ import Musl
 extension Output {
   /// Queries the output terminal, independently of the input terminal.
   public borrowing func terminalSize() throws(TerminalError) -> TerminalSize {
+    try terminalDimensions().cells
+  }
+
+  /// Queries the output terminal's cell and pixel dimensions in one call.
+  /// A zero pixel dimension means the terminal did not report it.
+  public borrowing func terminalDimensions() throws(TerminalError) -> (
+    cells: TerminalSize, pixelWidth: Int, pixelHeight: Int
+  ) {
     guard !isBuffered else { throw .readSize(errno: ENOTTY) }
     var size = winsize()
     guard unsafe ioctl(descriptor.rawValue, UInt(TIOCGWINSZ), &size) == 0 else {
       throw .readSize(errno: errno)
     }
-    return TerminalSize(columns: Int(size.ws_col), rows: Int(size.ws_row))
+    return (
+      TerminalSize(columns: Int(size.ws_col), rows: Int(size.ws_row)),
+      Int(size.ws_xpixel), Int(size.ws_ypixel)
+    )
   }
 
   @_lifetime(borrow self)

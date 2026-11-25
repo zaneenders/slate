@@ -1,4 +1,5 @@
 import BasicContainers
+import SlateTestSupport
 import Testing
 
 @testable import SlateTerminal
@@ -31,5 +32,18 @@ import Musl
 @Test func bufferedOutputReportsUnsupportedTerminalQueriesAndModeChanges() throws {
   let output = Output(buffer: OutputBuffer(capacity: 128))
   #expect(throws: TerminalError.readSize(errno: ENOTTY)) { try output.terminalSize() }
+  #expect(throws: TerminalError.readSize(errno: ENOTTY)) { _ = try output.terminalDimensions() }
   #expect(throws: IOError.write(errno: ENOTTY, bytesWritten: 0)) { _ = try output.alternateScreen() }
+}
+
+@Test func terminalDimensionsIncludeReportedPixels() throws {
+  let terminal = try PseudoTerminal()
+  let output = try Output(fileDescriptor: terminal.slave)
+  var size = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 640, ws_ypixel: 384)
+  try #require(unsafe ioctl(terminal.slave, UInt(TIOCSWINSZ), &size) == 0)
+  let dimensions = try output.terminalDimensions()
+  #expect(dimensions.cells == TerminalSize(columns: 80, rows: 24))
+  #expect(dimensions.pixelWidth == 640)
+  #expect(dimensions.pixelHeight == 384)
+  #expect(try output.terminalSize() == dimensions.cells)
 }
